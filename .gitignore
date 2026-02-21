@@ -4,13 +4,17 @@ build/
 *.obj
 *.exe
 *.pdb
+bg/.vs/*
 
 # pybind11 / Python
-python/bg_env.pyd
+*.pyd
 __pycache__/
+.spyproject/
 *.pyc
 
 # IDE
 .vscode/
 .idea/
 *.user
+
+*.zip
