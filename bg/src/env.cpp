@@ -1,139 +1,237 @@
 #include "env.h"
+
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <functional>
+#include <set>
+#include <vector>
 
 namespace bg {
 
-    BackgammonEnv::BackgammonEnv(uint64_t seed)
-        : rng_(seed ? seed : std::random_device{}()) {}
+BackgammonEnv::BackgammonEnv(uint64_t seed)
+    : rng_(seed ? seed : std::random_device{}()) {}
 
-    void BackgammonEnv::reset_standard() {
-        s_ = State{};
-        // Стандартная расстановка backgammon (для тестов/визуализации).
-        // Индексация 0..23. Мы позже зафиксируем ориентацию под "короткие нарды".
-        // Наши:
-        // 2 на 23, 5 на 12, 3 на 7, 5 на 5 (пример для демонстрации)
-        s_.points[23] = 2;
-        s_.points[12] = 5;
-        s_.points[7] = 3;
-        s_.points[5] = 5;
+void BackgammonEnv::reset_standard() {
+    s_ = State{};
 
-        // Соперник:
-        s_.opp_points[0] = 2;
-        s_.opp_points[11] = 5;
-        s_.opp_points[16] = 3;
-        s_.opp_points[18] = 5;
+    // Standard start position in canonical orientation.
+    s_.points[23] = 2;
+    s_.points[12] = 5;
+    s_.points[7] = 3;
+    s_.points[5] = 5;
 
-        s_.bar = s_.opp_bar = 0;
-        s_.off = s_.opp_off = 0;
-        s_.ply = 0;
+    s_.opp_points[0] = 2;
+    s_.opp_points[11] = 5;
+    s_.opp_points[16] = 3;
+    s_.opp_points[18] = 5;
 
-        dice_ = Dice{ 1,1 };
+    s_.bar = s_.opp_bar = 0;
+    s_.off = s_.opp_off = 0;
+    s_.ply = 0;
+
+    dice_ = Dice{1, 1};
+}
+
+Dice BackgammonEnv::roll_dice() {
+    std::uniform_int_distribution<int> d(1, 6);
+    dice_.a = static_cast<uint8_t>(d(rng_));
+    dice_.b = static_cast<uint8_t>(d(rng_));
+    return dice_;
+}
+
+void BackgammonEnv::apply_single(uint8_t from, uint8_t to) {
+    if (from == 255 || to == 255) return;
+
+    auto& P = s_.points;
+    if (from < 24) {
+        if (P[from] == 0) return;
+        P[from]--;
+    } else if (from == BAR) {
+        if (s_.bar == 0) return;
+        s_.bar--;
+    } else {
+        return;
     }
 
-    Dice BackgammonEnv::roll_dice() {
-        std::uniform_int_distribution<int> d(1, 6);
-        dice_.a = static_cast<uint8_t>(d(rng_));
-        dice_.b = static_cast<uint8_t>(d(rng_));
-        return dice_;
+    if (to < 24) {
+        P[to]++;
+    } else if (to == OFF) {
+        s_.off++;
+    } else if (to == BAR) {
+        s_.bar++;
     }
+}
 
-    void BackgammonEnv::apply_single(uint8_t from, uint8_t to) {
-        if (from == 255 || to == 255) return;
+size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
+    out.clear();
 
-        auto& P = s_.points;
-        // минимальная "безопасность"
-        if (from < 24) {
-            if (P[from] == 0) return;
-            P[from]--;
+    struct LocalState {
+        std::array<uint8_t, 24> points{};
+        std::array<uint8_t, 24> opp_points{};
+        uint8_t bar{0};
+    };
+
+    auto legal_single_steps = [](const LocalState& st, int die,
+                                 std::vector<std::pair<uint8_t, uint8_t>>& steps) {
+        steps.clear();
+
+        // If there are checkers on bar, only bar entry is legal.
+        if (st.bar > 0) {
+            int to = 24 - die;
+            if (to >= 0 && to < 24 && st.opp_points[to] < 2) {
+                steps.emplace_back(BAR, static_cast<uint8_t>(to));
+            }
+            return;
         }
-        else if (from == BAR) {
-            if (s_.bar == 0) return;
-            s_.bar--;
+
+        for (int from = 23; from >= 0; --from) {
+            if (st.points[from] == 0) continue;
+            int to = from - die;
+            if (to >= 0) {
+                if (st.opp_points[to] < 2) {
+                    steps.emplace_back(static_cast<uint8_t>(from), static_cast<uint8_t>(to));
+                }
+            } else {
+                steps.emplace_back(static_cast<uint8_t>(from), OFF);
+            }
         }
-        else {
+    };
+
+    auto apply_step_local = [](LocalState& st, uint8_t from, uint8_t to) {
+        if (from == BAR) {
+            if (st.bar == 0) return;
+            st.bar--;
+        } else if (from < 24) {
+            if (st.points[from] == 0) return;
+            st.points[from]--;
+        } else {
             return;
         }
 
         if (to < 24) {
-            P[to]++;
+            st.points[to]++;
         }
-        else if (to == OFF) {
-            s_.off++;
-        }
-        else if (to == BAR) {
-            s_.bar++;
-        }
+    };
+
+    std::vector<std::vector<int>> dice_orders;
+    if (dice_.is_double()) {
+        dice_orders.push_back({dice_.a, dice_.a, dice_.a, dice_.a});
+    } else {
+        dice_orders.push_back({dice_.a, dice_.b});
+        dice_orders.push_back({dice_.b, dice_.a});
     }
 
-    size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
-        out.clear();
+    std::set<std::array<uint8_t, 8>> unique_moves;
+    size_t max_used_dice = 0;
 
-        // ---- ЗАГЛУШКА ДЛЯ ТЕСТОВ ----
-        // Идея: для каждого die пробуем сдвинуть одну шашку "вниз" (i - die),
-        // если есть шашка на i. Это НЕ правила нард, а только для отладки интерфейса.
-        const int dice_vals[2] = { dice_.a, dice_.b };
+    std::function<void(const std::vector<int>&, size_t, LocalState&, Move&, size_t)> dfs;
+    dfs = [&](const std::vector<int>& dice_seq, size_t idx, LocalState& cur_state,
+              Move& cur_move, size_t used_dice) {
+        auto record_move = [&]() {
+            if (used_dice == 0) return;
 
-        for (int di = 0; di < 2; ++di) {
-            int die = dice_vals[di];
-            for (int i = 23; i >= 0; --i) {
-                if (s_.points[i] == 0) continue;
-                int j = i - die;
-                Move m;
-                m.from[0] = static_cast<uint8_t>(i);
-                if (j >= 0) m.to[0] = static_cast<uint8_t>(j);
-                else        m.to[0] = OFF;
-                out.push_back(m);
+            if (used_dice > max_used_dice) {
+                max_used_dice = used_dice;
+                unique_moves.clear();
             }
-        }
-        return out.size();
-    }
-
-    float BackgammonEnv::step_apply(const Move& m, bool& done) {
-        done = false;
-
-        for (int k = 0; k < 4; ++k) {
-            apply_single(m.from[k], m.to[k]);
-        }
-
-        s_.ply++;
-
-        // Заглушка терминальности: если вывели 15 шашек — победа.
-        if (s_.off >= 15) {
-            done = true;
-            return +1.0f;
-        }
-        return 0.0f;
-    }
-
-    bool BackgammonEnv::validate_invariants() const {
-        auto sum_arr = [](const std::array<uint8_t, 24>& a) -> int {
-            int s = 0;
-            for (auto v : a) s += v;
-            return s;
+            if (used_dice == max_used_dice) {
+                std::array<uint8_t, 8> key{};
+                for (int k = 0; k < 4; ++k) {
+                    key[2 * k] = cur_move.from[k];
+                    key[2 * k + 1] = cur_move.to[k];
+                }
+                unique_moves.insert(key);
+            }
         };
 
-        int mine = sum_arr(s_.points) + s_.bar + s_.off;
-        int opp = sum_arr(s_.opp_points) + s_.opp_bar + s_.opp_off;
+        if (idx >= dice_seq.size()) {
+            record_move();
+            return;
+        }
 
-        // В backgammon обычно 15 шашек на игрока
-        if (mine > 15 || opp > 15) return false;
-        return true;
+        std::vector<std::pair<uint8_t, uint8_t>> steps;
+        legal_single_steps(cur_state, dice_seq[idx], steps);
+
+        if (steps.empty()) {
+            record_move();
+            return;
+        }
+
+        for (const auto& [from, to] : steps) {
+            LocalState next_state = cur_state;
+            Move next_move = cur_move;
+
+            next_move.from[used_dice] = from;
+            next_move.to[used_dice] = to;
+            apply_step_local(next_state, from, to);
+
+            dfs(dice_seq, idx + 1, next_state, next_move, used_dice + 1);
+        }
+    };
+
+    for (const auto& order : dice_orders) {
+        LocalState root_state{s_.points, s_.opp_points, s_.bar};
+        Move root_move;
+        dfs(order, 0, root_state, root_move, 0);
     }
 
-    void BackgammonEnv::get_state_raw(int16_t* out) const {
-        for (int i = 0; i < 24; ++i) out[i] = int16_t(s_.points[i]);
-        for (int i = 0; i < 24; ++i) out[24 + i] = int16_t(s_.opp_points[i]);
-        out[48] = int16_t(s_.bar);
-        out[49] = int16_t(s_.off);
-        out[50] = int16_t(s_.opp_bar);
-        out[51] = int16_t(s_.opp_off);
-        out[52] = int16_t(s_.ply);
+    out.reserve(unique_moves.size());
+    for (const auto& key : unique_moves) {
+        Move m;
+        for (int k = 0; k < 4; ++k) {
+            m.from[k] = key[2 * k];
+            m.to[k] = key[2 * k + 1];
+        }
+        out.push_back(m);
     }
 
-    void BackgammonEnv::get_dice_raw(uint8_t* out) const {
-        out[0] = dice_.a;
-        out[1] = dice_.b;
+    return out.size();
+}
+
+float BackgammonEnv::step_apply(const Move& m, bool& done) {
+    done = false;
+
+    for (int k = 0; k < 4; ++k) {
+        apply_single(m.from[k], m.to[k]);
     }
 
-} // namespace bg
+    s_.ply++;
+
+    if (s_.off >= 15) {
+        done = true;
+        return +1.0f;
+    }
+    return 0.0f;
+}
+
+bool BackgammonEnv::validate_invariants() const {
+    auto sum_arr = [](const std::array<uint8_t, 24>& a) -> int {
+        int s = 0;
+        for (auto v : a) s += v;
+        return s;
+    };
+
+    int mine = sum_arr(s_.points) + s_.bar + s_.off;
+    int opp = sum_arr(s_.opp_points) + s_.opp_bar + s_.opp_off;
+
+    if (mine > 15 || opp > 15) return false;
+    return true;
+}
+
+void BackgammonEnv::get_state_raw(int16_t* out) const {
+    for (int i = 0; i < 24; ++i) out[i] = int16_t(s_.points[i]);
+    for (int i = 0; i < 24; ++i) out[24 + i] = int16_t(s_.opp_points[i]);
+    out[48] = int16_t(s_.bar);
+    out[49] = int16_t(s_.off);
+    out[50] = int16_t(s_.opp_bar);
+    out[51] = int16_t(s_.opp_off);
+    out[52] = int16_t(s_.ply);
+}
+
+void BackgammonEnv::get_dice_raw(uint8_t* out) const {
+    out[0] = dice_.a;
+    out[1] = dice_.b;
+}
+
+}  // namespace bg
