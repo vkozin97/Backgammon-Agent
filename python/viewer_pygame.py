@@ -14,16 +14,36 @@ def decode_raw(raw: np.ndarray):
     return mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply
 
 
-def move_to_str(mv8: np.ndarray):
+def transform_point_for_display(pt: int, turn_white: bool) -> int:
+    if pt == 255:
+        return 255
+    if 0 <= pt <= 23 and not turn_white:
+        return 23 - int(pt)
+    return int(pt)
+
+
+def move_to_str(mv8: np.ndarray, turn_white: bool = True):
     mv8 = np.asarray(mv8).astype(int)
     steps = []
     for k in range(4):
-        fr = mv8[2 * k]
-        to = mv8[2 * k + 1]
+        fr = transform_point_for_display(mv8[2 * k], turn_white)
+        to = transform_point_for_display(mv8[2 * k + 1], turn_white)
         if fr == 255 or to == 255:
             continue
         steps.append(f"{fr}->{to}")
     return " | ".join(steps) if steps else "(empty)"
+
+
+def map_move_to_display(mv8: np.ndarray, turn_white: bool):
+    mv = np.asarray(mv8).astype(np.uint8).copy()
+    for k in range(4):
+        fr = int(mv[2 * k])
+        to = int(mv[2 * k + 1])
+        if fr == 255 or to == 255:
+            continue
+        mv[2 * k] = np.uint8(transform_point_for_display(fr, turn_white))
+        mv[2 * k + 1] = np.uint8(transform_point_for_display(to, turn_white))
+    return mv
 
 
 W, H = 1100, 720
@@ -160,12 +180,12 @@ def current_active_die_idx(used_counts, required_counts):
     return -1
 
 
-def move_steps_from_mv(mv8):
+def move_steps_from_mv(mv8, turn_white=True):
     mv8 = np.asarray(mv8).astype(int)
     out = []
     for k in range(4):
-        fr = mv8[2 * k]
-        to = mv8[2 * k + 1]
+        fr = transform_point_for_display(mv8[2 * k], turn_white)
+        to = transform_point_for_display(mv8[2 * k + 1], turn_white)
         if fr == 255 or to == 255:
             continue
         out.append((fr, to))
@@ -176,12 +196,12 @@ def normalize_steps(steps):
     return tuple(sorted((int(fr), int(to)) for fr, to in steps))
 
 
-def matching_move_indices(moves, manual_steps):
+def matching_move_indices(moves, manual_steps, turn_white):
     target = normalize_steps(manual_steps)
     target_len = len(manual_steps)
     result = []
     for i, mv in enumerate(moves):
-        mv_steps = move_steps_from_mv(mv)
+        mv_steps = move_steps_from_mv(mv, turn_white=turn_white)
         if len(mv_steps) != target_len:
             continue
         if normalize_steps(mv_steps) == target:
@@ -280,7 +300,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     return point_rects, undo_rect, ok_rect
 
 
-def draw_panel(surface, font, small_font, moves, info_lines, manual_steps):
+def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -296,7 +316,7 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps):
     y += 30
     max_lines = (H - y - 150) // 18
     for i in range(min(len(moves), max_lines)):
-        draw_text(surface, small_font, f"[{i:3d}] {move_to_str(moves[i])}", x, y, (210, 210, 210))
+        draw_text(surface, small_font, f"[{i:3d}] {move_to_str(moves[i], turn_white=turn_white)}", x, y, (210, 210, 210))
         y += 18
 
     y = H - 120
@@ -349,8 +369,17 @@ def main():
         raw = env.get_state_raw()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply = decode_raw(raw)
 
-        view_mine, view_opp = base_mine.copy(), base_opp.copy()
-        view_mine_off, view_opp_off = base_mine_off, base_opp_off
+        if turn_white:
+            white_base, black_base = base_mine.copy(), base_opp.copy()
+            white_off, black_off = base_mine_off, base_opp_off
+            white_bar, black_bar = mine_bar, opp_bar
+        else:
+            white_base, black_base = base_opp[::-1].copy(), base_mine[::-1].copy()
+            white_off, black_off = base_opp_off, base_mine_off
+            white_bar, black_bar = opp_bar, mine_bar
+
+        view_mine, view_opp = white_base.copy(), black_base.copy()
+        view_mine_off, view_opp_off = white_off, black_off
         for fr, to in manual_steps:
             if turn_white:
                 if 0 <= fr <= 23 and view_mine[fr] > 0:
@@ -368,14 +397,14 @@ def main():
                         view_opp[to] += 1
 
         active_idx = current_active_die_idx(used_dice, required_dice)
-        valid_indices = matching_move_indices(moves, manual_steps)
+        valid_indices = matching_move_indices(moves, manual_steps, turn_white=turn_white)
         can_submit = len(valid_indices) > 0
 
         point_rects, undo_rect, ok_rect = draw_board(
-            screen, font, view_mine, view_opp, mine_bar, view_mine_off, opp_bar, view_opp_off,
+            screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit
         )
-        draw_panel(screen, font, small, moves, info_lines, manual_steps)
+        draw_panel(screen, font, small, moves, info_lines, manual_steps, turn_white)
         pygame.display.flip()
 
         for event in pygame.event.get():
@@ -406,7 +435,7 @@ def main():
                 if ok_rect.collidepoint(mx, my) and can_submit:
                     mv = moves[valid_indices[0]]
                     reward, done = env.step_move(mv)
-                    info_lines.append(f"Apply: {move_to_str(mv)} | r={reward} done={done}")
+                    info_lines.append(f"Apply: {move_to_str(mv, turn_white=turn_white)} | r={reward} done={done}")
                     if done:
                         env.reset()
                         turn_white = True
