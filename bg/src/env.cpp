@@ -63,6 +63,19 @@ void BackgammonEnv::apply_single(uint8_t from, uint8_t to) {
     }
 }
 
+void BackgammonEnv::swap_perspective() {
+    std::array<uint8_t, 24> next_points{};
+    std::array<uint8_t, 24> next_opp_points{};
+    for (int i = 0; i < 24; ++i) {
+        next_points[i] = s_.opp_points[23 - i];
+        next_opp_points[i] = s_.points[23 - i];
+    }
+    s_.points = next_points;
+    s_.opp_points = next_opp_points;
+    std::swap(s_.bar, s_.opp_bar);
+    std::swap(s_.off, s_.opp_off);
+}
+
 size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
     out.clear();
 
@@ -244,12 +257,14 @@ float BackgammonEnv::step_apply(const Move& m, bool& done) {
         apply_single(m.from[k], m.to[k]);
     }
 
-    s_.ply++;
-
     if (s_.off >= 15) {
         done = true;
+        s_.ply++;
         return +1.0f;
     }
+
+    swap_perspective();
+    s_.ply++;
     return 0.0f;
 }
 

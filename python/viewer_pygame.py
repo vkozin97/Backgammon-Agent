@@ -14,16 +14,36 @@ def decode_raw(raw: np.ndarray):
     return mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply
 
 
-def move_to_str(mv8: np.ndarray):
+def transform_point_for_display(pt: int, turn_white: bool) -> int:
+    if pt == 255:
+        return 255
+    if 0 <= pt <= 23 and not turn_white:
+        return 23 - int(pt)
+    return int(pt)
+
+
+def move_to_str(mv8: np.ndarray, turn_white: bool = True):
     mv8 = np.asarray(mv8).astype(int)
     steps = []
     for k in range(4):
-        fr = mv8[2 * k]
-        to = mv8[2 * k + 1]
+        fr = transform_point_for_display(mv8[2 * k], turn_white)
+        to = transform_point_for_display(mv8[2 * k + 1], turn_white)
         if fr == 255 or to == 255:
             continue
         steps.append(f"{fr}->{to}")
     return " | ".join(steps) if steps else "(empty)"
+
+
+def map_move_to_display(mv8: np.ndarray, turn_white: bool):
+    mv = np.asarray(mv8).astype(np.uint8).copy()
+    for k in range(4):
+        fr = int(mv[2 * k])
+        to = int(mv[2 * k + 1])
+        if fr == 255 or to == 255:
+            continue
+        mv[2 * k] = np.uint8(transform_point_for_display(fr, turn_white))
+        mv[2 * k + 1] = np.uint8(transform_point_for_display(to, turn_white))
+    return mv
 
 
 W, H = 1100, 720
@@ -153,11 +173,40 @@ def build_manual_move(steps):
     return mv
 
 
-def current_active_die_idx(used):
-    for i, u in enumerate(used):
-        if not u:
+def current_active_die_idx(used_counts, required_counts):
+    for i, used in enumerate(used_counts):
+        if used < required_counts[i]:
             return i
     return -1
+
+
+def move_steps_from_mv(mv8, turn_white=True):
+    mv8 = np.asarray(mv8).astype(int)
+    out = []
+    for k in range(4):
+        fr = transform_point_for_display(mv8[2 * k], turn_white)
+        to = transform_point_for_display(mv8[2 * k + 1], turn_white)
+        if fr == 255 or to == 255:
+            continue
+        out.append((fr, to))
+    return out
+
+
+def normalize_steps(steps):
+    return tuple(sorted((int(fr), int(to)) for fr, to in steps))
+
+
+def matching_move_indices(moves, manual_steps, turn_white):
+    target = normalize_steps(manual_steps)
+    target_len = len(manual_steps)
+    result = []
+    for i, mv in enumerate(moves):
+        mv_steps = move_steps_from_mv(mv, turn_white=turn_white)
+        if len(mv_steps) != target_len:
+            continue
+        if normalize_steps(mv_steps) == target:
+            result.append(i)
+    return result
 
 
 def draw_undo_icon(surface, rect: pygame.Rect):
@@ -178,7 +227,7 @@ def draw_check_icon(surface, rect: pygame.Rect, enabled: bool):
 
 
 def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply, turn_white,
-               dice_values, used_dice, active_die_idx, can_submit):
+               dice_values, used_dice, required_dice, active_die_idx, can_submit):
     surface.fill((25, 25, 25))
     pygame.draw.rect(surface, FRAME, (0, 0, BOARD_W, H))
     inner = pygame.Rect(8, HEADER_H, BOARD_W - 16, H - HEADER_H - 8)
@@ -228,14 +277,15 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     def dice_anchor(white_side):
         x0 = int(BOARD_W * (0.66 if white_side else 0.18))
-        return x0, 20
+        return x0, MID_Y - DICE_SIZE // 2
 
     dx, dy = dice_anchor(turn_white)
     dice_rects = []
     for i, val in enumerate(dice_values):
         size = DICE_SIZE + (10 if i == active_die_idx else 0)
         rect = pygame.Rect(dx + i * (DICE_SIZE + DICE_GAP), dy + (DICE_SIZE - size) // 2, size, size)
-        draw_die(surface, rect, val, active=(i == active_die_idx), used=used_dice[i])
+        exhausted = used_dice[i] >= required_dice[i]
+        draw_die(surface, rect, val, active=(i == active_die_idx), used=exhausted)
         dice_rects.append(rect)
 
     undo_rect = pygame.Rect(dx - 44, dy + 6, 30, 30)
@@ -250,7 +300,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     return point_rects, undo_rect, ok_rect
 
 
-def draw_panel(surface, font, small_font, moves, info_lines, manual_steps):
+def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -266,7 +316,7 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps):
     y += 30
     max_lines = (H - y - 150) // 18
     for i in range(min(len(moves), max_lines)):
-        draw_text(surface, small_font, f"[{i:3d}] {move_to_str(moves[i])}", x, y, (210, 210, 210))
+        draw_text(surface, small_font, f"[{i:3d}] {move_to_str(moves[i], turn_white=turn_white)}", x, y, (210, 210, 210))
         y += 18
 
     y = H - 120
@@ -297,16 +347,20 @@ def main():
         return mv
 
     def start_turn():
-        nonlocal dice_values, used_dice, manual_steps, history
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
-            dice_values = [d[0]] * 4
+            dice_values = [d[0], d[1]]
+            required_dice = [2, 2]
         else:
             dice_values = sorted(d, reverse=True)
-        used_dice = [False] * len(dice_values)
+            required_dice = [1, 1]
+        used_dice = [0] * len(dice_values)
         manual_steps = []
         history = []
 
+    dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
+    start_turn()
     moves = refresh_moves()
     dice_values, used_dice, manual_steps, history = [], [], [], []
     start_turn()
@@ -317,8 +371,17 @@ def main():
         raw = env.get_state_raw()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply = decode_raw(raw)
 
-        view_mine, view_opp = base_mine.copy(), base_opp.copy()
-        view_mine_off, view_opp_off = base_mine_off, base_opp_off
+        if turn_white:
+            white_base, black_base = base_mine.copy(), base_opp.copy()
+            white_off, black_off = base_mine_off, base_opp_off
+            white_bar, black_bar = mine_bar, opp_bar
+        else:
+            white_base, black_base = base_opp[::-1].copy(), base_mine[::-1].copy()
+            white_off, black_off = base_opp_off, base_mine_off
+            white_bar, black_bar = opp_bar, mine_bar
+
+        view_mine, view_opp = white_base.copy(), black_base.copy()
+        view_mine_off, view_opp_off = white_off, black_off
         for fr, to in manual_steps:
             if turn_white:
                 if 0 <= fr <= 23 and view_mine[fr] > 0:
@@ -335,16 +398,15 @@ def main():
                     else:
                         view_opp[to] += 1
 
-        active_idx = current_active_die_idx(used_dice)
-        manual_move = build_manual_move(manual_steps)
-        valid_indices = [i for i, mv in enumerate(moves) if np.array_equal(mv, manual_move)]
+        active_idx = current_active_die_idx(used_dice, required_dice)
+        valid_indices = matching_move_indices(moves, manual_steps, turn_white=turn_white)
         can_submit = len(valid_indices) > 0
 
         point_rects, undo_rect, ok_rect = draw_board(
-            screen, font, view_mine, view_opp, mine_bar, view_mine_off, opp_bar, view_opp_off,
-            ply, turn_white, dice_values, used_dice, active_idx, can_submit
+            screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
+            ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit
         )
-        draw_panel(screen, font, small, moves, info_lines, manual_steps)
+        draw_panel(screen, font, small, moves, info_lines, manual_steps, turn_white)
         pygame.display.flip()
 
         for event in pygame.event.get():
@@ -356,8 +418,8 @@ def main():
                 elif event.key == pygame.K_n:
                     env.reset()
                     turn_white = True
-                    moves = refresh_moves()
                     start_turn()
+                    moves = refresh_moves()
                     info_lines.append("Reset env.")
                 elif event.key == pygame.K_r:
                     start_turn()
@@ -368,21 +430,21 @@ def main():
                 if undo_rect.collidepoint(mx, my) and history:
                     fr, to, die_idx = history.pop()
                     manual_steps.pop()
-                    used_dice[die_idx] = False
+                    used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
                     info_lines.append(f"Undo {fr}->{to}")
                     continue
 
                 if ok_rect.collidepoint(mx, my) and can_submit:
                     mv = moves[valid_indices[0]]
                     reward, done = env.step_move(mv)
-                    info_lines.append(f"Apply: {move_to_str(mv)} | r={reward} done={done}")
+                    info_lines.append(f"Apply: {move_to_str(mv, turn_white=turn_white)} | r={reward} done={done}")
                     if done:
                         env.reset()
                         turn_white = True
                     else:
                         turn_white = not turn_white
-                    moves = refresh_moves()
                     start_turn()
+                    moves = refresh_moves()
                     continue
 
                 if active_idx < 0:
@@ -407,13 +469,9 @@ def main():
                     info_lines.append("Invalid preview move.")
                     continue
                 manual_steps.append((clicked_idx, to))
-                used_dice[active_idx] = True
+                used_dice[active_idx] += 1
                 history.append((clicked_idx, to, active_idx))
 
-                if len(dice_values) == 4 and len(history) == 1:
-                    # double: keep first die active after first move
-                    used_dice[0] = False
-                    history[-1] = (clicked_idx, to, 0)
 
     pygame.quit()
     return 0
