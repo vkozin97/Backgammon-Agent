@@ -150,15 +150,13 @@ def apply_step_color(mine, opp, mine_off, opp_off, white_turn, fr, die):
     if fr < 0 or fr > 23 or src[fr] <= 0:
         return mine, opp, mine_off, opp_off, -1, False
 
-    src[fr] -= 1
-    if to < 0 and white_turn:
-        mine_off += 1
-        return mine, opp, mine_off, opp_off, -1, True
-    if to >= 24 and not white_turn:
-        opp_off += 1
-        return mine, opp, mine_off, opp_off, 24, True
     if to < 0 or to > 23:
         return mine, opp, mine_off, opp_off, -1, False
+
+    if dst[to] >= 2:
+        return mine, opp, mine_off, opp_off, -1, False
+
+    src[fr] -= 1
 
     if dst[to] == 1:
         dst[to] = 0
@@ -178,6 +176,13 @@ def current_active_die_idx(used_counts, required_counts):
         if used < required_counts[i]:
             return i
     return -1
+
+
+def resolve_active_die_idx(selected_idx, used_counts, required_counts):
+    if selected_idx is not None and 0 <= selected_idx < len(used_counts):
+        if used_counts[selected_idx] < required_counts[selected_idx]:
+            return selected_idx
+    return current_active_die_idx(used_counts, required_counts)
 
 
 def move_steps_from_mv(mv8, turn_white=True):
@@ -297,7 +302,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     draw_check_icon(surface, ok_rect, can_submit)
 
     pygame.draw.line(surface, DIV, (BOARD_W, 0), (BOARD_W, H), 2)
-    return point_rects, undo_rect, ok_rect
+    return point_rects, dice_rects, undo_rect, ok_rect
 
 
 def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white):
@@ -347,7 +352,7 @@ def main():
         return mv
 
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
             dice_values = [d[0], d[1]]
@@ -358,8 +363,10 @@ def main():
         used_dice = [0] * len(dice_values)
         manual_steps = []
         history = []
+        selected_die_idx = 0
 
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
+    selected_die_idx = 0
     start_turn()
     moves = refresh_moves()
     dice_values, used_dice, manual_steps, history = [], [], [], []
@@ -398,11 +405,12 @@ def main():
                     else:
                         view_opp[to] += 1
 
-        active_idx = current_active_die_idx(used_dice, required_dice)
+        active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice)
+        selected_die_idx = active_idx
         valid_indices = matching_move_indices(moves, manual_steps, turn_white=turn_white)
         can_submit = len(valid_indices) > 0
 
-        point_rects, undo_rect, ok_rect = draw_board(
+        point_rects, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit
         )
@@ -431,6 +439,7 @@ def main():
                     fr, to, die_idx = history.pop()
                     manual_steps.pop()
                     used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
+                    selected_die_idx = die_idx
                     info_lines.append(f"Undo {fr}->{to}")
                     continue
 
@@ -445,6 +454,12 @@ def main():
                         turn_white = not turn_white
                     start_turn()
                     moves = refresh_moves()
+                    continue
+
+                clicked_die = next((i for i, rect in enumerate(dice_rects) if rect.collidepoint(mx, my)), None)
+                if clicked_die is not None:
+                    if used_dice[clicked_die] < required_dice[clicked_die]:
+                        selected_die_idx = clicked_die
                     continue
 
                 if active_idx < 0:
@@ -470,6 +485,7 @@ def main():
                     continue
                 manual_steps.append((clicked_idx, to))
                 used_dice[active_idx] += 1
+                selected_die_idx = active_idx
                 history.append((clicked_idx, to, active_idx))
 
 
