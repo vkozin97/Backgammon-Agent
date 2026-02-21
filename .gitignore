@@ -1,0 +1,16 @@
+# C++
+build/
+*.o
+*.obj
+*.exe
+*.pdb
+
+# pybind11 / Python
+python/bg_env.pyd
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.user
