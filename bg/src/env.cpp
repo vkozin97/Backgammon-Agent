@@ -9,6 +9,70 @@
 
 namespace bg {
 
+namespace {
+
+bool can_bear_off_from(const State& s, uint8_t from) {
+    if (from >= 24) return false;
+
+    for (int p = 6; p < 24; ++p) {
+        if (s.points[p] > 0) return false;
+    }
+
+    for (int higher = from + 1; higher <= 5; ++higher) {
+        if (s.points[higher] > 0) return false;
+    }
+    return true;
+}
+
+bool is_legal_single_step(const State& s, uint8_t from, uint8_t to) {
+    if (from == 255 || to == 255) return false;
+
+    if (s.bar > 0 && from != BAR) return false;
+
+    if (from == BAR) {
+        if (s.bar == 0 || to >= 24) return false;
+        return s.opp_points[to] < 2;
+    }
+
+    if (from >= 24 || s.points[from] == 0) return false;
+
+    if (to < 24) {
+        if (to >= from) return false;
+        if (s.opp_points[to] >= 2) return false;
+        return true;
+    }
+
+    if (to == OFF) {
+        return can_bear_off_from(s, from);
+    }
+
+    return false;
+}
+
+bool apply_single_checked(State& s, uint8_t from, uint8_t to) {
+    if (!is_legal_single_step(s, from, to)) return false;
+
+    if (from == BAR) {
+        s.bar--;
+    } else {
+        s.points[from]--;
+    }
+
+    if (to < 24) {
+        if (s.opp_points[to] == 1) {
+            s.opp_points[to] = 0;
+            s.opp_bar++;
+        }
+        s.points[to]++;
+    } else {
+        s.off++;
+    }
+
+    return true;
+}
+
+}  // namespace
+
 BackgammonEnv::BackgammonEnv(uint64_t seed)
     : rng_(seed ? seed : std::random_device{}()) {}
 
@@ -254,7 +318,8 @@ float BackgammonEnv::step_apply(const Move& m, bool& done) {
     done = false;
 
     for (int k = 0; k < 4; ++k) {
-        apply_single(m.from[k], m.to[k]);
+        if (m.from[k] == 255 || m.to[k] == 255) continue;
+        if (!apply_micro_step(m.from[k], m.to[k])) break;
     }
 
     if (s_.off >= 15) {
@@ -263,9 +328,31 @@ float BackgammonEnv::step_apply(const Move& m, bool& done) {
         return +1.0f;
     }
 
+    commit_turn();
+    return 0.0f;
+}
+
+bool BackgammonEnv::apply_micro_step(uint8_t from, uint8_t to) {
+    return apply_single_checked(s_, from, to);
+}
+
+void BackgammonEnv::commit_turn() {
     swap_perspective();
     s_.ply++;
-    return 0.0f;
+}
+
+void BackgammonEnv::set_state_raw(const int16_t* in) {
+    for (int i = 0; i < 24; ++i) {
+        s_.points[i] = static_cast<uint8_t>(std::clamp<int>(in[i], 0, 15));
+    }
+    for (int i = 0; i < 24; ++i) {
+        s_.opp_points[i] = static_cast<uint8_t>(std::clamp<int>(in[24 + i], 0, 15));
+    }
+    s_.bar = static_cast<uint8_t>(std::clamp<int>(in[48], 0, 15));
+    s_.off = static_cast<uint8_t>(std::clamp<int>(in[49], 0, 15));
+    s_.opp_bar = static_cast<uint8_t>(std::clamp<int>(in[50], 0, 15));
+    s_.opp_off = static_cast<uint8_t>(std::clamp<int>(in[51], 0, 15));
+    s_.ply = static_cast<uint8_t>(std::clamp<int>(in[52], 0, 255));
 }
 
 bool BackgammonEnv::validate_invariants() const {
@@ -295,6 +382,11 @@ void BackgammonEnv::get_state_raw(int16_t* out) const {
 void BackgammonEnv::get_dice_raw(uint8_t* out) const {
     out[0] = dice_.a;
     out[1] = dice_.b;
+}
+
+void BackgammonEnv::set_dice_raw(const uint8_t* in) {
+    dice_.a = std::clamp<uint8_t>(in[0], 1, 6);
+    dice_.b = std::clamp<uint8_t>(in[1], 1, 6);
 }
 
 }  // namespace bg

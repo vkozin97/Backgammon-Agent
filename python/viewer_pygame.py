@@ -138,39 +138,6 @@ def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False):
         pygame.draw.circle(surface, OUTLINE, (cx + ox * off, cy + oy * off), max(3, rect.width // 11))
 
 
-def apply_step_color(mine, opp, mine_off, opp_off, white_turn, fr, die):
-    mine = mine.copy()
-    opp = opp.copy()
-    mine_off, opp_off = int(mine_off), int(opp_off)
-    src = mine if white_turn else opp
-    dst = opp if white_turn else mine
-    direction = -1 if white_turn else 1
-    to = fr + direction * die
-
-    if fr < 0 or fr > 23 or src[fr] <= 0:
-        return mine, opp, mine_off, opp_off, -1, False
-
-    if to < 0 or to > 23:
-        return mine, opp, mine_off, opp_off, -1, False
-
-    if dst[to] >= 2:
-        return mine, opp, mine_off, opp_off, -1, False
-
-    src[fr] -= 1
-
-    if dst[to] == 1:
-        dst[to] = 0
-    src[to] += 1
-    return mine, opp, mine_off, opp_off, to, True
-
-
-def build_manual_move(steps):
-    mv = np.full(8, 255, dtype=np.uint8)
-    for i, (fr, to) in enumerate(steps[:4]):
-        mv[2 * i], mv[2 * i + 1] = np.uint8(fr), np.uint8(to)
-    return mv
-
-
 def current_active_die_idx(used_counts, required_counts):
     for i, used in enumerate(used_counts):
         if used < required_counts[i]:
@@ -212,6 +179,12 @@ def matching_move_indices(moves, manual_steps, turn_white):
         if normalize_steps(mv_steps) == target:
             result.append(i)
     return result
+
+
+def max_micro_steps_in_moves(moves, turn_white):
+    if len(moves) == 0:
+        return 0
+    return max(len(move_steps_from_mv(mv, turn_white=turn_white)) for mv in moves)
 
 
 def draw_undo_icon(surface, rect: pygame.Rect):
@@ -363,19 +336,18 @@ def main():
         used_dice = [0] * len(dice_values)
         manual_steps = []
         history = []
+        env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
 
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
     start_turn()
     moves = refresh_moves()
-    dice_values, used_dice, manual_steps, history = [], [], [], []
-    start_turn()
 
     running = True
     while running:
         clock.tick(FPS)
-        raw = env.get_state_raw()
+        raw = np.asarray(env.get_state_raw(), dtype=np.int16)
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply = decode_raw(raw)
 
         if turn_white:
@@ -389,26 +361,11 @@ def main():
 
         view_mine, view_opp = white_base.copy(), black_base.copy()
         view_mine_off, view_opp_off = white_off, black_off
-        for fr, to in manual_steps:
-            if turn_white:
-                if 0 <= fr <= 23 and view_mine[fr] > 0:
-                    view_mine[fr] -= 1
-                    if to < 0:
-                        view_mine_off += 1
-                    else:
-                        view_mine[to] += 1
-            else:
-                if 0 <= fr <= 23 and view_opp[fr] > 0:
-                    view_opp[fr] -= 1
-                    if to >= 24:
-                        view_opp_off += 1
-                    else:
-                        view_opp[to] += 1
 
         active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice)
         selected_die_idx = active_idx
-        valid_indices = matching_move_indices(moves, manual_steps, turn_white=turn_white)
-        can_submit = len(valid_indices) > 0
+        required_steps = max_micro_steps_in_moves(moves, turn_white)
+        can_submit = len(moves) == 0 or len(manual_steps) == required_steps
 
         point_rects, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
@@ -436,17 +393,21 @@ def main():
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if undo_rect.collidepoint(mx, my) and history:
-                    fr, to, die_idx = history.pop()
+                    prev_state, fr, to, die_idx = history.pop()
+                    env.set_state_raw(prev_state)
                     manual_steps.pop()
                     used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
                     selected_die_idx = die_idx
+                    moves = refresh_moves()
                     info_lines.append(f"Undo {fr}->{to}")
                     continue
 
                 if ok_rect.collidepoint(mx, my) and can_submit:
-                    mv = moves[valid_indices[0]]
-                    reward, done = env.step_move(mv)
-                    info_lines.append(f"Apply: {move_to_str(mv, turn_white=turn_white)} | r={reward} done={done}")
+                    done = int(np.asarray(env.get_state_raw())[49]) >= 15
+                    reward = 1.0 if done else 0.0
+                    if not done:
+                        env.commit_turn()
+                    info_lines.append(f"Apply: {' | '.join(f'{a}->{b}' for a,b in manual_steps)} | r={reward} done={done}")
                     if done:
                         env.reset()
                         turn_white = True
@@ -477,16 +438,21 @@ def main():
                     info_lines.append("No checker of current color on point.")
                     continue
 
-                nm, no, nmo, noo, to, ok = apply_step_color(
-                    view_mine, view_opp, view_mine_off, view_opp_off, turn_white, clicked_idx, die
-                )
+                env_from = clicked_idx if turn_white else 23 - clicked_idx
+                env_to = env_from - die
+                env_to = env_to if env_to >= 0 else 25
+
+                prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                ok, _ = env.apply_micro_step(int(env_from), int(env_to))
                 if not ok:
-                    info_lines.append("Invalid preview move.")
+                    info_lines.append("Invalid micro-step.")
                     continue
+                to = env_to if turn_white else (23 - env_to if env_to <= 23 else env_to)
                 manual_steps.append((clicked_idx, to))
                 used_dice[active_idx] += 1
                 selected_die_idx = active_idx
-                history.append((clicked_idx, to, active_idx))
+                history.append((prev_state, clicked_idx, to, active_idx))
+                moves = refresh_moves()
 
 
     pygame.quit()
