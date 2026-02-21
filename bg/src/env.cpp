@@ -68,6 +68,7 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
 
     struct LocalState {
         std::array<uint8_t, 24> points{};
+        std::array<uint8_t, 24> opp_points{};
         uint8_t bar{0};
     };
 
@@ -78,7 +79,7 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
         // If there are checkers on bar, only bar entry is legal.
         if (st.bar > 0) {
             int to = 24 - die;
-            if (to >= 0 && to < 24) {
+            if (to >= 0 && to < 24 && st.opp_points[to] < 2) {
                 steps.emplace_back(BAR, static_cast<uint8_t>(to));
             }
             return;
@@ -88,7 +89,9 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
             if (st.points[from] == 0) continue;
             int to = from - die;
             if (to >= 0) {
-                steps.emplace_back(static_cast<uint8_t>(from), static_cast<uint8_t>(to));
+                if (st.opp_points[to] < 2) {
+                    steps.emplace_back(static_cast<uint8_t>(from), static_cast<uint8_t>(to));
+                }
             } else {
                 steps.emplace_back(static_cast<uint8_t>(from), OFF);
             }
@@ -168,7 +171,7 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
     };
 
     for (const auto& order : dice_orders) {
-        LocalState root_state{s_.points, s_.bar};
+        LocalState root_state{s_.points, s_.opp_points, s_.bar};
         Move root_move;
         dfs(order, 0, root_state, root_move, 0);
     }
