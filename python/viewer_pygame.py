@@ -359,9 +359,9 @@ def main():
         manual_steps = []
         history = []
 
-    moves = refresh_moves()
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     start_turn()
+    moves = refresh_moves()
 
     running = True
     while running:
@@ -416,8 +416,8 @@ def main():
                 elif event.key == pygame.K_n:
                     env.reset()
                     turn_white = True
-                    moves = refresh_moves()
                     start_turn()
+                    moves = refresh_moves()
                     info_lines.append("Reset env.")
                 elif event.key == pygame.K_r:
                     start_turn()
@@ -441,8 +441,8 @@ def main():
                         turn_white = True
                     else:
                         turn_white = not turn_white
-                    moves = refresh_moves()
                     start_turn()
+                    moves = refresh_moves()
                     continue
 
                 if active_idx < 0:
