@@ -46,7 +46,7 @@ def map_move_to_display(mv8: np.ndarray, turn_white: bool):
     return mv
 
 
-W, H = 1100, 720
+W, H = 1224, 720
 FPS = 60
 PANEL_W = 420
 BOARD_W = W - PANEL_W
@@ -69,14 +69,18 @@ SUCCESS = (90, 200, 120)
 MARGIN = 18
 GAP = 20
 BAR_W = 52
+OFF_W = BAR_W
+OFF_GAP = 18
 HEADER_H = 90
 TOP = HEADER_H + 30
 BOTTOM = H - 40
 MID_Y = (TOP + BOTTOM) // 2
-POINT_W = (BOARD_W - 2 * MARGIN - BAR_W - GAP * 2) // 12
+PLAY_W = BOARD_W - OFF_W - OFF_GAP
+POINT_W = (PLAY_W - 2 * MARGIN - BAR_W - GAP * 2) // 12
 POINT_H = (BOTTOM - TOP - GAP) // 2
 CHECKER_R = min(POINT_W // 2 - 2, 18)
 STACK_DY = CHECKER_R * 2 - 4
+TRI_MARGIN = 8
 DICE_SIZE = 42
 DICE_GAP = 12
 
@@ -102,7 +106,24 @@ def point_is_top(idx: int) -> bool:
 
 
 def point_base_y(idx: int) -> int:
-    return TOP + CHECKER_R + 6 if point_is_top(idx) else BOTTOM - CHECKER_R - 6
+    return TOP + TRI_MARGIN + CHECKER_R if point_is_top(idx) else BOTTOM - TRI_MARGIN - CHECKER_R
+
+
+def stack_step(count: int) -> float:
+    if count <= 1:
+        return 0.0
+    if count <= 7:
+        return float(STACK_DY)
+    return float((6 * STACK_DY) / (count - 1))
+
+
+def stack_y_positions(base: int, count: int, top_side: bool):
+    step = stack_step(count)
+    out = []
+    for k in range(count):
+        y = base + (k * step if top_side else -k * step)
+        out.append(int(round(y)))
+    return out
 
 
 def draw_triangle(surface, x_center, y_top, height, upward: bool, color):
@@ -215,8 +236,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     turn_label = "WHITE" if turn_white else "BLACK"
     draw_text(surface, font, f"Turn: {turn_label}    ply={ply}", 16, 10)
-    draw_text(surface, font, f"White: bar={mine_bar} off={mine_off}", 16, 36)
-    draw_text(surface, font, f"Black: bar={opp_bar} off={opp_off}", 16, 62)
+    draw_text(surface, font, "Bar/OFF are shown on board", 16, 36)
 
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
@@ -224,12 +244,20 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     pygame.draw.rect(surface, (25, 18, 12), bar_rect, 2)
     pygame.draw.line(surface, (70, 55, 40), (MARGIN, MID_Y), (BOARD_W - MARGIN, MID_Y), 2)
 
+    off_x0 = PLAY_W + OFF_GAP
+    off_top_rect = pygame.Rect(off_x0, TOP, OFF_W, MID_Y - TOP - 3)
+    off_bottom_rect = pygame.Rect(off_x0, MID_Y + 3, OFF_W, BOTTOM - MID_Y - 3)
+    pygame.draw.rect(surface, (55, 40, 28), off_top_rect)
+    pygame.draw.rect(surface, (55, 40, 28), off_bottom_rect)
+    pygame.draw.rect(surface, (25, 18, 12), off_top_rect, 2)
+    pygame.draw.rect(surface, (25, 18, 12), off_bottom_rect, 2)
+
     point_rects = {}
     for idx in range(24):
         x = point_x(idx)
         top = point_is_top(idx)
         col = idx - 12 if top else 11 - idx
-        tri_color = TRI_A if col % 2 == 0 else TRI_B
+        tri_color = (TRI_B if col % 2 == 0 else TRI_A) if top else (TRI_A if col % 2 == 0 else TRI_B)
         if top:
             draw_triangle(surface, x, TOP + 8, POINT_H - 16, upward=False, color=tri_color)
             img = font.render(str(idx), True, SUBTEXT)
@@ -246,12 +274,35 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
         x = point_x(idx)
         base = point_base_y(idx)
         top = point_is_top(idx)
-        for k in range(min(int(mine[idx]), 6)):
-            y = base + (k * STACK_DY if top else -k * STACK_DY)
+        mine_count = int(mine[idx])
+        opp_count = int(opp[idx])
+        for y in stack_y_positions(base, mine_count, top):
             draw_checker(surface, x, y, is_white=True)
-        for k in range(min(int(opp[idx]), 6)):
-            y = base + (k * STACK_DY if top else -k * STACK_DY)
-            draw_checker(surface, x + CHECKER_R + 2, y, is_white=False)
+        for y in stack_y_positions(base, opp_count, top):
+            draw_checker(surface, x, y, is_white=False)
+
+    center_gap = 10
+    for y in stack_y_positions(MID_Y - center_gap - CHECKER_R, int(mine_bar), top_side=False):
+        draw_checker(surface, bar_rect.centerx, y, is_white=True)
+    for y in stack_y_positions(MID_Y + center_gap + CHECKER_R, int(opp_bar), top_side=True):
+        draw_checker(surface, bar_rect.centerx, y, is_white=False)
+
+    def draw_off_stack(rect: pygame.Rect, count: int, is_white: bool, from_center_down: bool):
+        if count <= 0:
+            return
+        piece_h = 6
+        pad = 8
+        anchor = rect.top + pad if from_center_down else rect.bottom - pad - piece_h
+        avail = max(1, rect.height - 2 * pad - piece_h)
+        step = (piece_h + 2) if count <= 1 else min(piece_h + 2, avail / (count - 1))
+        for k in range(count):
+            y = anchor + (k * step if from_center_down else -k * step)
+            piece = pygame.Rect(rect.x + 6, int(round(y)), rect.width - 12, piece_h)
+            pygame.draw.rect(surface, WHITE if is_white else BLACK, piece, border_radius=2)
+            pygame.draw.rect(surface, OUTLINE, piece, 1, border_radius=2)
+
+    draw_off_stack(off_bottom_rect, int(mine_off), is_white=True, from_center_down=True)
+    draw_off_stack(off_top_rect, int(opp_off), is_white=False, from_center_down=False)
 
     def dice_anchor(white_side):
         x0 = int(BOARD_W * (0.66 if white_side else 0.18))
