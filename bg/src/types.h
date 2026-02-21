@@ -4,8 +4,12 @@
 
 namespace bg {
 
-static constexpr uint8_t BAR = 24;
+// Public point numbering for moves:
+// 1..24 playable points, 25 mine OFF, 30 mine BAR, 31 opponent BAR, 0 opponent OFF.
 static constexpr uint8_t OFF = 25;
+static constexpr uint8_t BAR = 30;
+static constexpr uint8_t OPP_BAR = 31;
+static constexpr uint8_t OPP_OFF = 0;
 
 struct Dice {
   uint8_t a{1}; // 1..6
