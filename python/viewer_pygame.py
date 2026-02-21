@@ -6,10 +6,6 @@ import bg_env  # pybind11 module
 
 
 # ----------------- raw decode -----------------
-# raw layout (len=53):
-# [0..23] mine points
-# [24..47] opp points
-# [48] mine_bar, [49] mine_off, [50] opp_bar, [51] opp_off, [52] ply
 def decode_raw(raw: np.ndarray):
     raw = np.asarray(raw)
     mine = raw[0:24].astype(int)
@@ -30,49 +26,39 @@ def move_to_str(mv8: np.ndarray):
     return " | ".join(steps) if steps else "(empty)"
 
 
-# ----------------- pygame config -----------------
 W, H = 1100, 720
 FPS = 60
-
 PANEL_W = 420
 BOARD_W = W - PANEL_W
+FONT_NAME = None
 
-FONT_NAME = None  # default system font
-
-
-# ----- board look -----
 BOARD_BG = (40, 30, 20)
 FRAME = (90, 70, 50)
 TRI_A = (140, 85, 45)
 TRI_B = (80, 45, 25)
-
 WHITE = (245, 245, 245)
 BLACK = (25, 25, 25)
 OUTLINE = (10, 10, 10)
-
 TEXT = (235, 235, 235)
 SUBTEXT = (190, 190, 190)
-
 HEADER_BG = (18, 18, 18)
 DIV = (60, 60, 60)
+ACCENT = (255, 214, 102)
+SUCCESS = (90, 200, 120)
 
-# geometry
 MARGIN = 18
 GAP = 20
 BAR_W = 52
-
-HEADER_H = 90  # <-- fixes overlap: header is separate area
-
+HEADER_H = 90
 TOP = HEADER_H + 30
 BOTTOM = H - 40
 MID_Y = (TOP + BOTTOM) // 2
-
-# point sizes
 POINT_W = (BOARD_W - 2 * MARGIN - BAR_W - GAP * 2) // 12
 POINT_H = (BOTTOM - TOP - GAP) // 2
-
 CHECKER_R = min(POINT_W // 2 - 2, 18)
 STACK_DY = CHECKER_R * 2 - 4
+DICE_SIZE = 42
+DICE_GAP = 12
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -80,29 +66,15 @@ def draw_text(surf, font, text, x, y, color=TEXT):
     surf.blit(img, (x, y))
 
 
-# ----------------- coordinate helpers -----------------
 def point_x(idx: int) -> int:
-    """
-    X-center of point idx (0..23) in a realistic layout:
-      Top row shows 12..23 left->right (23 on the right)
-      Bottom row shows 11..0  left->right (0 on the right)
-      With a bar in the middle.
-    """
     left_start = MARGIN
     right_start = MARGIN + 6 * POINT_W + GAP + BAR_W + GAP
 
     def col_center(start_x, col):
         return start_x + col * POINT_W + POINT_W // 2
 
-    if 12 <= idx <= 23:
-        col = idx - 12  # 0..11
-    else:
-        col = 11 - idx  # idx=11->0 ... idx=0->11
-
-    if col <= 5:
-        return col_center(left_start, col)
-    else:
-        return col_center(right_start, col - 6)
+    col = idx - 12 if 12 <= idx <= 23 else 11 - idx
+    return col_center(left_start, col) if col <= 5 else col_center(right_start, col - 6)
 
 
 def point_is_top(idx: int) -> bool:
@@ -110,28 +82,15 @@ def point_is_top(idx: int) -> bool:
 
 
 def point_base_y(idx: int) -> int:
-    """Base Y for stacking checkers on that point."""
-    if point_is_top(idx):
-        return TOP + CHECKER_R + 6
-    else:
-        return BOTTOM - CHECKER_R - 6
+    return TOP + CHECKER_R + 6 if point_is_top(idx) else BOTTOM - CHECKER_R - 6
 
 
-# ----------------- drawing primitives -----------------
 def draw_triangle(surface, x_center, y_top, height, upward: bool, color):
     half = POINT_W // 2 - 2
     if upward:
-        pts = [
-            (x_center - half, y_top + height),
-            (x_center + half, y_top + height),
-            (x_center, y_top),
-        ]
+        pts = [(x_center - half, y_top + height), (x_center + half, y_top + height), (x_center, y_top)]
     else:
-        pts = [
-            (x_center - half, y_top),
-            (x_center + half, y_top),
-            (x_center, y_top + height),
-        ]
+        pts = [(x_center - half, y_top), (x_center + half, y_top), (x_center, y_top + height)]
     pygame.draw.polygon(surface, color, pts)
 
 
@@ -141,135 +100,205 @@ def draw_checker(surface, x, y, is_white: bool):
     pygame.draw.circle(surface, OUTLINE, (x, y), CHECKER_R, 2)
 
 
-# ----------------- main board draw -----------------
-def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, dice, ply):
-    # outer background
-    surface.fill((25, 25, 25))
+def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False):
+    fill = (130, 130, 130) if used else (235, 235, 235)
+    pygame.draw.rect(surface, fill, rect, border_radius=8)
+    pygame.draw.rect(surface, ACCENT if active else OUTLINE, rect, 3 if active else 2, border_radius=8)
+    cx, cy = rect.center
+    off = rect.width // 4
+    pips = {
+        1: [(0, 0)],
+        2: [(-1, -1), (1, 1)],
+        3: [(-1, -1), (0, 0), (1, 1)],
+        4: [(-1, -1), (1, -1), (-1, 1), (1, 1)],
+        5: [(-1, -1), (1, -1), (0, 0), (-1, 1), (1, 1)],
+        6: [(-1, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (1, 1)],
+    }
+    for ox, oy in pips.get(int(value), []):
+        pygame.draw.circle(surface, OUTLINE, (cx + ox * off, cy + oy * off), max(3, rect.width // 11))
 
-    # board frame and inner
+
+def apply_step_color(mine, opp, mine_off, opp_off, white_turn, fr, die):
+    mine = mine.copy()
+    opp = opp.copy()
+    mine_off, opp_off = int(mine_off), int(opp_off)
+    src = mine if white_turn else opp
+    dst = opp if white_turn else mine
+    direction = -1 if white_turn else 1
+    to = fr + direction * die
+
+    if fr < 0 or fr > 23 or src[fr] <= 0:
+        return mine, opp, mine_off, opp_off, -1, False
+
+    src[fr] -= 1
+    if to < 0 and white_turn:
+        mine_off += 1
+        return mine, opp, mine_off, opp_off, -1, True
+    if to >= 24 and not white_turn:
+        opp_off += 1
+        return mine, opp, mine_off, opp_off, 24, True
+    if to < 0 or to > 23:
+        return mine, opp, mine_off, opp_off, -1, False
+
+    if dst[to] == 1:
+        dst[to] = 0
+    src[to] += 1
+    return mine, opp, mine_off, opp_off, to, True
+
+
+def build_manual_move(steps):
+    mv = np.full(8, 255, dtype=np.uint8)
+    for i, (fr, to) in enumerate(steps[:4]):
+        mv[2 * i], mv[2 * i + 1] = np.uint8(fr), np.uint8(to)
+    return mv
+
+
+def current_active_die_idx(used_counts, required_counts):
+    for i, used in enumerate(used_counts):
+        if used < required_counts[i]:
+            return i
+    return -1
+
+
+def move_steps_from_mv(mv8):
+    mv8 = np.asarray(mv8).astype(int)
+    out = []
+    for k in range(4):
+        fr = mv8[2 * k]
+        to = mv8[2 * k + 1]
+        if fr == 255 or to == 255:
+            continue
+        out.append((fr, to))
+    return out
+
+
+def normalize_steps(steps):
+    return tuple(sorted((int(fr), int(to)) for fr, to in steps))
+
+
+def matching_move_indices(moves, manual_steps):
+    target = normalize_steps(manual_steps)
+    target_len = len(manual_steps)
+    result = []
+    for i, mv in enumerate(moves):
+        mv_steps = move_steps_from_mv(mv)
+        if len(mv_steps) != target_len:
+            continue
+        if normalize_steps(mv_steps) == target:
+            result.append(i)
+    return result
+
+
+def draw_undo_icon(surface, rect: pygame.Rect):
+    color = (235, 235, 235)
+    y = rect.centery
+    x0 = rect.x + 7
+    x1 = rect.right - 7
+    pygame.draw.line(surface, color, (x0 + 6, y), (x1, y), 3)
+    pygame.draw.polygon(surface, color, [(x0, y), (x0 + 8, y - 6), (x0 + 8, y + 6)])
+
+
+def draw_check_icon(surface, rect: pygame.Rect, enabled: bool):
+    color = (30, 30, 30) if enabled else (160, 160, 160)
+    p1 = (rect.x + 7, rect.centery)
+    p2 = (rect.x + 13, rect.bottom - 8)
+    p3 = (rect.right - 7, rect.y + 8)
+    pygame.draw.lines(surface, color, False, [p1, p2, p3], 4)
+
+
+def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply, turn_white,
+               dice_values, used_dice, required_dice, active_die_idx, can_submit):
+    surface.fill((25, 25, 25))
     pygame.draw.rect(surface, FRAME, (0, 0, BOARD_W, H))
     inner = pygame.Rect(8, HEADER_H, BOARD_W - 16, H - HEADER_H - 8)
     pygame.draw.rect(surface, BOARD_BG, inner)
-
-    # header bar (separate area, no overlap)
     pygame.draw.rect(surface, HEADER_BG, (0, 0, BOARD_W, HEADER_H))
     pygame.draw.line(surface, DIV, (0, HEADER_H), (BOARD_W, HEADER_H), 2)
 
-    draw_text(surface, font, f"Dice: {dice[0]}, {dice[1]}   ply={ply}", 16, 10, TEXT)
-    draw_text(surface, font, f"White (mine): bar={mine_bar} off={mine_off}", 16, 36, TEXT)
-    draw_text(surface, font, f"Black (opp):  bar={opp_bar} off={opp_off}", 16, 62, TEXT)
+    turn_label = "WHITE" if turn_white else "BLACK"
+    draw_text(surface, font, f"Turn: {turn_label}    ply={ply}", 16, 10)
+    draw_text(surface, font, f"White: bar={mine_bar} off={mine_off}", 16, 36)
+    draw_text(surface, font, f"Black: bar={opp_bar} off={opp_off}", 16, 62)
 
-    # bar area
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
     pygame.draw.rect(surface, (55, 40, 28), bar_rect)
     pygame.draw.rect(surface, (25, 18, 12), bar_rect, 2)
-
-    # middle separator line
     pygame.draw.line(surface, (70, 55, 40), (MARGIN, MID_Y), (BOARD_W - MARGIN, MID_Y), 2)
 
-    # triangles + indices
+    point_rects = {}
     for idx in range(24):
         x = point_x(idx)
         top = point_is_top(idx)
-
-        # visual column in its row (0..11 from left->right)
-        if top:
-            col = idx - 12
-        else:
-            col = 11 - idx
-        tri_color = TRI_A if (col % 2 == 0) else TRI_B
-
+        col = idx - 12 if top else 11 - idx
+        tri_color = TRI_A if col % 2 == 0 else TRI_B
         if top:
             draw_triangle(surface, x, TOP + 8, POINT_H - 16, upward=False, color=tri_color)
             img = font.render(str(idx), True, SUBTEXT)
             surface.blit(img, (x - img.get_width() // 2, TOP - 28))
+            rect = pygame.Rect(x - POINT_W // 2, TOP + 8, POINT_W, POINT_H - 16)
         else:
             draw_triangle(surface, x, MID_Y + 8, POINT_H - 16, upward=True, color=tri_color)
             img = font.render(str(idx), True, SUBTEXT)
             surface.blit(img, (x - img.get_width() // 2, BOTTOM + 6))
+            rect = pygame.Rect(x - POINT_W // 2, MID_Y + 8, POINT_W, POINT_H - 16)
+        point_rects[idx] = rect
 
-    # checkers stacks
     for idx in range(24):
         x = point_x(idx)
         base = point_base_y(idx)
         top = point_is_top(idx)
-
-        # mine = white
-        nW = int(mine[idx])
-        for k in range(min(nW, 6)):
+        for k in range(min(int(mine[idx]), 6)):
             y = base + (k * STACK_DY if top else -k * STACK_DY)
             draw_checker(surface, x, y, is_white=True)
-        if nW > 6:
-            img = font.render(f"+{nW-6}", True, TEXT)
-            y = base + (6 * STACK_DY if top else -6 * STACK_DY)
-            surface.blit(img, (x - img.get_width() // 2, y - img.get_height() // 2))
-
-        # opp = black (shifted a bit, only for debug if both appear on same point)
-        nB = int(opp[idx])
-        x2 = x + CHECKER_R + 2
-        for k in range(min(nB, 6)):
+        for k in range(min(int(opp[idx]), 6)):
             y = base + (k * STACK_DY if top else -k * STACK_DY)
-            draw_checker(surface, x2, y, is_white=False)
-        if nB > 6:
-            img = font.render(f"+{nB-6}", True, TEXT)
-            y = base + (6 * STACK_DY if top else -6 * STACK_DY)
-            surface.blit(img, (x2 - img.get_width() // 2, y - img.get_height() // 2))
+            draw_checker(surface, x + CHECKER_R + 2, y, is_white=False)
 
-    # bar stacks
-    def draw_bar_stack(count, is_white, y_start, direction):
-        for k in range(min(count, 6)):
-            y = y_start + direction * k * STACK_DY
-            draw_checker(surface, bar_rect.centerx, y, is_white=is_white)
-        if count > 6:
-            img = font.render(f"+{count-6}", True, TEXT)
-            surface.blit(
-                img,
-                (bar_rect.centerx - img.get_width() // 2,
-                 y_start + direction * 6 * STACK_DY - img.get_height() // 2)
-            )
+    def dice_anchor(white_side):
+        x0 = int(BOARD_W * (0.66 if white_side else 0.18))
+        return x0, MID_Y - DICE_SIZE // 2
 
-    draw_bar_stack(mine_bar, True, TOP + CHECKER_R + 10, +1)
-    draw_bar_stack(opp_bar, False, BOTTOM - CHECKER_R - 10, -1)
+    dx, dy = dice_anchor(turn_white)
+    dice_rects = []
+    for i, val in enumerate(dice_values):
+        size = DICE_SIZE + (10 if i == active_die_idx else 0)
+        rect = pygame.Rect(dx + i * (DICE_SIZE + DICE_GAP), dy + (DICE_SIZE - size) // 2, size, size)
+        exhausted = used_dice[i] >= required_dice[i]
+        draw_die(surface, rect, val, active=(i == active_die_idx), used=exhausted)
+        dice_rects.append(rect)
 
-    # divider to panel
+    undo_rect = pygame.Rect(dx - 44, dy + 6, 30, 30)
+    pygame.draw.rect(surface, (110, 110, 130), undo_rect, border_radius=6)
+    draw_undo_icon(surface, undo_rect)
+
+    ok_rect = pygame.Rect(dx + len(dice_values) * (DICE_SIZE + DICE_GAP) + 8, dy + 6, 30, 30)
+    pygame.draw.rect(surface, SUCCESS if can_submit else (80, 80, 80), ok_rect, border_radius=6)
+    draw_check_icon(surface, ok_rect, can_submit)
+
     pygame.draw.line(surface, DIV, (BOARD_W, 0), (BOARD_W, H), 2)
+    return point_rects, undo_rect, ok_rect
 
 
-# ----------------- right panel -----------------
-def draw_panel(surface, font, small_font, moves, selected_idx, info_lines):
-    x = BOARD_W + 12
-    y = 16
-
+def draw_panel(surface, font, small_font, moves, info_lines, manual_steps):
+    x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
-    for line in [
-        "R  - roll dice",
-        "N  - reset",
-        "UP/DOWN - select move",
-        "ENTER - apply selected move",
-        "ESC - quit",
-    ]:
+    for line in ["LMB on point - use active die", "R - roll/reset turn", "N - reset env", "ESC - quit"]:
         draw_text(surface, small_font, line, x, y, (200, 200, 200))
         y += 20
 
-    y += 10
+    y += 8
     draw_text(surface, font, f"Legal moves: {len(moves)}", x, y)
-    y += 28
+    y += 24
+    draw_text(surface, small_font, f"Manual: {' | '.join(f'{a}->{b}' for a,b in manual_steps) or '(empty)'}", x, y, ACCENT)
 
-    list_y0 = y
-    max_lines = (H - list_y0 - 150) // 18
-    start = 0
-    if selected_idx >= max_lines:
-        start = selected_idx - max_lines + 1
-
-    for i in range(start, min(len(moves), start + max_lines)):
-        line = f"[{i:3d}] {move_to_str(moves[i])}"
-        color = (255, 230, 120) if i == selected_idx else (210, 210, 210)
-        draw_text(surface, small_font, line, x, y, color)
+    y += 30
+    max_lines = (H - y - 150) // 18
+    for i in range(min(len(moves), max_lines)):
+        draw_text(surface, small_font, f"[{i:3d}] {move_to_str(moves[i])}", x, y, (210, 210, 210))
         y += 18
 
-    # info bottom
     y = H - 120
     pygame.draw.line(surface, (60, 60, 60), (BOARD_W, y - 8), (W, y - 8), 1)
     for line in info_lines[-5:]:
@@ -277,86 +306,141 @@ def draw_panel(surface, font, small_font, moves, selected_idx, info_lines):
         y += 18
 
 
-# ----------------- main loop -----------------
 def main():
     pygame.init()
     screen = pygame.display.set_mode((W, H))
-    pygame.display.set_caption("Backgammon Viewer (pybind11 + pygame)")
-
+    pygame.display.set_caption("Backgammon Viewer (manual dice UI)")
     font = pygame.font.Font(FONT_NAME, 22)
     small = pygame.font.Font(FONT_NAME, 16)
     clock = pygame.time.Clock()
 
     env = bg_env.Env(123)
     env.reset()
-    dice = env.roll_dice()
 
-    selected = 0
-    info_lines = ["Viewer started. Press R to roll dice, ENTER to apply move."]
+    turn_white = True
+    info_lines = ["Started. Click point columns to move by active die."]
 
     def refresh_moves():
-        nonlocal selected
-        mv = env.legal_moves()
-        mv = np.asarray(mv, dtype=np.uint8)
+        mv = np.asarray(env.legal_moves(), dtype=np.uint8)
         if mv.ndim == 1:
             mv = mv.reshape(0, 8)
-        if len(mv) == 0:
-            selected = 0
-        else:
-            selected = max(0, min(selected, len(mv) - 1))
         return mv
 
+    def start_turn():
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history
+        d = list(map(int, env.roll_dice()))
+        if d[0] == d[1]:
+            dice_values = [d[0], d[1]]
+            required_dice = [2, 2]
+        else:
+            dice_values = sorted(d, reverse=True)
+            required_dice = [1, 1]
+        used_dice = [0] * len(dice_values)
+        manual_steps = []
+        history = []
+
     moves = refresh_moves()
+    dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
+    start_turn()
 
     running = True
     while running:
         clock.tick(FPS)
-
         raw = env.get_state_raw()
-        mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply = decode_raw(raw)
+        base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply = decode_raw(raw)
+
+        view_mine, view_opp = base_mine.copy(), base_opp.copy()
+        view_mine_off, view_opp_off = base_mine_off, base_opp_off
+        for fr, to in manual_steps:
+            if turn_white:
+                if 0 <= fr <= 23 and view_mine[fr] > 0:
+                    view_mine[fr] -= 1
+                    if to < 0:
+                        view_mine_off += 1
+                    else:
+                        view_mine[to] += 1
+            else:
+                if 0 <= fr <= 23 and view_opp[fr] > 0:
+                    view_opp[fr] -= 1
+                    if to >= 24:
+                        view_opp_off += 1
+                    else:
+                        view_opp[to] += 1
+
+        active_idx = current_active_die_idx(used_dice, required_dice)
+        valid_indices = matching_move_indices(moves, manual_steps)
+        can_submit = len(valid_indices) > 0
+
+        point_rects, undo_rect, ok_rect = draw_board(
+            screen, font, view_mine, view_opp, mine_bar, view_mine_off, opp_bar, view_opp_off,
+            ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit
+        )
+        draw_panel(screen, font, small, moves, info_lines, manual_steps)
+        pygame.display.flip()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-
                 elif event.key == pygame.K_n:
                     env.reset()
-                    dice = env.roll_dice()
+                    turn_white = True
                     moves = refresh_moves()
-                    info_lines.append("Reset.")
-
+                    start_turn()
+                    info_lines.append("Reset env.")
                 elif event.key == pygame.K_r:
-                    dice = env.roll_dice()
+                    start_turn()
                     moves = refresh_moves()
-                    info_lines.append(f"Rolled dice: {dice[0]},{dice[1]} (moves={len(moves)})")
+                    info_lines.append(f"Reroll: {dice_values}")
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if undo_rect.collidepoint(mx, my) and history:
+                    fr, to, die_idx = history.pop()
+                    manual_steps.pop()
+                    used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
+                    info_lines.append(f"Undo {fr}->{to}")
+                    continue
 
-                elif event.key == pygame.K_UP:
-                    if len(moves) > 0:
-                        selected = max(0, selected - 1)
+                if ok_rect.collidepoint(mx, my) and can_submit:
+                    mv = moves[valid_indices[0]]
+                    reward, done = env.step_move(mv)
+                    info_lines.append(f"Apply: {move_to_str(mv)} | r={reward} done={done}")
+                    if done:
+                        env.reset()
+                        turn_white = True
+                    else:
+                        turn_white = not turn_white
+                    moves = refresh_moves()
+                    start_turn()
+                    continue
 
-                elif event.key == pygame.K_DOWN:
-                    if len(moves) > 0:
-                        selected = min(len(moves) - 1, selected + 1)
+                if active_idx < 0:
+                    continue
+                die = dice_values[active_idx]
+                clicked_idx = next((i for i, rect in point_rects.items() if rect.collidepoint(mx, my)), None)
+                if clicked_idx is None:
+                    continue
 
-                elif event.key == pygame.K_RETURN:
-                    if len(moves) > 0:
-                        mv = moves[selected]
-                        reward, done = env.step_move(mv)
-                        info_lines.append(f"Applied #{selected}: {move_to_str(mv)} | r={reward} done={done}")
-                        if done:
-                            info_lines.append("Terminal. Auto-reset.")
-                            env.reset()
-                            dice = env.roll_dice()
-                        moves = refresh_moves()
+                own = view_mine if turn_white else view_opp
+                for fr, to in manual_steps:
+                    if turn_white and fr == clicked_idx and own[fr] <= 0:
+                        break
+                if own[clicked_idx] <= 0:
+                    info_lines.append("No checker of current color on point.")
+                    continue
 
-        # draw
-        draw_board(screen, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, dice, ply)
-        draw_panel(screen, font, small, moves, selected, info_lines)
-        pygame.display.flip()
+                nm, no, nmo, noo, to, ok = apply_step_color(
+                    view_mine, view_opp, view_mine_off, view_opp_off, turn_white, clicked_idx, die
+                )
+                if not ok:
+                    info_lines.append("Invalid preview move.")
+                    continue
+                manual_steps.append((clicked_idx, to))
+                used_dice[active_idx] += 1
+                history.append((clicked_idx, to, active_idx))
+
 
     pygame.quit()
     return 0
