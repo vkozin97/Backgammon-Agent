@@ -124,20 +124,19 @@ def apply_step_color(mine, opp, mine_off, opp_off, white_turn, fr, die):
     mine_off, opp_off = int(mine_off), int(opp_off)
     src = mine if white_turn else opp
     dst = opp if white_turn else mine
-    off_target = 24 if white_turn else -1
-    direction = 1 if white_turn else -1
+    direction = -1 if white_turn else 1
     to = fr + direction * die
 
     if fr < 0 or fr > 23 or src[fr] <= 0:
         return mine, opp, mine_off, opp_off, -1, False
 
     src[fr] -= 1
-    if to >= 24 and white_turn:
+    if to < 0 and white_turn:
         mine_off += 1
-        return mine, opp, mine_off, opp_off, 24, True
-    if to < 0 and not white_turn:
-        opp_off += 1
         return mine, opp, mine_off, opp_off, -1, True
+    if to >= 24 and not white_turn:
+        opp_off += 1
+        return mine, opp, mine_off, opp_off, 24, True
     if to < 0 or to > 23:
         return mine, opp, mine_off, opp_off, -1, False
 
@@ -159,6 +158,23 @@ def current_active_die_idx(used):
         if not u:
             return i
     return -1
+
+
+def draw_undo_icon(surface, rect: pygame.Rect):
+    color = (235, 235, 235)
+    y = rect.centery
+    x0 = rect.x + 7
+    x1 = rect.right - 7
+    pygame.draw.line(surface, color, (x0 + 6, y), (x1, y), 3)
+    pygame.draw.polygon(surface, color, [(x0, y), (x0 + 8, y - 6), (x0 + 8, y + 6)])
+
+
+def draw_check_icon(surface, rect: pygame.Rect, enabled: bool):
+    color = (30, 30, 30) if enabled else (160, 160, 160)
+    p1 = (rect.x + 7, rect.centery)
+    p2 = (rect.x + 13, rect.bottom - 8)
+    p3 = (rect.right - 7, rect.y + 8)
+    pygame.draw.lines(surface, color, False, [p1, p2, p3], 4)
 
 
 def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply, turn_white,
@@ -224,11 +240,11 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     undo_rect = pygame.Rect(dx - 44, dy + 6, 30, 30)
     pygame.draw.rect(surface, (110, 110, 130), undo_rect, border_radius=6)
-    draw_text(surface, font, "←", undo_rect.x + 7, undo_rect.y - 2)
+    draw_undo_icon(surface, undo_rect)
 
     ok_rect = pygame.Rect(dx + len(dice_values) * (DICE_SIZE + DICE_GAP) + 8, dy + 6, 30, 30)
     pygame.draw.rect(surface, SUCCESS if can_submit else (80, 80, 80), ok_rect, border_radius=6)
-    draw_text(surface, font, "✓", ok_rect.x + 5, ok_rect.y - 2, (20, 20, 20) if can_submit else (140, 140, 140))
+    draw_check_icon(surface, ok_rect, can_submit)
 
     pygame.draw.line(surface, DIV, (BOARD_W, 0), (BOARD_W, H), 2)
     return point_rects, undo_rect, ok_rect
@@ -307,14 +323,14 @@ def main():
             if turn_white:
                 if 0 <= fr <= 23 and view_mine[fr] > 0:
                     view_mine[fr] -= 1
-                    if to >= 24:
+                    if to < 0:
                         view_mine_off += 1
                     else:
                         view_mine[to] += 1
             else:
                 if 0 <= fr <= 23 and view_opp[fr] > 0:
                     view_opp[fr] -= 1
-                    if to < 0:
+                    if to >= 24:
                         view_opp_off += 1
                     else:
                         view_opp[to] += 1
@@ -376,7 +392,7 @@ def main():
                 if clicked_idx is None:
                     continue
 
-                own = base_mine if turn_white else base_opp
+                own = view_mine if turn_white else view_opp
                 for fr, to in manual_steps:
                     if turn_white and fr == clicked_idx and own[fr] <= 0:
                         break
