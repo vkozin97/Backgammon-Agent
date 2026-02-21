@@ -56,10 +56,6 @@ bool can_bear_off_from(const State& s, uint8_t from) {
     for (int p = 6; p < 24; ++p) {
         if (s.points[p] > 0) return false;
     }
-
-    for (int higher = from + 1; higher <= 5; ++higher) {
-        if (s.points[higher] > 0) return false;
-    }
     return true;
 }
 
@@ -234,22 +230,7 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
 
             if (!all_in_home) continue;
 
-            // Exact bear off (die == distance to OFF) is always legal.
-            if (die == from + 1) {
-                steps.emplace_back(static_cast<uint8_t>(from), INTERNAL_OFF);
-                continue;
-            }
-
-            // Oversized die can bear off only the farthest checker from OFF
-            // (no checkers on higher points in home board).
-            bool has_higher_checker = false;
-            for (int higher = from + 1; higher <= 5; ++higher) {
-                if (st.points[higher] > 0) {
-                    has_higher_checker = true;
-                    break;
-                }
-            }
-            if (!has_higher_checker) {
+            if (die >= from + 1) {
                 steps.emplace_back(static_cast<uint8_t>(from), INTERNAL_OFF);
             }
         }
