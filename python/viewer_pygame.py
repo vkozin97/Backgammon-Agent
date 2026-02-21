@@ -362,6 +362,8 @@ def main():
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     start_turn()
     moves = refresh_moves()
+    dice_values, used_dice, manual_steps, history = [], [], [], []
+    start_turn()
 
     running = True
     while running:
