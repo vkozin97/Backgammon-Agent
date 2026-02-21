@@ -181,6 +181,12 @@ def matching_move_indices(moves, manual_steps, turn_white):
     return result
 
 
+def max_micro_steps_in_moves(moves, turn_white):
+    if len(moves) == 0:
+        return 0
+    return max(len(move_steps_from_mv(mv, turn_white=turn_white)) for mv in moves)
+
+
 def draw_undo_icon(surface, rect: pygame.Rect):
     color = (235, 235, 235)
     y = rect.centery
@@ -358,7 +364,8 @@ def main():
 
         active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice)
         selected_die_idx = active_idx
-        can_submit = len(manual_steps) > 0
+        required_steps = max_micro_steps_in_moves(moves, turn_white)
+        can_submit = len(moves) == 0 or len(manual_steps) == required_steps
 
         point_rects, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
@@ -391,6 +398,7 @@ def main():
                     manual_steps.pop()
                     used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
                     selected_die_idx = die_idx
+                    moves = refresh_moves()
                     info_lines.append(f"Undo {fr}->{to}")
                     continue
 
@@ -444,6 +452,7 @@ def main():
                 used_dice[active_idx] += 1
                 selected_die_idx = active_idx
                 history.append((prev_state, clicked_idx, to, active_idx))
+                moves = refresh_moves()
 
 
     pygame.quit()
