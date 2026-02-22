@@ -79,9 +79,9 @@ PYBIND11_MODULE(bg_env, m) {
             for (int i = 0; i < bg::OBS_EXTENDED_DIM; ++i) buf(i) = tmp[i];
             return arr;
         })
-        .def("legal_moves", [](bg::BackgammonEnv& self) {
+        .def("legal_moves", [](bg::BackgammonEnv& self, bool unique_states) {
             std::vector<bg::Move> moves;
-            self.legal_moves(moves);
+            self.legal_moves(moves, unique_states);
 
             py::array_t<uint8_t> arr({(py::ssize_t)moves.size(), (py::ssize_t)8});
             auto a = arr.mutable_unchecked<2>();
@@ -92,7 +92,7 @@ PYBIND11_MODULE(bg_env, m) {
                 }
             }
             return arr;
-        })
+        }, py::arg("unique_states") = false)
         .def("step_index", [](bg::BackgammonEnv& self, int idx) {
             std::vector<bg::Move> moves;
             self.legal_moves(moves);
