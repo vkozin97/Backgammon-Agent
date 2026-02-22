@@ -11,15 +11,50 @@ namespace bg {
 
 namespace {
 
+static constexpr uint8_t INTERNAL_BAR = 24;
+static constexpr uint8_t INTERNAL_OFF = 25;
+
+bool is_board_coord(uint8_t p) { return p >= 1 && p <= 24; }
+
+uint8_t board_to_idx(uint8_t p) { return static_cast<uint8_t>(24 - p); }
+
+uint8_t idx_to_board(uint8_t i) { return static_cast<uint8_t>(24 - i); }
+
+bool decode_from(uint8_t from_pub, uint8_t& from_idx_or_bar) {
+    if (from_pub == BAR) {
+        from_idx_or_bar = INTERNAL_BAR;
+        return true;
+    }
+    if (!is_board_coord(from_pub)) return false;
+    from_idx_or_bar = board_to_idx(from_pub);
+    return true;
+}
+
+bool decode_to(uint8_t to_pub, uint8_t& to_idx_or_off) {
+    if (to_pub == OFF) {
+        to_idx_or_off = INTERNAL_OFF;
+        return true;
+    }
+    if (!is_board_coord(to_pub)) return false;
+    to_idx_or_off = board_to_idx(to_pub);
+    return true;
+}
+
+uint8_t encode_from(uint8_t from_idx_or_bar) {
+    if (from_idx_or_bar == INTERNAL_BAR) return BAR;
+    return idx_to_board(from_idx_or_bar);
+}
+
+uint8_t encode_to(uint8_t to_idx_or_off) {
+    if (to_idx_or_off == INTERNAL_OFF) return OFF;
+    return idx_to_board(to_idx_or_off);
+}
+
 bool can_bear_off_from(const State& s, uint8_t from) {
     if (from >= 24) return false;
 
     for (int p = 6; p < 24; ++p) {
         if (s.points[p] > 0) return false;
-    }
-
-    for (int higher = from + 1; higher <= 5; ++higher) {
-        if (s.points[higher] > 0) return false;
     }
     return true;
 }
@@ -27,9 +62,9 @@ bool can_bear_off_from(const State& s, uint8_t from) {
 bool is_legal_single_step(const State& s, uint8_t from, uint8_t to) {
     if (from == 255 || to == 255) return false;
 
-    if (s.bar > 0 && from != BAR) return false;
+    if (s.bar > 0 && from != INTERNAL_BAR) return false;
 
-    if (from == BAR) {
+    if (from == INTERNAL_BAR) {
         if (s.bar == 0 || to >= 24) return false;
         return s.opp_points[to] < 2;
     }
@@ -42,7 +77,7 @@ bool is_legal_single_step(const State& s, uint8_t from, uint8_t to) {
         return true;
     }
 
-    if (to == OFF) {
+    if (to == INTERNAL_OFF) {
         return can_bear_off_from(s, from);
     }
 
@@ -52,7 +87,7 @@ bool is_legal_single_step(const State& s, uint8_t from, uint8_t to) {
 bool apply_single_checked(State& s, uint8_t from, uint8_t to) {
     if (!is_legal_single_step(s, from, to)) return false;
 
-    if (from == BAR) {
+    if (from == INTERNAL_BAR) {
         s.bar--;
     } else {
         s.points[from]--;
@@ -111,7 +146,7 @@ void BackgammonEnv::apply_single(uint8_t from, uint8_t to) {
     if (from < 24) {
         if (P[from] == 0) return;
         P[from]--;
-    } else if (from == BAR) {
+    } else if (from == INTERNAL_BAR) {
         if (s_.bar == 0) return;
         s_.bar--;
     } else {
@@ -120,9 +155,9 @@ void BackgammonEnv::apply_single(uint8_t from, uint8_t to) {
 
     if (to < 24) {
         P[to]++;
-    } else if (to == OFF) {
+    } else if (to == INTERNAL_OFF) {
         s_.off++;
-    } else if (to == BAR) {
+    } else if (to == INTERNAL_BAR) {
         s_.bar++;
     }
 }
@@ -170,7 +205,7 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
         if (st.bar > 0) {
             int to = 24 - die;
             if (to >= 0 && to < 24 && st.opp_points[to] < 2) {
-                steps.emplace_back(BAR, static_cast<uint8_t>(to));
+                steps.emplace_back(INTERNAL_BAR, static_cast<uint8_t>(to));
             }
             return;
         }
@@ -195,29 +230,14 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
 
             if (!all_in_home) continue;
 
-            // Exact bear off (die == distance to OFF) is always legal.
-            if (die == from + 1) {
-                steps.emplace_back(static_cast<uint8_t>(from), OFF);
-                continue;
-            }
-
-            // Oversized die can bear off only the farthest checker from OFF
-            // (no checkers on higher points in home board).
-            bool has_higher_checker = false;
-            for (int higher = from + 1; higher <= 5; ++higher) {
-                if (st.points[higher] > 0) {
-                    has_higher_checker = true;
-                    break;
-                }
-            }
-            if (!has_higher_checker) {
-                steps.emplace_back(static_cast<uint8_t>(from), OFF);
+            if (die >= from + 1) {
+                steps.emplace_back(static_cast<uint8_t>(from), INTERNAL_OFF);
             }
         }
     };
 
     auto apply_step_local = [](LocalState& st, uint8_t from, uint8_t to) {
-        if (from == BAR) {
+        if (from == INTERNAL_BAR) {
             if (st.bar == 0) return;
             st.bar--;
         } else if (from < 24) {
@@ -229,7 +249,7 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
 
         if (to < 24) {
             st.points[to]++;
-        } else if (to == OFF) {
+        } else if (to == INTERNAL_OFF) {
             st.off++;
         }
     };
@@ -305,8 +325,15 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
     for (const auto& [_, key] : unique_moves) {
         Move m;
         for (int k = 0; k < 4; ++k) {
-            m.from[k] = key[2 * k];
-            m.to[k] = key[2 * k + 1];
+            uint8_t fr = key[2 * k];
+            uint8_t to = key[2 * k + 1];
+            if (fr == 255 || to == 255) {
+                m.from[k] = 255;
+                m.to[k] = 255;
+            } else {
+                m.from[k] = encode_from(fr);
+                m.to[k] = encode_to(to);
+            }
         }
         out.push_back(m);
     }
@@ -333,7 +360,10 @@ float BackgammonEnv::step_apply(const Move& m, bool& done) {
 }
 
 bool BackgammonEnv::apply_micro_step(uint8_t from, uint8_t to) {
-    return apply_single_checked(s_, from, to);
+    uint8_t from_internal = 255;
+    uint8_t to_internal = 255;
+    if (!decode_from(from, from_internal) || !decode_to(to, to_internal)) return false;
+    return apply_single_checked(s_, from_internal, to_internal);
 }
 
 void BackgammonEnv::commit_turn() {
