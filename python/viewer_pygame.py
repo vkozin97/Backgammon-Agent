@@ -514,7 +514,10 @@ def main():
 
                 if has_bar_checker:
                     if clicked_bar:
-                        die_candidates = [active_idx]
+                        die_candidates = [active_idx] + [
+                            i for i in range(len(dice_values))
+                            if i != active_idx and used_dice[i] < required_dice[i]
+                        ]
                     else:
                         wanted_die = (24 - clicked_idx) if turn_white else (clicked_idx + 1)
                         die_candidates = [
@@ -545,7 +548,7 @@ def main():
                     to_disp = transform_point_for_display(env_to, turn_white)
                     manual_steps.append((from_disp, to_disp))
                     used_dice[used_idx] += 1
-                    selected_die_idx = active_idx if used_idx != active_idx and used_dice[active_idx] < required_dice[active_idx] else used_idx
+                    selected_die_idx = active_idx
                     history.append((prev_state, from_disp, to_disp, used_idx))
                     continue
 
@@ -569,6 +572,10 @@ def main():
                         off_distance = abs(25 - env_from)
                         if smallest_die < active_die and off_distance <= smallest_die:
                             candidate_die_indices = [smallest_idx, active_idx]
+                candidate_die_indices.extend(
+                    i for i in range(len(dice_values))
+                    if i not in candidate_die_indices and used_dice[i] < required_dice[i]
+                )
 
                 prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
                 used_idx = None
@@ -589,7 +596,7 @@ def main():
                 to_disp = transform_point_for_display(env_to, turn_white)
                 manual_steps.append((from_disp, to_disp))
                 used_dice[used_idx] += 1
-                selected_die_idx = active_idx if used_idx != active_idx and used_dice[active_idx] < required_dice[active_idx] else used_idx
+                selected_die_idx = active_idx
                 history.append((prev_state, from_disp, to_disp, used_idx))
 
 
