@@ -350,7 +350,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     draw_check_icon(surface, ok_rect, can_submit)
 
     pygame.draw.line(surface, DIV, (BOARD_W, 0), (BOARD_W, H), 2)
-    return point_rects, dice_rects, undo_rect, ok_rect
+    return point_rects, bar_rect, dice_rects, undo_rect, ok_rect
 
 
 def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white):
@@ -394,7 +394,7 @@ def main():
     env.reset()
 
     turn_white = True
-    info_lines = ["Started. Click point columns to move by active die."]
+    info_lines = ["Started. Click points (or bar) to move checkers."]
 
     def refresh_moves():
         mv = np.asarray(env.legal_moves(), dtype=np.uint8)
@@ -445,7 +445,7 @@ def main():
         required_steps = max_micro_steps_in_moves(moves, turn_white)
         can_submit = len(moves) == 0 or len(manual_steps) == required_steps
 
-        point_rects, dice_rects, undo_rect, ok_rect = draw_board(
+        point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit
         )
@@ -500,10 +500,50 @@ def main():
                         selected_die_idx = clicked_die
                     continue
 
+                has_bar_checker = white_bar > 0
+                clicked_bar = bar_rect.collidepoint(mx, my)
+                clicked_idx = next((i for i, rect in point_rects.items() if rect.collidepoint(mx, my)), None)
+                if clicked_idx is None and not clicked_bar:
+                    continue
+
                 if active_idx < 0:
                     continue
-                clicked_idx = next((i for i, rect in point_rects.items() if rect.collidepoint(mx, my)), None)
-                if clicked_idx is None:
+
+                if has_bar_checker:
+                    if clicked_bar:
+                        die_candidates = [active_idx]
+                    else:
+                        wanted_die = (24 - clicked_idx) if turn_white else (clicked_idx + 1)
+                        die_candidates = [
+                            i for i, val in enumerate(dice_values)
+                            if val == wanted_die and used_dice[i] < required_dice[i]
+                        ]
+                        if not die_candidates:
+                            info_lines.append(f"No available die for bar entry to point {wanted_die}.")
+                            continue
+
+                    prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    used_idx = None
+                    env_from, env_to = 30, -1
+                    for die_idx in die_candidates:
+                        attempt_to = int(dice_values[die_idx])
+                        ok, _ = env.apply_micro_step(int(env_from), attempt_to)
+                        if ok:
+                            used_idx = die_idx
+                            env_to = attempt_to
+                            break
+                        env.set_state_raw(prev_state)
+
+                    if used_idx is None:
+                        info_lines.append("Invalid bar entry.")
+                        continue
+
+                    from_disp = "BAR"
+                    to_disp = transform_point_for_display(env_to, turn_white)
+                    manual_steps.append((from_disp, to_disp))
+                    used_dice[used_idx] += 1
+                    selected_die_idx = active_idx if used_idx != active_idx and used_dice[active_idx] < required_dice[active_idx] else used_idx
+                    history.append((prev_state, from_disp, to_disp, used_idx))
                     continue
 
                 own = view_mine if turn_white else view_opp
