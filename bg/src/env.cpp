@@ -425,35 +425,6 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out, bool unique_states) co
         selected_indices.swap(minimal);
     }
 
-    auto first_micro_step_len = [](const Move& m) -> int {
-        const uint8_t from = m.from[0];
-        const uint8_t to = m.to[0];
-        if (from == 255 || to == 255) return -1;
-        if (from == INTERNAL_BAR && to < 24) {
-            return 24 - static_cast<int>(to);
-        }
-        if (from < 24 && to == INTERNAL_OFF) {
-            return static_cast<int>(from) + 1;
-        }
-        if (from < 24 && to < 24 && from > to) {
-            return static_cast<int>(from) - static_cast<int>(to);
-        }
-        return 0;
-    };
-
-    std::sort(selected_indices.begin(), selected_indices.end(),
-              [&](size_t lhs, size_t rhs) {
-                  const Move& a = candidates[lhs].move;
-                  const Move& b = candidates[rhs].move;
-                  const int len_a = first_micro_step_len(a);
-                  const int len_b = first_micro_step_len(b);
-                  if (len_a != len_b) return len_a > len_b;
-                  if (a.from != b.from) {
-                      return std::lexicographical_compare(a.from.begin(), a.from.end(), b.from.begin(), b.from.end());
-                  }
-                  return std::lexicographical_compare(a.to.begin(), a.to.end(), b.to.begin(), b.to.end());
-              });
-
     out.reserve(selected_indices.size());
     for (size_t idx : selected_indices) {
         Move m = candidates[idx].move;

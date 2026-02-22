@@ -253,6 +253,29 @@ def max_micro_steps_in_moves(moves, turn_white):
 
 
 
+
+
+def first_micro_step_len_ui(mv8):
+    mv = np.asarray(mv8).astype(int)
+    fr = int(mv[0])
+    to = int(mv[1])
+    if fr == 255 or to == 255:
+        return -1
+    if fr == 30 and 1 <= to <= 24:
+        return to
+    if 1 <= fr <= 24 and to == 25:
+        return fr
+    if 1 <= fr <= 24 and 1 <= to <= 24 and fr > to:
+        return fr - to
+    return 0
+
+
+def sorted_moves_for_panel(moves):
+    return sorted(
+        [np.asarray(mv).astype(np.uint8) for mv in moves],
+        key=lambda mv: (-first_micro_step_len_ui(mv), tuple(int(x) for x in mv.tolist())),
+    )
+
 def draw_undo_icon(surface, rect: pygame.Rect):
     color = (235, 235, 235)
     y = rect.centery
@@ -401,8 +424,9 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
 
     y += 30
     max_lines = (H - y - 150) // 18
-    for i in range(min(len(moves), max_lines)):
-        steps = move_steps_from_mv(moves[i], turn_white=turn_white)
+    panel_moves = sorted_moves_for_panel(moves)
+    for i in range(min(len(panel_moves), max_lines)):
+        steps = move_steps_from_mv(panel_moves[i], turn_white=turn_white)
         line = " | ".join(f"{a}->{b}" for a, b in steps) if steps else "(empty)"
         draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, (45, 45, 45))
         y += 18
