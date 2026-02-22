@@ -443,7 +443,8 @@ def main():
         active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice)
         selected_die_idx = active_idx
         required_steps = max_micro_steps_in_moves(moves, turn_white)
-        can_submit = len(moves) == 0 or len(manual_steps) == required_steps
+        all_dice_used = all(used >= req for used, req in zip(used_dice, required_dice))
+        can_submit = all_dice_used or len(moves) == 0 or len(manual_steps) == required_steps
 
         point_rects, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
