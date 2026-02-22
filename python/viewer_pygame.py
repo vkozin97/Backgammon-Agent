@@ -500,7 +500,7 @@ def main():
                         selected_die_idx = clicked_die
                     continue
 
-                has_bar_checker = white_bar > 0
+                has_bar_checker = mine_bar > 0
                 clicked_bar = bar_rect.collidepoint(mx, my)
                 clicked_idx = next((i for i, rect in point_rects.items() if rect.collidepoint(mx, my)), None)
                 if clicked_idx is None and not (has_bar_checker and clicked_bar):
