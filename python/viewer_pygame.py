@@ -17,8 +17,8 @@ def decode_raw(raw: np.ndarray):
 def transform_point_for_display(pt: int, turn_white: bool) -> int:
     if pt == 255:
         return 255
-    if 0 <= pt <= 23 and not turn_white:
-        return 23 - int(pt)
+    if 1 <= pt <= 24 and not turn_white:
+        return 25 - int(pt)
     return int(pt)
 
 
@@ -141,8 +141,9 @@ def draw_checker(surface, x, y, is_white: bool):
     pygame.draw.circle(surface, OUTLINE, (x, y), CHECKER_R, 2)
 
 
-def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False):
-    fill = (130, 130, 130) if used else (235, 235, 235)
+def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False, black_turn=False):
+    base_fill = (35, 35, 35) if black_turn else (235, 235, 235)
+    fill = (130, 130, 130) if used else base_fill
     pygame.draw.rect(surface, fill, rect, border_radius=8)
     pygame.draw.rect(surface, ACCENT if active else OUTLINE, rect, 3 if active else 2, border_radius=8)
     cx, cy = rect.center
@@ -156,7 +157,8 @@ def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False):
         6: [(-1, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (1, 1)],
     }
     for ox, oy in pips.get(int(value), []):
-        pygame.draw.circle(surface, OUTLINE, (cx + ox * off, cy + oy * off), max(3, rect.width // 11))
+        pip_color = WHITE if black_turn else OUTLINE
+        pygame.draw.circle(surface, pip_color, (cx + ox * off, cy + oy * off), max(3, rect.width // 11))
 
 
 def current_active_die_idx(used_counts, required_counts):
@@ -208,6 +210,30 @@ def max_micro_steps_in_moves(moves, turn_white):
     return max(len(move_steps_from_mv(mv, turn_white=turn_white)) for mv in moves)
 
 
+
+
+def move_sort_key_for_panel(mv, turn_white):
+    mv = np.asarray(mv).astype(int)
+    steps = []
+    for k in range(4):
+        fr = transform_point_for_display(mv[2 * k], turn_white)
+        to = transform_point_for_display(mv[2 * k + 1], turn_white)
+        if fr == 255 or to == 255:
+            continue
+        steps.append((fr, to))
+    ordered_steps = sorted(steps, key=lambda st: (abs(st[1] - st[0]), st), reverse=True)
+    mv_key = tuple(ordered_steps)
+    return mv_key, ordered_steps
+
+
+def sorted_moves_for_panel(moves, turn_white):
+    decorated = []
+    for mv in moves:
+        key, ordered_steps = move_sort_key_for_panel(mv, turn_white)
+        decorated.append((key, ordered_steps))
+    decorated.sort(key=lambda item: item[0], reverse=True)
+    return decorated
+
 def draw_undo_icon(surface, rect: pygame.Rect):
     color = (235, 235, 235)
     y = rect.centery
@@ -234,9 +260,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     pygame.draw.rect(surface, HEADER_BG, (0, 0, BOARD_W, HEADER_H))
     pygame.draw.line(surface, DIV, (0, HEADER_H), (BOARD_W, HEADER_H), 2)
 
-    turn_label = "WHITE" if turn_white else "BLACK"
-    draw_text(surface, font, f"Turn: {turn_label}    ply={ply}", 16, 10)
-    draw_text(surface, font, "Bar/OFF are shown on board", 16, 36)
+    draw_text(surface, font, f"turn={ply}", 16, 10)
 
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
@@ -260,12 +284,12 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
         tri_color = (TRI_B if col % 2 == 0 else TRI_A) if top else (TRI_A if col % 2 == 0 else TRI_B)
         if top:
             draw_triangle(surface, x, TOP + 8, POINT_H - 16, upward=False, color=tri_color)
-            img = font.render(str(idx), True, SUBTEXT)
+            img = font.render(str(24 - idx), True, SUBTEXT)
             surface.blit(img, (x - img.get_width() // 2, TOP - 28))
             rect = pygame.Rect(x - POINT_W // 2, TOP + 8, POINT_W, POINT_H - 16)
         else:
             draw_triangle(surface, x, MID_Y + 8, POINT_H - 16, upward=True, color=tri_color)
-            img = font.render(str(idx), True, SUBTEXT)
+            img = font.render(str(24 - idx), True, SUBTEXT)
             surface.blit(img, (x - img.get_width() // 2, BOTTOM + 6))
             rect = pygame.Rect(x - POINT_W // 2, MID_Y + 8, POINT_W, POINT_H - 16)
         point_rects[idx] = rect
@@ -299,7 +323,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
             y = anchor + (k * step if from_center_down else -k * step)
             piece = pygame.Rect(rect.x + 6, int(round(y)), rect.width - 12, piece_h)
             pygame.draw.rect(surface, WHITE if is_white else BLACK, piece, border_radius=2)
-            pygame.draw.rect(surface, OUTLINE, piece, 1, border_radius=2)
+            pygame.draw.rect(surface, OUTLINE, piece, 2, border_radius=2)
 
     draw_off_stack(off_bottom_rect, int(mine_off), is_white=True, from_center_down=True)
     draw_off_stack(off_top_rect, int(opp_off), is_white=False, from_center_down=False)
@@ -314,7 +338,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
         size = DICE_SIZE + (10 if i == active_die_idx else 0)
         rect = pygame.Rect(dx + i * (DICE_SIZE + DICE_GAP), dy + (DICE_SIZE - size) // 2, size, size)
         exhausted = used_dice[i] >= required_dice[i]
-        draw_die(surface, rect, val, active=(i == active_die_idx), used=exhausted)
+        draw_die(surface, rect, val, active=(i == active_die_idx), used=exhausted, black_turn=not turn_white)
         dice_rects.append(rect)
 
     undo_rect = pygame.Rect(dx - 44, dy + 6, 30, 30)
@@ -344,8 +368,11 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
 
     y += 30
     max_lines = (H - y - 150) // 18
-    for i in range(min(len(moves), max_lines)):
-        draw_text(surface, small_font, f"[{i:3d}] {move_to_str(moves[i], turn_white=turn_white)}", x, y, (210, 210, 210))
+    sorted_panel_moves = sorted_moves_for_panel(moves, turn_white)
+    for i in range(min(len(sorted_panel_moves), max_lines)):
+        steps = sorted_panel_moves[i][1]
+        line = " | ".join(f"{a}->{b}" for a, b in steps) if steps else "(empty)"
+        draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, (210, 210, 210))
         y += 18
 
     y = H - 120
@@ -449,7 +476,6 @@ def main():
                     manual_steps.pop()
                     used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
                     selected_die_idx = die_idx
-                    moves = refresh_moves()
                     info_lines.append(f"Undo {fr}->{to}")
                     continue
 
@@ -476,34 +502,52 @@ def main():
 
                 if active_idx < 0:
                     continue
-                die = dice_values[active_idx]
                 clicked_idx = next((i for i, rect in point_rects.items() if rect.collidepoint(mx, my)), None)
                 if clicked_idx is None:
                     continue
 
                 own = view_mine if turn_white else view_opp
-                for fr, to in manual_steps:
-                    if turn_white and fr == clicked_idx and own[fr] <= 0:
-                        break
                 if own[clicked_idx] <= 0:
                     info_lines.append("No checker of current color on point.")
                     continue
 
-                env_from = clicked_idx if turn_white else 23 - clicked_idx
-                env_to = env_from - die
-                env_to = env_to if env_to >= 0 else 25
+                env_from = (24 - clicked_idx) if turn_white else (clicked_idx + 1)
+                active_die = dice_values[active_idx]
+                projected_to = env_from + active_die
+                off_attempt = projected_to >= 25 or projected_to <= 0
+                env_to = 25 if off_attempt else projected_to
+
+                candidate_die_indices = [active_idx]
+                if off_attempt:
+                    available = [i for i in range(len(dice_values)) if used_dice[i] < required_dice[i]]
+                    if available:
+                        smallest_idx = min(available, key=lambda i: dice_values[i])
+                        smallest_die = dice_values[smallest_idx]
+                        off_distance = abs(25 - env_from)
+                        if smallest_die < active_die and off_distance <= smallest_die:
+                            candidate_die_indices = [smallest_idx, active_idx]
 
                 prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
-                ok, _ = env.apply_micro_step(int(env_from), int(env_to))
-                if not ok:
+                used_idx = None
+                for die_idx in candidate_die_indices:
+                    attempt_to = 25 if off_attempt else (env_from + dice_values[die_idx])
+                    ok, _ = env.apply_micro_step(int(env_from), int(attempt_to), int(dice_values[die_idx]))
+                    if ok:
+                        used_idx = die_idx
+                        env_to = attempt_to
+                        break
+                    env.set_state_raw(prev_state)
+
+                if used_idx is None:
                     info_lines.append("Invalid micro-step.")
                     continue
-                to = env_to if turn_white else (23 - env_to if env_to <= 23 else env_to)
-                manual_steps.append((clicked_idx, to))
-                used_dice[active_idx] += 1
-                selected_die_idx = active_idx
-                history.append((prev_state, clicked_idx, to, active_idx))
-                moves = refresh_moves()
+
+                from_disp = transform_point_for_display(env_from, turn_white)
+                to_disp = transform_point_for_display(env_to, turn_white)
+                manual_steps.append((from_disp, to_disp))
+                used_dice[used_idx] += 1
+                selected_die_idx = active_idx if used_idx != active_idx and used_dice[active_idx] < required_dice[active_idx] else used_idx
+                history.append((prev_state, from_disp, to_disp, used_idx))
 
 
     pygame.quit()

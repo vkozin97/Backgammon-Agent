@@ -53,15 +53,15 @@ PYBIND11_MODULE(bg_env, m) {
             for (int i = 0; i < 53; ++i) tmp[i] = a(i);
             self.set_state_raw(tmp);
         })
-        .def("apply_micro_step", [](bg::BackgammonEnv& self, uint8_t from, uint8_t to) {
-            bool valid = self.apply_micro_step(from, to);
+        .def("apply_micro_step", [](bg::BackgammonEnv& self, uint8_t from, uint8_t to, uint8_t die) {
+            bool valid = self.apply_micro_step(from, to, die);
             py::array_t<int16_t> arr({53});
             auto buf = arr.mutable_unchecked<1>();
             int16_t tmp[53];
             self.get_state_raw(tmp);
             for (int i = 0; i < 53; ++i) buf(i) = tmp[i];
             return py::make_tuple(valid, arr);
-        })
+        }, py::arg("from"), py::arg("to"), py::arg("die") = 0)
         .def("commit_turn", [](bg::BackgammonEnv& self) { self.commit_turn(); })
         .def("get_obs_compact", [](bg::BackgammonEnv& self) {
             py::array_t<float> arr({bg::OBS_COMPACT_DIM});
