@@ -52,25 +52,28 @@ PANEL_W = 420
 BOARD_W = W - PANEL_W
 FONT_NAME = None
 
-BOARD_BG = (40, 30, 20)
-FRAME = (90, 70, 50)
-TRI_A = (140, 85, 45)
-TRI_B = (80, 45, 25)
+APP_BG = (255, 255, 255)
+BOARD_BG = (242, 224, 194)
+FRAME = (169, 129, 91)
+TRI_A = (196, 132, 78)
+TRI_B = (148, 96, 60)
 WHITE = (245, 245, 245)
-BLACK = (25, 25, 25)
+BLACK = (35, 35, 35)
 OUTLINE = (10, 10, 10)
-TEXT = (235, 235, 235)
-SUBTEXT = (190, 190, 190)
-HEADER_BG = (18, 18, 18)
-DIV = (60, 60, 60)
-ACCENT = (255, 214, 102)
-SUCCESS = (90, 200, 120)
+WHITE_OUTLINE = (156, 121, 86)
+BROWN_DIE = (62, 40, 24)
+TEXT = (20, 20, 20)
+SUBTEXT = (60, 60, 60)
+HEADER_BG = (248, 238, 220)
+DIV = (128, 102, 76)
+ACCENT = (214, 143, 45)
+SUCCESS = (126, 191, 114)
 
 MARGIN = 18
-GAP = 20
+GAP = 0
 BAR_W = 52
 OFF_W = BAR_W
-OFF_GAP = 18
+OFF_GAP = 0
 HEADER_H = 90
 TOP = HEADER_H + 30
 BOTTOM = H - 40
@@ -80,7 +83,7 @@ POINT_W = (PLAY_W - 2 * MARGIN - BAR_W - GAP * 2) // 12
 POINT_H = (BOTTOM - TOP - GAP) // 2
 CHECKER_R = min(POINT_W // 2 - 2, 18)
 STACK_DY = CHECKER_R * 2 - 4
-TRI_MARGIN = 8
+TRI_MARGIN = 10
 DICE_SIZE = 42
 DICE_GAP = 12
 
@@ -106,7 +109,9 @@ def point_is_top(idx: int) -> bool:
 
 
 def point_base_y(idx: int) -> int:
-    return TOP + TRI_MARGIN + CHECKER_R if point_is_top(idx) else BOTTOM - TRI_MARGIN - CHECKER_R
+    if point_is_top(idx):
+        return TOP + TRI_MARGIN + CHECKER_R
+    return BOTTOM - 8 - CHECKER_R
 
 
 def stack_step(count: int) -> float:
@@ -137,12 +142,46 @@ def draw_triangle(surface, x_center, y_top, height, upward: bool, color):
 
 def draw_checker(surface, x, y, is_white: bool):
     fill = WHITE if is_white else BLACK
+    outline = WHITE_OUTLINE if is_white else OUTLINE
     pygame.draw.circle(surface, fill, (x, y), CHECKER_R)
-    pygame.draw.circle(surface, OUTLINE, (x, y), CHECKER_R, 2)
+    pygame.draw.circle(surface, outline, (x, y), CHECKER_R, 2)
 
+
+
+
+def checker_position_for_state(state, disp_point, is_white):
+    mine, opp, mine_bar, mine_off, opp_bar, opp_off, _ = decode_raw(state)
+    stack = mine if is_white else opp
+    if disp_point == "BAR":
+        count = int(mine_bar if is_white else opp_bar)
+        center_gap = 10
+        y0 = MID_Y - center_gap - CHECKER_R if is_white else MID_Y + center_gap + CHECKER_R
+        positions = stack_y_positions(y0, count, top_side=not is_white)
+        return (MARGIN + 6 * POINT_W + GAP + BAR_W // 2, positions[-1] if positions else y0)
+    if disp_point == "OFF":
+        off_x0 = PLAY_W + OFF_GAP
+        if is_white:
+            rect = pygame.Rect(off_x0, MID_Y + 3, OFF_W, BOTTOM - MID_Y - 3)
+            count = int(mine_off)
+            y = rect.top + 10 + max(0, count - 1) * 6
+        else:
+            rect = pygame.Rect(off_x0, TOP, OFF_W, MID_Y - TOP - 3)
+            count = int(opp_off)
+            y = rect.bottom - 10 - max(0, count - 1) * 6
+        return (rect.centerx, int(y))
+    idx = 24 - int(disp_point)
+    x = point_x(idx)
+    top = point_is_top(idx)
+    count = int(stack[idx])
+    ys = stack_y_positions(point_base_y(idx), count, top)
+    return (x, ys[-1] if ys else point_base_y(idx))
+
+
+def lerp(a, b, t):
+    return a + (b - a) * t
 
 def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False, black_turn=False):
-    base_fill = (35, 35, 35) if black_turn else (235, 235, 235)
+    base_fill = BROWN_DIE if black_turn else (235, 235, 235)
     fill = (130, 130, 130) if used else base_fill
     pygame.draw.rect(surface, fill, rect, border_radius=8)
     pygame.draw.rect(surface, ACCENT if active else OUTLINE, rect, 3 if active else 2, border_radius=8)
@@ -252,8 +291,8 @@ def draw_check_icon(surface, rect: pygame.Rect, enabled: bool):
 
 
 def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply, turn_white,
-               dice_values, used_dice, required_dice, active_die_idx, can_submit):
-    surface.fill((25, 25, 25))
+               dice_values, used_dice, required_dice, active_die_idx, can_submit, piece_anim=None, shake_anim=None):
+    surface.fill(APP_BG)
     pygame.draw.rect(surface, FRAME, (0, 0, BOARD_W, H))
     inner = pygame.Rect(8, HEADER_H, BOARD_W - 16, H - HEADER_H - 8)
     pygame.draw.rect(surface, BOARD_BG, inner)
@@ -264,17 +303,18 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
-    pygame.draw.rect(surface, (55, 40, 28), bar_rect)
-    pygame.draw.rect(surface, (25, 18, 12), bar_rect, 2)
-    pygame.draw.line(surface, (70, 55, 40), (MARGIN, MID_Y), (BOARD_W - MARGIN, MID_Y), 2)
+    bar_off_fill = (226, 200, 166)
+    bar_off_border = (148, 120, 88)
+    pygame.draw.rect(surface, bar_off_fill, bar_rect)
+    pygame.draw.rect(surface, bar_off_border, bar_rect, 2)
 
     off_x0 = PLAY_W + OFF_GAP
     off_top_rect = pygame.Rect(off_x0, TOP, OFF_W, MID_Y - TOP - 3)
     off_bottom_rect = pygame.Rect(off_x0, MID_Y + 3, OFF_W, BOTTOM - MID_Y - 3)
-    pygame.draw.rect(surface, (55, 40, 28), off_top_rect)
-    pygame.draw.rect(surface, (55, 40, 28), off_bottom_rect)
-    pygame.draw.rect(surface, (25, 18, 12), off_top_rect, 2)
-    pygame.draw.rect(surface, (25, 18, 12), off_bottom_rect, 2)
+    pygame.draw.rect(surface, bar_off_fill, off_top_rect)
+    pygame.draw.rect(surface, bar_off_fill, off_bottom_rect)
+    pygame.draw.rect(surface, bar_off_border, off_top_rect, 2)
+    pygame.draw.rect(surface, bar_off_border, off_bottom_rect, 2)
 
     point_rects = {}
     for idx in range(24):
@@ -314,7 +354,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     def draw_off_stack(rect: pygame.Rect, count: int, is_white: bool, from_center_down: bool):
         if count <= 0:
             return
-        piece_h = 6
+        piece_h = int(round(6 * 1.8))
         pad = 8
         anchor = rect.top + pad if from_center_down else rect.bottom - pad - piece_h
         avail = max(1, rect.height - 2 * pad - piece_h)
@@ -323,7 +363,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
             y = anchor + (k * step if from_center_down else -k * step)
             piece = pygame.Rect(rect.x + 6, int(round(y)), rect.width - 12, piece_h)
             pygame.draw.rect(surface, WHITE if is_white else BLACK, piece, border_radius=2)
-            pygame.draw.rect(surface, OUTLINE, piece, 2, border_radius=2)
+            pygame.draw.rect(surface, OUTLINE, piece, 1, border_radius=2)
 
     draw_off_stack(off_bottom_rect, int(mine_off), is_white=True, from_center_down=True)
     draw_off_stack(off_top_rect, int(opp_off), is_white=False, from_center_down=False)
@@ -349,6 +389,19 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     pygame.draw.rect(surface, SUCCESS if can_submit else (80, 80, 80), ok_rect, border_radius=6)
     draw_check_icon(surface, ok_rect, can_submit)
 
+    if piece_anim is not None:
+        t = min(1.0, max(0.0, piece_anim["t"]))
+        x = int(round(lerp(piece_anim["start"][0], piece_anim["end"][0], t)))
+        y = int(round(lerp(piece_anim["start"][1], piece_anim["end"][1], t)))
+        draw_checker(surface, x, y, is_white=piece_anim["is_white"])
+
+    if shake_anim is not None:
+        t = min(1.0, max(0.0, shake_anim["t"]))
+        amp = 8 * (1.0 - t)
+        x = int(round(shake_anim["pos"][0] + np.sin(t * np.pi * 4) * amp))
+        y = int(round(shake_anim["pos"][1]))
+        draw_checker(surface, x, y, is_white=shake_anim["is_white"])
+
     pygame.draw.line(surface, DIV, (BOARD_W, 0), (BOARD_W, H), 2)
     return point_rects, bar_rect, dice_rects, undo_rect, ok_rect
 
@@ -358,7 +411,7 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
     draw_text(surface, font, "Controls:", x, y)
     y += 28
     for line in ["LMB on point - use active die", "R - roll/reset turn", "N - reset env", "ESC - quit"]:
-        draw_text(surface, small_font, line, x, y, (200, 200, 200))
+        draw_text(surface, small_font, line, x, y, (40, 40, 40))
         y += 20
 
     y += 8
@@ -372,13 +425,13 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
     for i in range(min(len(sorted_panel_moves), max_lines)):
         steps = sorted_panel_moves[i][1]
         line = " | ".join(f"{a}->{b}" for a, b in steps) if steps else "(empty)"
-        draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, (210, 210, 210))
+        draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, (45, 45, 45))
         y += 18
 
     y = H - 120
     pygame.draw.line(surface, (60, 60, 60), (BOARD_W, y - 8), (W, y - 8), 1)
     for line in info_lines[-5:]:
-        draw_text(surface, small_font, line, x, y, (180, 180, 220))
+        draw_text(surface, small_font, line, x, y, (60, 60, 80))
         y += 18
 
 
@@ -422,6 +475,8 @@ def main():
     start_turn()
     moves = refresh_moves()
 
+    piece_anim = None
+    shake_anim = None
     running = True
     while running:
         clock.tick(FPS)
@@ -445,9 +500,23 @@ def main():
         required_steps = max_micro_steps_in_moves(moves, turn_white)
         can_submit = len(moves) == 0 or len(manual_steps) == required_steps
 
+        now = pygame.time.get_ticks() / 1000.0
+        if piece_anim is not None:
+            t = (now - piece_anim["start_time"]) / 0.2
+            if t >= 1.0:
+                piece_anim = None
+            else:
+                piece_anim["t"] = t
+        if shake_anim is not None:
+            t = (now - shake_anim["start_time"]) / 0.2
+            if t >= 1.0:
+                shake_anim = None
+            else:
+                shake_anim["t"] = t
+
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
-            ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit
+            ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit, piece_anim, shake_anim
         )
         draw_panel(screen, font, small, moves, info_lines, manual_steps, turn_white)
         pygame.display.flip()
@@ -526,6 +595,7 @@ def main():
                         ]
                         if not die_candidates:
                             info_lines.append(f"No available die for bar entry to point {wanted_die}.")
+                            shake_anim = {"pos": checker_position_for_state(raw, "BAR", turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                             continue
 
                     prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
@@ -542,10 +612,13 @@ def main():
 
                     if used_idx is None:
                         info_lines.append("Invalid bar entry.")
+                        shake_anim = {"pos": checker_position_for_state(prev_state, "BAR", turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                         continue
 
                     from_disp = "BAR"
                     to_disp = transform_point_for_display(env_to, turn_white)
+                    post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    piece_anim = {"start": checker_position_for_state(prev_state, from_disp, turn_white), "end": checker_position_for_state(post_state, to_disp, turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                     manual_steps.append((from_disp, to_disp))
                     used_dice[used_idx] += 1
                     selected_die_idx = active_idx
@@ -590,10 +663,13 @@ def main():
 
                 if used_idx is None:
                     info_lines.append("Invalid micro-step.")
+                    shake_anim = {"pos": checker_position_for_state(prev_state, transform_point_for_display(env_from, turn_white), turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                     continue
 
                 from_disp = transform_point_for_display(env_from, turn_white)
-                to_disp = transform_point_for_display(env_to, turn_white)
+                to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, turn_white)
+                post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                piece_anim = {"start": checker_position_for_state(prev_state, from_disp, turn_white), "end": checker_position_for_state(post_state, to_disp, turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                 manual_steps.append((from_disp, to_disp))
                 used_dice[used_idx] += 1
                 selected_die_idx = active_idx
