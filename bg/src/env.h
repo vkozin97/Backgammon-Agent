@@ -21,7 +21,7 @@ namespace bg {
 		size_t legal_moves(std::vector<Move>& out) const;
 
 		void swap_perspective();
-		bool apply_micro_step(uint8_t from, uint8_t to);
+		bool apply_micro_step(uint8_t from, uint8_t to, uint8_t die = 0);
 		void commit_turn();
 		void set_state_raw(const int16_t* in /*len=53*/);
 		// TODO: ïîëíîöåííûé step ñ ïðîâåðêîé âàëèäíîñòè.

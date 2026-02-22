@@ -50,16 +50,39 @@ uint8_t encode_to(uint8_t to_idx_or_off) {
     return idx_to_board(to_idx_or_off);
 }
 
-bool can_bear_off_from(const State& s, uint8_t from) {
-    if (from >= 24) return false;
-
+bool all_checkers_in_home_or_off(const State& s) {
     for (int p = 6; p < 24; ++p) {
         if (s.points[p] > 0) return false;
     }
     return true;
 }
 
-bool is_legal_single_step(const State& s, uint8_t from, uint8_t to) {
+bool has_checker_farther_from_off(const State& s, uint8_t from) {
+    for (int idx = 5; idx > static_cast<int>(from); --idx) {
+        if (s.points[idx] > 0) return true;
+    }
+    return false;
+}
+
+bool can_bear_off_from(const State& s, uint8_t from, uint8_t die) {
+    if (from >= 24) return false;
+    if (die == 0) return all_checkers_in_home_or_off(s);
+    if (die > 6) return false;
+    if (!all_checkers_in_home_or_off(s)) return false;
+
+    const uint8_t distance_to_off = static_cast<uint8_t>(from + 1);
+    if (die == distance_to_off) {
+        return true;
+    }
+
+    if (die > distance_to_off) {
+        return !has_checker_farther_from_off(s, from);
+    }
+
+    return false;
+}
+
+bool is_legal_single_step(const State& s, uint8_t from, uint8_t to, uint8_t die) {
     if (from == 255 || to == 255) return false;
 
     if (s.bar > 0 && from != INTERNAL_BAR) return false;
@@ -78,14 +101,14 @@ bool is_legal_single_step(const State& s, uint8_t from, uint8_t to) {
     }
 
     if (to == INTERNAL_OFF) {
-        return can_bear_off_from(s, from);
+        return can_bear_off_from(s, from, die);
     }
 
     return false;
 }
 
-bool apply_single_checked(State& s, uint8_t from, uint8_t to) {
-    if (!is_legal_single_step(s, from, to)) return false;
+bool apply_single_checked(State& s, uint8_t from, uint8_t to, uint8_t die) {
+    if (!is_legal_single_step(s, from, to, die)) return false;
 
     if (from == INTERNAL_BAR) {
         s.bar--;
@@ -230,7 +253,19 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
 
             if (!all_in_home) continue;
 
-            if (die >= from + 1) {
+            if (die == from + 1) {
+                steps.emplace_back(static_cast<uint8_t>(from), INTERNAL_OFF);
+                continue;
+            }
+
+            bool has_higher_checker = false;
+            for (int higher = from + 1; higher <= 5; ++higher) {
+                if (st.points[higher] > 0) {
+                    has_higher_checker = true;
+                    break;
+                }
+            }
+            if (die > from + 1 && !has_higher_checker) {
                 steps.emplace_back(static_cast<uint8_t>(from), INTERNAL_OFF);
             }
         }
@@ -346,7 +381,7 @@ float BackgammonEnv::step_apply(const Move& m, bool& done) {
 
     for (int k = 0; k < 4; ++k) {
         if (m.from[k] == 255 || m.to[k] == 255) continue;
-        if (!apply_micro_step(m.from[k], m.to[k])) break;
+        if (!apply_micro_step(m.from[k], m.to[k], 0)) break;
     }
 
     if (s_.off >= 15) {
@@ -359,11 +394,11 @@ float BackgammonEnv::step_apply(const Move& m, bool& done) {
     return 0.0f;
 }
 
-bool BackgammonEnv::apply_micro_step(uint8_t from, uint8_t to) {
+bool BackgammonEnv::apply_micro_step(uint8_t from, uint8_t to, uint8_t die) {
     uint8_t from_internal = 255;
     uint8_t to_internal = 255;
     if (!decode_from(from, from_internal) || !decode_to(to, to_internal)) return false;
-    return apply_single_checked(s_, from_internal, to_internal);
+    return apply_single_checked(s_, from_internal, to_internal, die);
 }
 
 void BackgammonEnv::commit_turn() {
