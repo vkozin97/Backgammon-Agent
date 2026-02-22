@@ -86,7 +86,7 @@ STACK_DY = CHECKER_R * 2 - 4
 TRI_MARGIN = 10
 DICE_SIZE = 42
 DICE_GAP = 12
-LEGAL_MOVES_UNIQUE = False
+LEGAL_MOVES_UNIQUE = True
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
