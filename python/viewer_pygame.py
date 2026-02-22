@@ -58,8 +58,10 @@ FRAME = (169, 129, 91)
 TRI_A = (196, 132, 78)
 TRI_B = (148, 96, 60)
 WHITE = (245, 245, 245)
-BLACK = (62, 40, 24)
+BLACK = (35, 35, 35)
 OUTLINE = (10, 10, 10)
+WHITE_OUTLINE = (156, 121, 86)
+BROWN_DIE = (62, 40, 24)
 TEXT = (20, 20, 20)
 SUBTEXT = (60, 60, 60)
 HEADER_BG = (248, 238, 220)
@@ -71,7 +73,7 @@ MARGIN = 18
 GAP = 0
 BAR_W = 52
 OFF_W = BAR_W
-OFF_GAP = 18
+OFF_GAP = 0
 HEADER_H = 90
 TOP = HEADER_H + 30
 BOTTOM = H - 40
@@ -140,8 +142,9 @@ def draw_triangle(surface, x_center, y_top, height, upward: bool, color):
 
 def draw_checker(surface, x, y, is_white: bool):
     fill = WHITE if is_white else BLACK
+    outline = WHITE_OUTLINE if is_white else OUTLINE
     pygame.draw.circle(surface, fill, (x, y), CHECKER_R)
-    pygame.draw.circle(surface, OUTLINE, (x, y), CHECKER_R, 2)
+    pygame.draw.circle(surface, outline, (x, y), CHECKER_R, 2)
 
 
 
@@ -178,7 +181,7 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 def draw_die(surface, rect: pygame.Rect, value: int, active=False, used=False, black_turn=False):
-    base_fill = (35, 35, 35) if black_turn else (235, 235, 235)
+    base_fill = BROWN_DIE if black_turn else (235, 235, 235)
     fill = (130, 130, 130) if used else base_fill
     pygame.draw.rect(surface, fill, rect, border_radius=8)
     pygame.draw.rect(surface, ACCENT if active else OUTLINE, rect, 3 if active else 2, border_radius=8)
@@ -300,17 +303,18 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
-    pygame.draw.rect(surface, (55, 40, 28), bar_rect)
-    pygame.draw.rect(surface, (25, 18, 12), bar_rect, 2)
-    pygame.draw.line(surface, (70, 55, 40), (MARGIN, MID_Y), (BOARD_W - MARGIN, MID_Y), 2)
+    bar_off_fill = (226, 200, 166)
+    bar_off_border = (148, 120, 88)
+    pygame.draw.rect(surface, bar_off_fill, bar_rect)
+    pygame.draw.rect(surface, bar_off_border, bar_rect, 2)
 
     off_x0 = PLAY_W + OFF_GAP
     off_top_rect = pygame.Rect(off_x0, TOP, OFF_W, MID_Y - TOP - 3)
     off_bottom_rect = pygame.Rect(off_x0, MID_Y + 3, OFF_W, BOTTOM - MID_Y - 3)
-    pygame.draw.rect(surface, (55, 40, 28), off_top_rect)
-    pygame.draw.rect(surface, (55, 40, 28), off_bottom_rect)
-    pygame.draw.rect(surface, (25, 18, 12), off_top_rect, 2)
-    pygame.draw.rect(surface, (25, 18, 12), off_bottom_rect, 2)
+    pygame.draw.rect(surface, bar_off_fill, off_top_rect)
+    pygame.draw.rect(surface, bar_off_fill, off_bottom_rect)
+    pygame.draw.rect(surface, bar_off_border, off_top_rect, 2)
+    pygame.draw.rect(surface, bar_off_border, off_bottom_rect, 2)
 
     point_rects = {}
     for idx in range(24):
@@ -591,7 +595,7 @@ def main():
                         ]
                         if not die_candidates:
                             info_lines.append(f"No available die for bar entry to point {wanted_die}.")
-                            shake_anim = {"pos": checker_position_for_state(raw, "BAR", True), "is_white": True, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                            shake_anim = {"pos": checker_position_for_state(raw, "BAR", turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                             continue
 
                     prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
@@ -608,13 +612,13 @@ def main():
 
                     if used_idx is None:
                         info_lines.append("Invalid bar entry.")
-                        shake_anim = {"pos": checker_position_for_state(prev_state, "BAR", True), "is_white": True, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                        shake_anim = {"pos": checker_position_for_state(prev_state, "BAR", turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                         continue
 
                     from_disp = "BAR"
                     to_disp = transform_point_for_display(env_to, turn_white)
                     post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
-                    piece_anim = {"start": checker_position_for_state(prev_state, from_disp, True), "end": checker_position_for_state(post_state, to_disp, True), "is_white": True, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                    piece_anim = {"start": checker_position_for_state(prev_state, from_disp, turn_white), "end": checker_position_for_state(post_state, to_disp, turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                     manual_steps.append((from_disp, to_disp))
                     used_dice[used_idx] += 1
                     selected_die_idx = active_idx
@@ -659,13 +663,13 @@ def main():
 
                 if used_idx is None:
                     info_lines.append("Invalid micro-step.")
-                    shake_anim = {"pos": checker_position_for_state(prev_state, transform_point_for_display(env_from, turn_white), True), "is_white": True, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                    shake_anim = {"pos": checker_position_for_state(prev_state, transform_point_for_display(env_from, turn_white), turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                     continue
 
                 from_disp = transform_point_for_display(env_from, turn_white)
                 to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, turn_white)
                 post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
-                piece_anim = {"start": checker_position_for_state(prev_state, from_disp, True), "end": checker_position_for_state(post_state, to_disp, True), "is_white": True, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                piece_anim = {"start": checker_position_for_state(prev_state, from_disp, turn_white), "end": checker_position_for_state(post_state, to_disp, turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                 manual_steps.append((from_disp, to_disp))
                 used_dice[used_idx] += 1
                 selected_die_idx = active_idx
