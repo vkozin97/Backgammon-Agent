@@ -509,7 +509,7 @@ def main():
                 if active_idx < 0:
                     continue
                 clicked_idx = next((i for i, rect in point_rects.items() if rect.collidepoint(mx, my)), None)
-                if clicked_idx is None:
+                if clicked_idx is None and not (has_bar_checker and clicked_bar):
                     continue
 
                 if has_bar_checker:
@@ -547,6 +547,7 @@ def main():
                     used_dice[used_idx] += 1
                     selected_die_idx = active_idx if used_idx != active_idx and used_dice[active_idx] < required_dice[active_idx] else used_idx
                     history.append((prev_state, from_disp, to_disp, used_idx))
+                    continue
 
                 own = view_mine if turn_white else view_opp
                 if own[clicked_idx] <= 0:
