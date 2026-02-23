@@ -59,6 +59,8 @@ class RandomAgent:
 
     def select(self, env) -> np.ndarray:
         moves = env.legal_moves()
+        if len(moves) == 0:
+            return pass_move()
         return moves[np.random.randint(len(moves))]
 
 
@@ -67,8 +69,15 @@ class BaselineAgent:
 
     def select(self, env) -> np.ndarray:
         moves = env.legal_moves()
+        if len(moves) == 0:
+            return pass_move()
         scores = moves[:, 1::2].sum(axis=1)
         return moves[int(np.argmax(scores))]
+
+
+def pass_move() -> np.ndarray:
+    # All 255 means "no micro-steps"; env will commit turn on step_move.
+    return np.full((8,), 255, dtype=np.uint8)
 
 
 class LeagueController:
@@ -85,6 +94,8 @@ class LeagueController:
 
     def _select_move_value(self, env, agent: ValueAgent) -> np.ndarray:
         moves = env.legal_moves()
+        if len(moves) == 0:
+            return pass_move()
         if len(moves) == 1:
             return moves[0]
         state = np.asarray(env.get_state_raw(), dtype=np.int16)
