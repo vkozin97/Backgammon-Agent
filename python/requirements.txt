@@ -1,0 +1,33 @@
+backcall @ file:///C:/miniconda3/conda-bld/backcall_1761744905541/work
+cloudpickle @ file:///C:/b/abs_fdydcrc9_2/croot/cloudpickle_1751309451995/work
+colorama @ file:///C:/b/abs_a9ozq0l032/croot/colorama_1672387194846/work
+comm @ file:///C:/b/abs_67a8058udb/croot/comm_1709322909844/work
+debugpy @ file:///C:/miniconda3/conda-bld/debugpy_1757067167766/work
+decorator @ file:///C:/miniconda3/conda-bld/decorator_1757341254627/work
+importlib_metadata @ file:///C:/b/abs_9d0lp1ysmt/croot/importlib_metadata-suite_1732633510972/work
+ipykernel @ file:///C:/miniconda3/conda-bld/ipykernel_1757583382737/work
+ipython @ file:///C:/Windows/TEMP/abs_45b5zb1l7q/croots/recipe/ipython_1659529855872/work
+jedi @ file:///C:/b/abs_3a2kbnlclc/croot/jedi_1733987412687/work
+jupyter_client @ file:///C:/b/abs_149bw133if/croot/jupyter_client_1737570986926/work
+jupyter_core @ file:///C:/b/abs_7c6fipznw3/croot/jupyter_core_1751991383524/work
+matplotlib-inline @ file:///C:/miniconda3/conda-bld/matplotlib-inline_1758520260695/work
+nest-asyncio @ file:///C:/b/abs_65d6lblmoi/croot/nest-asyncio_1708532721305/work
+numpy==2.0.2
+packaging @ file:///C:/miniconda3/conda-bld/packaging_1761049155343/work
+parso @ file:///C:/b/abs_834b4mj92b/croot/parso_1733963322289/work
+pickleshare @ file:///tmp/build/80754af9/pickleshare_1606932040724/work
+platformdirs @ file:///C:/b/abs_ddh15014or/croot/platformdirs_1744273060660/work
+prompt_toolkit @ file:///C:/miniconda3/conda-bld/prompt-toolkit_1761745015095/work
+psutil @ file:///C:/miniconda3/conda-bld/psutil_1761896537423/work
+pybind11==3.0.2
+pygame==2.6.1
+Pygments @ file:///C:/b/abs_e4bg5vh5j_/croot/pygments_1744667628203/work
+python-dateutil @ file:///C:/b/abs_3au_koqnbs/croot/python-dateutil_1716495777160/work
+pywin32 @ file:///C:/b/abs_6c9w_vp9zi/croot/pywin32_1754670534373/work
+pyzmq @ file:///C:/miniconda3/conda-bld/pyzmq_1758103950546/work
+six @ file:///C:/b/abs_149wuyuo1o/croot/six_1744271521515/work
+spyder-kernels @ file:///C:/ci/spyder-kernels_1647011408404/work
+tornado @ file:///C:/b/abs_7dzpc171lf/croot/tornado_1748956950306/work
+traitlets @ file:///C:/b/abs_bfsnoxl4pq/croot/traitlets_1718227069245/work
+wcwidth @ file:///C:/b/abs_0c8p4c33bp/croot/wcwidth_1750352902378/work
+zipp @ file:///C:/b/abs_2fcpcg89my/croot/zipp_1732630746332/work
