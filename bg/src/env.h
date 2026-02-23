@@ -18,7 +18,7 @@ namespace bg {
 
 		// TODO: ïîëíîöåííàÿ ãåíåðàöèÿ õîäîâ.
 		// Ñåé÷àñ îñòàâëåí "çàãëóøå÷íûé" ãåíåðàòîð, ÷òîáû ìîæíî áûëî òåñòèðîâàòü ïàéïëàéí UI.
-		size_t legal_moves(std::vector<Move>& out) const;
+		size_t legal_moves(std::vector<Move>& out, bool unique_states = false) const;
 
 		void swap_perspective();
 		bool apply_micro_step(uint8_t from, uint8_t to, uint8_t die = 0);

@@ -86,6 +86,7 @@ STACK_DY = CHECKER_R * 2 - 4
 TRI_MARGIN = 10
 DICE_SIZE = 42
 DICE_GAP = 12
+LEGAL_MOVES_UNIQUE = True
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -251,27 +252,27 @@ def max_micro_steps_in_moves(moves, turn_white):
 
 
 
-def move_sort_key_for_panel(mv, turn_white):
-    mv = np.asarray(mv).astype(int)
-    steps = []
-    for k in range(4):
-        fr = transform_point_for_display(mv[2 * k], turn_white)
-        to = transform_point_for_display(mv[2 * k + 1], turn_white)
-        if fr == 255 or to == 255:
-            continue
-        steps.append((fr, to))
-    ordered_steps = sorted(steps, key=lambda st: (abs(st[1] - st[0]), st), reverse=True)
-    mv_key = tuple(ordered_steps)
-    return mv_key, ordered_steps
+
+
+
+def first_micro_step_from_env(mv8, turn_white):
+    mv = np.asarray(mv8).astype(int)
+    fr = int(mv[0])
+    to = int(mv[1])
+    if fr == 255 or to == 255:
+        return -1
+
+    fr_display = transform_point_for_display(fr, turn_white)
+    if 1 <= fr_display <= 24 and not turn_white:
+        return 25 - fr_display
+    return fr_display
 
 
 def sorted_moves_for_panel(moves, turn_white):
-    decorated = []
-    for mv in moves:
-        key, ordered_steps = move_sort_key_for_panel(mv, turn_white)
-        decorated.append((key, ordered_steps))
-    decorated.sort(key=lambda item: item[0], reverse=True)
-    return decorated
+    return sorted(
+        [np.asarray(mv).astype(np.uint8) for mv in moves],
+        key=lambda mv: (-first_micro_step_from_env(mv, turn_white), tuple(int(x) for x in mv.tolist())),
+    )
 
 def draw_undo_icon(surface, rect: pygame.Rect):
     color = (235, 235, 235)
@@ -421,9 +422,9 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
 
     y += 30
     max_lines = (H - y - 150) // 18
-    sorted_panel_moves = sorted_moves_for_panel(moves, turn_white)
-    for i in range(min(len(sorted_panel_moves), max_lines)):
-        steps = sorted_panel_moves[i][1]
+    panel_moves = sorted_moves_for_panel(moves, turn_white)
+    for i in range(min(len(panel_moves), max_lines)):
+        steps = move_steps_from_mv(panel_moves[i], turn_white=turn_white)
         line = " | ".join(f"{a}->{b}" for a, b in steps) if steps else "(empty)"
         draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, (45, 45, 45))
         y += 18
@@ -450,7 +451,7 @@ def main():
     info_lines = ["Started. Click points (or bar) to move checkers."]
 
     def refresh_moves():
-        mv = np.asarray(env.legal_moves(), dtype=np.uint8)
+        mv = np.asarray(env.legal_moves(LEGAL_MOVES_UNIQUE), dtype=np.uint8)
         if mv.ndim == 1:
             mv = mv.reshape(0, 8)
         return mv

@@ -4,7 +4,6 @@
 #include <array>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <vector>
 
 namespace bg {
@@ -198,7 +197,7 @@ void BackgammonEnv::swap_perspective() {
     std::swap(s_.off, s_.opp_off);
 }
 
-size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
+size_t BackgammonEnv::legal_moves(std::vector<Move>& out, bool unique_states) const {
     out.clear();
 
     struct LocalState {
@@ -206,18 +205,38 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
         std::array<uint8_t, 24> opp_points{};
         uint8_t bar{0};
         uint8_t off{0};
+        uint8_t opp_bar{0};
+        uint8_t opp_off{0};
     };
 
     struct FinalStateKey {
         std::array<uint8_t, 24> points{};
+        std::array<uint8_t, 24> opp_points{};
         uint8_t bar{0};
         uint8_t off{0};
+        uint8_t opp_bar{0};
+        uint8_t opp_off{0};
 
         bool operator<(const FinalStateKey& other) const {
             if (points != other.points) return points < other.points;
+            if (opp_points != other.opp_points) return opp_points < other.opp_points;
             if (bar != other.bar) return bar < other.bar;
-            return off < other.off;
+            if (off != other.off) return off < other.off;
+            if (opp_bar != other.opp_bar) return opp_bar < other.opp_bar;
+            return opp_off < other.opp_off;
         }
+
+        bool operator==(const FinalStateKey& other) const {
+            return points == other.points && opp_points == other.opp_points &&
+                   bar == other.bar && off == other.off &&
+                   opp_bar == other.opp_bar && opp_off == other.opp_off;
+        }
+    };
+
+    struct CandidateMove {
+        Move move{};
+        FinalStateKey state{};
+        uint8_t used_dice{0};
     };
 
     auto legal_single_steps = [](const LocalState& st, int die,
@@ -283,6 +302,10 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
         }
 
         if (to < 24) {
+            if (st.opp_points[to] == 1) {
+                st.opp_points[to] = 0;
+                st.opp_bar++;
+            }
             st.points[to]++;
         } else if (to == INTERNAL_OFF) {
             st.off++;
@@ -297,32 +320,27 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
         dice_orders.push_back({dice_.b, dice_.a});
     }
 
-    std::map<FinalStateKey, std::array<uint8_t, 8>> unique_moves;
-    size_t max_used_dice = 0;
+    std::vector<CandidateMove> candidates;
+    candidates.reserve(128);
+    uint8_t max_used_dice = 0;
 
-    std::function<void(const std::vector<int>&, size_t, LocalState&, Move&, size_t)> dfs;
+    std::function<void(const std::vector<int>&, size_t, LocalState&, Move&, uint8_t)> dfs;
     dfs = [&](const std::vector<int>& dice_seq, size_t idx, LocalState& cur_state,
-              Move& cur_move, size_t used_dice) {
+              Move& cur_move, uint8_t used_dice) {
         auto record_move = [&]() {
             if (used_dice == 0) return;
+            max_used_dice = std::max(max_used_dice, used_dice);
 
-            if (used_dice > max_used_dice) {
-                max_used_dice = used_dice;
-                unique_moves.clear();
-            }
-            if (used_dice == max_used_dice) {
-                std::array<uint8_t, 8> move_key{};
-                for (int k = 0; k < 4; ++k) {
-                    move_key[2 * k] = cur_move.from[k];
-                    move_key[2 * k + 1] = cur_move.to[k];
-                }
-
-                FinalStateKey state_key{cur_state.points, cur_state.bar, cur_state.off};
-                auto it = unique_moves.find(state_key);
-                if (it == unique_moves.end() || move_key < it->second) {
-                    unique_moves[state_key] = move_key;
-                }
-            }
+            CandidateMove candidate;
+            candidate.move = cur_move;
+            candidate.state.points = cur_state.points;
+            candidate.state.opp_points = cur_state.opp_points;
+            candidate.state.bar = cur_state.bar;
+            candidate.state.off = cur_state.off;
+            candidate.state.opp_bar = cur_state.opp_bar;
+            candidate.state.opp_off = cur_state.opp_off;
+            candidate.used_dice = used_dice;
+            candidates.push_back(candidate);
         };
 
         if (idx >= dice_seq.size()) {
@@ -351,23 +369,69 @@ size_t BackgammonEnv::legal_moves(std::vector<Move>& out) const {
     };
 
     for (const auto& order : dice_orders) {
-        LocalState root_state{s_.points, s_.opp_points, s_.bar, s_.off};
+        LocalState root_state{s_.points, s_.opp_points, s_.bar, s_.off, s_.opp_bar, s_.opp_off};
         Move root_move;
         dfs(order, 0, root_state, root_move, 0);
     }
 
-    out.reserve(unique_moves.size());
-    for (const auto& [_, key] : unique_moves) {
-        Move m;
+    if (candidates.empty() || max_used_dice == 0) {
+        return 0;
+    }
+
+    // Keep only moves that use the maximum possible number of dice.
+    std::vector<size_t> selected_indices;
+    selected_indices.reserve(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        if (candidates[i].used_dice == max_used_dice) {
+            selected_indices.push_back(i);
+        }
+    }
+
+    // Drop exact duplicate macro-moves (can appear from different dice orders).
+    std::sort(selected_indices.begin(), selected_indices.end(),
+              [&](size_t lhs, size_t rhs) {
+                  const Move& a = candidates[lhs].move;
+                  const Move& b = candidates[rhs].move;
+                  return std::lexicographical_compare(a.from.begin(), a.from.end(), b.from.begin(), b.from.end()) ||
+                         (a.from == b.from &&
+                          std::lexicographical_compare(a.to.begin(), a.to.end(), b.to.begin(), b.to.end()));
+              });
+    selected_indices.erase(std::unique(selected_indices.begin(), selected_indices.end(),
+                                       [&](size_t lhs, size_t rhs) {
+                                           const Move& a = candidates[lhs].move;
+                                           const Move& b = candidates[rhs].move;
+                                           return a.from == b.from && a.to == b.to;
+                                       }),
+                           selected_indices.end());
+
+    if (unique_states) {
+        // Keep the first move per unique resulting board state.
+        std::vector<size_t> by_state = selected_indices;
+        std::sort(by_state.begin(), by_state.end(),
+                  [&](size_t lhs, size_t rhs) {
+                      const auto& a = candidates[lhs].state;
+                      const auto& b = candidates[rhs].state;
+                      if (a == b) return lhs < rhs;
+                      return a < b;
+                  });
+
+        std::vector<size_t> minimal;
+        minimal.reserve(by_state.size());
+        for (size_t i = 0; i < by_state.size(); ++i) {
+            if (i == 0 || !(candidates[by_state[i]].state == candidates[by_state[i - 1]].state)) {
+                minimal.push_back(by_state[i]);
+            }
+        }
+        selected_indices.swap(minimal);
+    }
+
+    out.reserve(selected_indices.size());
+    for (size_t idx : selected_indices) {
+        Move m = candidates[idx].move;
         for (int k = 0; k < 4; ++k) {
-            uint8_t fr = key[2 * k];
-            uint8_t to = key[2 * k + 1];
-            if (fr == 255 || to == 255) {
-                m.from[k] = 255;
-                m.to[k] = 255;
-            } else {
-                m.from[k] = encode_from(fr);
-                m.to[k] = encode_to(to);
+            if (m.from[k] != 255 && m.to[k] != 255) {
+                m.from[k] = encode_from(m.from[k]);
+                m.to[k] = encode_to(m.to[k]);
             }
         }
         out.push_back(m);
