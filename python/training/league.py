@@ -52,6 +52,8 @@ class GameResult:
     steps: list[dict]
     winner: str
     turns: int
+    player_1_id: str
+    player_2_id: str
 
 
 class RandomAgent:
@@ -135,7 +137,14 @@ class LeagueController:
             if done:
                 winner = actor.agent_id if reward > 0 else opp.agent_id
             turn += 1
-        return GameResult(game_id=game_id, steps=history, winner=winner, turns=turn)
+        return GameResult(
+            game_id=game_id,
+            steps=history,
+            winner=winner,
+            turns=turn,
+            player_1_id=p1.agent_id,
+            player_2_id=p2.agent_id,
+        )
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()

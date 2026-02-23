@@ -12,6 +12,15 @@ from .league import LeagueController
 from .replay import ReplayBuffer
 
 
+def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
+    pair = []
+    for g in game_results:
+        participants = {g.player_1_id, g.player_2_id}
+        if {agent_id, opponent_id} == participants:
+            pair.append(g)
+    return pair
+
+
 def save_checkpoint(cfg: ExperimentConfig, agents, replay: ReplayBuffer, epoch: int, metrics: dict) -> None:
     d = Path(cfg.checkpoint_dir) / f"epoch_{epoch:04d}"
     d.mkdir(parents=True, exist_ok=True)
@@ -89,7 +98,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             for opp in opponents:
                 if opp == a.agent_id:
                     continue
-                pair = [g for g in game_results if (g.game_id.find(a.agent_id) >= 0 and g.game_id.find(opp) >= 0)]
+                pair = _games_for_pair(game_results, a.agent_id, opp)
                 if not pair:
                     wr = 0.0
                 else:
