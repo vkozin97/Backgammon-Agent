@@ -81,9 +81,22 @@ class _GameSpec:
 class RandomAgent:
     agent_id = "random"
 
+    def select(self, env) -> np.ndarray:
+        moves = env.legal_moves()
+        if len(moves) == 0:
+            return pass_move()
+        return moves[np.random.randint(len(moves))]
+
 
 class BaselineAgent:
     agent_id = "baseline"
+
+    def select(self, env) -> np.ndarray:
+        moves = env.legal_moves()
+        if len(moves) == 0:
+            return pass_move()
+        scores = moves[:, 1::2].sum(axis=1)
+        return moves[int(np.argmax(scores))]
 
 
 def pass_move() -> np.ndarray:
@@ -143,19 +156,29 @@ class LeagueController:
         # Vectorized ensemble forward: one CUDA call for all models in group.
         if functional_call is not None and stack_module_state is not None and vmap is not None:
             models = [ag.model for ag in unique_agents]
-            base_model = copy.deepcopy(models[0]).to(device)
-            base_model.eval()
-            params, buffers = stack_module_state(models)
 
-            def _fmodel(p, b, x):
-                return functional_call(base_model, (p, b), (x,))
+            # stack_module_state требует одинаковый train/eval режим у всех моделей.
+            prev_modes = [m.training for m in models]
+            try:
+                for m in models:
+                    m.eval()
 
-            logits_all = vmap(_fmodel, in_dims=(0, 0, None))(params, buffers, x_t).squeeze(-1)
-            probs_all = torch.sigmoid(logits_all)
-            model_idx_t = torch.as_tensor(model_idx, dtype=torch.long, device=device)
-            sample_idx_t = torch.arange(x_t.shape[0], dtype=torch.long, device=device)
-            probs = probs_all[model_idx_t, sample_idx_t]
-            return probs.detach().cpu().numpy()
+                base_model = copy.deepcopy(models[0]).to(device)
+                base_model.eval()
+                params, buffers = stack_module_state(models)
+
+                def _fmodel(p, b, x):
+                    return functional_call(base_model, (p, b), (x,))
+
+                logits_all = vmap(_fmodel, in_dims=(0, 0, None))(params, buffers, x_t).squeeze(-1)
+                probs_all = torch.sigmoid(logits_all)
+                model_idx_t = torch.as_tensor(model_idx, dtype=torch.long, device=device)
+                sample_idx_t = torch.arange(x_t.shape[0], dtype=torch.long, device=device)
+                probs = probs_all[model_idx_t, sample_idx_t]
+                return probs.detach().cpu().numpy()
+            finally:
+                for m, was_training in zip(models, prev_modes):
+                    m.train(was_training)
 
         # Conservative fallback when torch.func is unavailable.
         out = np.empty((len(agents_for_samples),), dtype=np.float32)
