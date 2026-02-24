@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 import time
+
 import numpy as np
 import torch
 
 from .agents import ValueAgent
+
+try:
+    from torch.func import functional_call, stack_module_state, vmap
+except Exception:  # pragma: no cover
+    functional_call = None
+    stack_module_state = None
+    vmap = None
 
 try:
     import bg_env
@@ -104,11 +113,64 @@ class LeagueController:
             return pass_move()
         return moves[np.random.randint(len(moves))]
 
-    def _select_moves_value_batched(self, states: np.ndarray, legal_moves_list: list[np.ndarray], agent: ValueAgent) -> np.ndarray:
+    def _predict_probs_single_cuda_call(self, agents_for_samples: list[ValueAgent], obs_np: np.ndarray) -> np.ndarray:
+        """Predict probabilities for mixed-agent samples with one CUDA call per architecture group."""
+        if len(obs_np) == 0:
+            return np.zeros((0,), dtype=np.float32)
+
+        first_agent = agents_for_samples[0]
+        device = first_agent.device
+        for ag in agents_for_samples:
+            if ag.device != device:
+                raise RuntimeError("Mixed devices in one architecture group are not supported")
+
+        unique_agents: list[ValueAgent] = []
+        agent_to_idx: dict[str, int] = {}
+        model_idx = np.empty((len(agents_for_samples),), dtype=np.int64)
+        for i, ag in enumerate(agents_for_samples):
+            if ag.agent_id not in agent_to_idx:
+                agent_to_idx[ag.agent_id] = len(unique_agents)
+                unique_agents.append(ag)
+            model_idx[i] = agent_to_idx[ag.agent_id]
+
+        x_t = torch.as_tensor(obs_np.astype(np.float32), dtype=torch.float32, device=device)
+
+        # Fast path: one model in group -> ordinary single forward.
+        if len(unique_agents) == 1:
+            probs = unique_agents[0].predict_proba_tensor(x_t).reshape(-1)
+            return probs.detach().cpu().numpy()
+
+        # Vectorized ensemble forward: one CUDA call for all models in group.
+        if functional_call is not None and stack_module_state is not None and vmap is not None:
+            models = [ag.model for ag in unique_agents]
+            base_model = copy.deepcopy(models[0]).to(device)
+            base_model.eval()
+            params, buffers = stack_module_state(models)
+
+            def _fmodel(p, b, x):
+                return functional_call(base_model, (p, b), (x,))
+
+            logits_all = vmap(_fmodel, in_dims=(0, 0, None))(params, buffers, x_t).squeeze(-1)
+            probs_all = torch.sigmoid(logits_all)
+            model_idx_t = torch.as_tensor(model_idx, dtype=torch.long, device=device)
+            sample_idx_t = torch.arange(x_t.shape[0], dtype=torch.long, device=device)
+            probs = probs_all[model_idx_t, sample_idx_t]
+            return probs.detach().cpu().numpy()
+
+        # Conservative fallback when torch.func is unavailable.
+        out = np.empty((len(agents_for_samples),), dtype=np.float32)
+        for ag_id, m_idx in agent_to_idx.items():
+            sel = np.where(model_idx == m_idx)[0]
+            p = unique_agents[m_idx].predict_proba_tensor(x_t[torch.as_tensor(sel, dtype=torch.long, device=device)]).reshape(-1)
+            out[sel] = p.detach().cpu().numpy()
+        return out
+
+    def _select_group_actions_single_call(self, states: np.ndarray, legal_moves_list: list[np.ndarray], actors: list[ValueAgent]) -> np.ndarray:
         actions = np.full((len(legal_moves_list), 8), 255, dtype=np.uint8)
         candidate_obs: list[np.ndarray] = []
         candidate_done: list[bool] = []
         candidate_owner: list[int] = []
+        candidate_actor: list[ValueAgent] = []
 
         sim = bg_env.Env(int(self.seed)) if bg_env is not None else _FallbackEnv(int(self.seed))
         for i, moves in enumerate(legal_moves_list):
@@ -124,10 +186,10 @@ class LeagueController:
                 candidate_obs.append(self.state_vector(sim))
                 candidate_done.append(done)
                 candidate_owner.append(i)
+                candidate_actor.append(actors[i])
 
         if candidate_obs:
-            obs_t = torch.as_tensor(np.stack(candidate_obs).astype(np.float32), dtype=torch.float32, device=agent.device)
-            probs = agent.predict_proba_tensor(obs_t).reshape(-1).detach().cpu().numpy()
+            probs = self._predict_probs_single_cuda_call(candidate_actor, np.stack(candidate_obs).astype(np.float32))
             vals = np.where(np.asarray(candidate_done, dtype=bool), 1.0, probs)
 
             grouped_vals: dict[int, list[float]] = {}
@@ -179,20 +241,11 @@ class LeagueController:
                 if not idxs:
                     continue
 
-                # Формируем максимально крупный батч по группе архитектуры.
-                by_agent: dict[str, list[int]] = {}
-                agents: dict[str, ValueAgent] = {}
-                for i in idxs:
-                    actor = game_specs[i].p1 if turn % 2 == 0 else game_specs[i].p2
-                    by_agent.setdefault(actor.agent_id, []).append(i)
-                    agents[actor.agent_id] = actor
-
-                for agent_id, game_ids in by_agent.items():
-                    agent = agents[agent_id]
-                    local_states = states[game_ids]
-                    local_moves = [legal_moves[i] for i in game_ids]
-                    local_actions = self._select_moves_value_batched(local_states, local_moves, agent)
-                    actions[np.asarray(game_ids, dtype=np.int64)] = local_actions
+                local_states = states[idxs]
+                local_moves = [legal_moves[i] for i in idxs]
+                local_actors = [(game_specs[i].p1 if turn % 2 == 0 else game_specs[i].p2) for i in idxs]
+                local_actions = self._select_group_actions_single_call(local_states, local_moves, local_actors)
+                actions[np.asarray(idxs, dtype=np.int64)] = local_actions
 
             rewards, done_step = env.step_apply(actions)
             rewards = np.asarray(rewards, dtype=np.float32)
@@ -241,7 +294,11 @@ class LeagueController:
             opp = players[(turn + 1) % 2]
             state = self.state_vector(env)
             if isinstance(actor, ValueAgent):
-                move = self._select_moves_value_batched(np.asarray([env.get_state_raw()], dtype=np.int16), [env.legal_moves()], actor)[0]
+                move = self._select_group_actions_single_call(
+                    np.asarray([env.get_state_raw()], dtype=np.int16),
+                    [env.legal_moves()],
+                    [actor],
+                )[0]
             elif actor.agent_id == "baseline":
                 move = self._score_baseline(env.legal_moves())
             else:
