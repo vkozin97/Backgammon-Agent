@@ -18,3 +18,6 @@ __pycache__/
 *.user
 
 *.zip
+
+# Training stats artifacts
+python/training_stats/
