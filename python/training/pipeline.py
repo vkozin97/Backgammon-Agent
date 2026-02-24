@@ -26,7 +26,7 @@ def save_checkpoint(cfg: ExperimentConfig, agents, replay: ReplayBuffer, epoch: 
     d = Path(cfg.checkpoint_dir) / f"epoch_{epoch:04d}"
     d.mkdir(parents=True, exist_ok=True)
     (d / "agents.json").write_text(json.dumps([a.state_dict() for a in agents]), encoding="utf-8")
-    (d / "replay_meta.json").write_text(json.dumps({"size": len(replay), "counter": replay._counter}), encoding="utf-8")
+    (d / "replay_meta.json").write_text(json.dumps(replay.get_meta()), encoding="utf-8")
     (d / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     save_config(cfg, d / "config.json")
 
@@ -88,7 +88,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
-    replay = ReplayBuffer(cfg.league.replay_capacity)
+    replay = ReplayBuffer(cfg.league.replay_storage_dir)
     metrics_history: list[dict] = []
 
     for epoch in range(cfg.train.num_epochs):
@@ -119,6 +119,8 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         t0 = time.time()
+        replay_sample_time_total = 0.0
+        replay_sample_calls = 0
         if len(replay) >= cfg.league.min_replay_size_to_train:
             agents_by_group: dict[str, list] = {}
             for agent in agents:
@@ -127,6 +129,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             for group_agents in agents_by_group.values():
                 for _ in range(cfg.train.updates_per_epoch_per_agent):
                     # One replay sample and one host->device transfer per architecture group.
+                    sample_t0 = time.time()
                     batch = replay.sample(
                         cfg.train.batch_size,
                         cfg.league.alpha_recency,
@@ -134,6 +137,8 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
                         cfg.league.recency_window,
                         cfg.league.max_samples_per_game_in_batch,
                     )
+                    replay_sample_time_total += time.time() - sample_t0
+                    replay_sample_calls += 1
                     x_np = np.stack([b.state_vector for b in batch]).astype(np.float32)
                     y_np = np.array([b.terminal_outcome for b in batch], dtype=np.float32).reshape(-1, 1)
 
@@ -170,7 +175,9 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             per_agent[a.agent_id]["winrate_vs_random"] = per_agent[a.agent_id]["winrate_vs_opponents"].get("random", 0.0)
             per_agent[a.agent_id]["winrate_vs_baseline"] = per_agent[a.agent_id]["winrate_vs_opponents"].get("baseline", 0.0)
 
+        avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         print(f"Training took {train_dt:.2f} seconds")
+        print(f"Replay sampling time: total={replay_sample_time_total:.2f}s avg={avg_sample_ms:.2f}ms calls={replay_sample_calls}")
         print(f"Losses: {[round(float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0), 6) for a in agents]}\n")
 
         gpu_mem = 0.0
@@ -183,6 +190,8 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             "games_sec": games_sec,
             "steps_sec": steps_per_sec,
             "gpu_mem_mb": gpu_mem,
+            "replay_sampling_total_sec": replay_sample_time_total,
+            "replay_sampling_avg_ms": avg_sample_ms,
             "agents": per_agent,
         }
         metrics_history.append(metrics)
@@ -191,4 +200,5 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
 
     _plot(metrics_history, Path(cfg.plots_dir))
+    replay.close()
     return metrics_history
