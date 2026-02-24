@@ -43,15 +43,34 @@ set_target_properties(bg_env PROPERTIES
   SUFFIX ".pyd"
 )
 
+add_library(batched_bg_env MODULE
+  src/batched_bindings.cpp
+  src/env.cpp
+)
+target_include_directories(batched_bg_env PRIVATE src "${PYBIND11_INCLUDE}")
+target_link_libraries(batched_bg_env PRIVATE Python::Module)
+set_target_properties(batched_bg_env PROPERTIES
+  PREFIX ""
+  SUFFIX ".pyd"
+)
+
 if (MSVC)
   target_compile_options(bg_env PRIVATE /W4 /O2)
+  target_compile_options(batched_bg_env PRIVATE /W4 /O2)
 else()
   target_compile_options(bg_env PRIVATE -Wall -Wextra -Wpedantic -O2)
+  target_compile_options(batched_bg_env PRIVATE -Wall -Wextra -Wpedantic -O2)
 endif()
 
 # Куда складывать .pyd (рядом с python-скриптами)
 set(PY_OUT_DIR "${CMAKE_SOURCE_DIR}/../python")
 set_target_properties(bg_env PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${PY_OUT_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${PY_OUT_DIR}"
+  LIBRARY_OUTPUT_DIRECTORY_RELEASE "${PY_OUT_DIR}"
+  LIBRARY_OUTPUT_DIRECTORY_DEBUG   "${PY_OUT_DIR}"
+)
+set_target_properties(batched_bg_env PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY_RELEASE "${PY_OUT_DIR}"
   RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${PY_OUT_DIR}"
   LIBRARY_OUTPUT_DIRECTORY_RELEASE "${PY_OUT_DIR}"
