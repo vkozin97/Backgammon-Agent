@@ -35,10 +35,10 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     num_epochs: int = 3
-    updates_per_epoch_per_agent: int = 2
-    batch_size: int = 64
+    updates_per_epoch_per_agent: int = 100
+    batch_size: int = 30_000
     optimizer_type: str = "sgd"
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-1
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -47,8 +47,8 @@ class TrainConfig:
     lr_scheduler_params: dict[str, Any] = field(default_factory=dict)
     mixed_precision_enabled: bool = False
     grad_accum_steps: int = 1
-    train_device: str = "cpu"
-    eval_device: str = "cpu"
+    train_device: str = "cuda"
+    eval_device: str = "cuda"
     seed: int = 42
     loss_type: str = "bce_with_logits"
 
