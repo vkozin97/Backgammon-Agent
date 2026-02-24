@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import numpy as np
+import torch
+from torch import nn
 
 from .config import ModelConfig, TrainConfig
 
 
-def _act(x: np.ndarray, name: str) -> np.ndarray:
+def _activation(name: str) -> nn.Module:
     if name == "tanh":
-        return np.tanh(x)
-    return np.maximum(x, 0.0)
-
-
-def _act_grad(x: np.ndarray, name: str) -> np.ndarray:
-    if name == "tanh":
-        t = np.tanh(x)
-        return 1.0 - t * t
-    return (x > 0).astype(np.float32)
+        return nn.Tanh()
+    return nn.ReLU()
 
 
 @dataclass
@@ -25,143 +21,127 @@ class Param:
     b: np.ndarray
 
 
-class MLPValueModel:
-    def __init__(self, cfg: ModelConfig, seed: int) -> None:
+class TorchMLPValueModel(nn.Module):
+    def __init__(self, cfg: ModelConfig) -> None:
+        super().__init__()
         self.cfg = cfg
-        rng = np.random.default_rng(seed)
         dims = [cfg.input_dim] + cfg.hidden_dims + [1]
-        self.layers: list[Param] = []
-        for i in range(len(dims) - 1):
-            w = rng.normal(0, np.sqrt(2.0 / max(dims[i], 1)), size=(dims[i], dims[i + 1])).astype(np.float32)
-            b = np.zeros((dims[i + 1],), dtype=np.float32)
-            if i == len(dims) - 2:
-                b[:] = cfg.final_bias_init
-            self.layers.append(Param(w=w, b=b))
+        blocks: list[nn.Module] = []
+        self.dropout_layers = set(cfg.dropout_layout) if cfg.dropout_enabled else set()
+        for i in range(len(dims) - 2):
+            blocks.append(nn.Linear(dims[i], dims[i + 1]))
+            blocks.append(_activation(cfg.activation_fn))
+            if (i + 1) in self.dropout_layers:
+                blocks.append(nn.Dropout(cfg.p_dropout))
+        self.backbone = nn.Sequential(*blocks)
+        self.out = nn.Linear(dims[-2], 1)
+        with torch.no_grad():
+            self.out.bias.fill_(cfg.final_bias_init)
 
-    def forward(self, x: np.ndarray, training: bool) -> tuple[np.ndarray, dict]:
-        cache: dict = {"a0": x}
-        a = x
-        for i, layer in enumerate(self.layers[:-1], start=1):
-            z = a @ layer.w + layer.b
-            a = _act(z, self.cfg.activation_fn)
-            if self.cfg.dropout_enabled and training and i in set(self.cfg.dropout_layout):
-                keep = 1.0 - self.cfg.p_dropout
-                m = (np.random.rand(*a.shape) < keep).astype(np.float32) / keep
-                a = a * m
-                cache[f"drop{i}"] = m
-            cache[f"z{i}"] = z
-            cache[f"a{i}"] = a
-        out = a @ self.layers[-1].w + self.layers[-1].b
-        cache["out_in"] = a
-        return out, cache
-
-    def backward(self, cache: dict, dloss_dout: np.ndarray) -> list[Param]:
-        grads = [Param(np.zeros_like(l.w), np.zeros_like(l.b)) for l in self.layers]
-        grads[-1].w[:] = cache["out_in"].T @ dloss_dout / dloss_dout.shape[0]
-        grads[-1].b[:] = dloss_dout.mean(axis=0)
-        da = dloss_dout @ self.layers[-1].w.T
-        for idx in reversed(range(1, len(self.layers))):
-            if f"drop{idx}" in cache:
-                da = da * cache[f"drop{idx}"]
-            dz = da * _act_grad(cache[f"z{idx}"], self.cfg.activation_fn)
-            a_prev = cache["a0"] if idx == 1 else cache[f"a{idx - 1}"]
-            grads[idx - 1].w[:] = a_prev.T @ dz / dz.shape[0]
-            grads[idx - 1].b[:] = dz.mean(axis=0)
-            da = dz @ self.layers[idx - 1].w.T
-        return grads
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.out(self.backbone(x))
 
 
-class ConvHeadValueModel(MLPValueModel):
-    def __init__(self, cfg: ModelConfig, seed: int) -> None:
+class TorchConvHeadValueModel(TorchMLPValueModel):
+    def __init__(self, cfg: ModelConfig) -> None:
         conv_cfg = ModelConfig(**{**cfg.__dict__})
         conv_cfg.input_dim = sum(cfg.conv_channels) + 4
         conv_cfg.hidden_dims = cfg.head_hidden_dims
         conv_cfg.num_layers = 1 + len(cfg.head_hidden_dims)
-        super().__init__(conv_cfg, seed)
-        rng = np.random.default_rng(seed + 10)
-        self.conv_w1 = rng.normal(0, 0.1, size=(24, cfg.conv_channels[0])).astype(np.float32)
-        self.conv_w2 = rng.normal(0, 0.1, size=(24, cfg.conv_channels[1])).astype(np.float32)
+        super().__init__(conv_cfg)
         self.cfg_orig = cfg
+        self.conv_1 = nn.Linear(24, cfg.conv_channels[0])
+        self.conv_2 = nn.Linear(24, cfg.conv_channels[1])
+        self.conv_activation = _activation(cfg.conv_activation)
 
-    def _conv_features(self, x: np.ndarray) -> np.ndarray:
+    def _conv_features(self, x: torch.Tensor) -> torch.Tensor:
         mine = x[:, :24]
         opp = x[:, 24:48]
         extra = x[:, 48:52]
-        f1 = _act(mine @ self.conv_w1, self.cfg_orig.conv_activation)
-        f2 = _act(opp @ self.conv_w2, self.cfg_orig.conv_activation)
-        return np.concatenate([f1, f2, extra], axis=1)
+        f1 = self.conv_activation(self.conv_1(mine))
+        f2 = self.conv_activation(self.conv_2(opp))
+        return torch.cat([f1, f2, extra], dim=1)
 
-    def forward(self, x: np.ndarray, training: bool) -> tuple[np.ndarray, dict]:
-        fx = self._conv_features(x)
-        return super().forward(fx, training)
-
-
-class SGD:
-    def __init__(self, lr: float, momentum: float = 0.0, weight_decay: float = 0.0):
-        self.lr = lr
-        self.momentum = momentum
-        self.weight_decay = weight_decay
-        self.vw: list[np.ndarray] = []
-        self.vb: list[np.ndarray] = []
-
-    def step(self, params: list[Param], grads: list[Param]) -> None:
-        if not self.vw:
-            self.vw = [np.zeros_like(p.w) for p in params]
-            self.vb = [np.zeros_like(p.b) for p in params]
-        for i, (p, g) in enumerate(zip(params, grads)):
-            gw = g.w + self.weight_decay * p.w
-            gb = g.b
-            self.vw[i] = self.momentum * self.vw[i] + (1 - self.momentum) * gw
-            self.vb[i] = self.momentum * self.vb[i] + (1 - self.momentum) * gb
-            p.w -= self.lr * self.vw[i]
-            p.b -= self.lr * self.vb[i]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return super().forward(self._conv_features(x))
 
 
 class ValueAgent:
     def __init__(self, agent_id: str, group: str, model_cfg: ModelConfig, train_cfg: TrainConfig, seed: int):
         self.agent_id = agent_id
         self.group = group
-        if group == "C":
-            self.model = ConvHeadValueModel(model_cfg, seed)
+        torch.manual_seed(seed)
+        requested = train_cfg.train_device
+        if requested.startswith("cuda") and torch.cuda.is_available():
+            self.device = torch.device(requested)
         else:
-            self.model = MLPValueModel(model_cfg, seed)
-        self.optimizer = SGD(train_cfg.learning_rate, momentum=train_cfg.momentum, weight_decay=train_cfg.weight_decay)
+            self.device = torch.device("cpu")
+
+        if group == "C":
+            self.model: nn.Module = TorchConvHeadValueModel(model_cfg)
+        else:
+            self.model = TorchMLPValueModel(model_cfg)
+        self.model.to(self.device)
+
+        if train_cfg.optimizer_type.lower() == "adam":
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay, betas=train_cfg.betas
+            )
+        else:
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=train_cfg.learning_rate,
+                momentum=train_cfg.momentum,
+                weight_decay=train_cfg.weight_decay,
+            )
         self.loss_type = train_cfg.loss_type
+        self.grad_clip_norm = train_cfg.grad_clip_norm
 
     def predict_logits(self, x: np.ndarray, training: bool = False) -> np.ndarray:
-        logits, _ = self.model.forward(x.astype(np.float32), training)
-        return logits
+        self.model.train(training)
+        xt = torch.as_tensor(x, dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            logits = self.model(xt)
+        return logits.detach().cpu().numpy()
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         logits = self.predict_logits(x, training=False)
         return 1.0 / (1.0 + np.exp(-logits))
 
+    def predict_proba_tensor(self, x: torch.Tensor) -> torch.Tensor:
+        self.model.eval()
+        with torch.no_grad():
+            return torch.sigmoid(self.model(x.to(self.device)))
+
     def train_batch(self, x: np.ndarray, y: np.ndarray) -> float:
-        logits, cache = self.model.forward(x.astype(np.float32), training=True)
+        x_t = torch.as_tensor(x, dtype=torch.float32, device=self.device)
+        y_t = torch.as_tensor(y, dtype=torch.float32, device=self.device)
+        return self.train_batch_tensor(x_t, y_t)
+
+    def train_batch_tensor(self, x_t: torch.Tensor, y_t: torch.Tensor) -> float:
+        self.model.train(True)
+        self.optimizer.zero_grad(set_to_none=True)
+        logits = self.model(x_t)
         if self.loss_type == "mse":
-            probs = 1.0 / (1.0 + np.exp(-logits))
-            loss = np.mean((probs - y) ** 2)
-            d = 2.0 * (probs - y) * probs * (1 - probs) / y.shape[0]
+            probs = torch.sigmoid(logits)
+            loss = torch.mean((probs - y_t) ** 2)
         else:
-            probs = 1.0 / (1.0 + np.exp(-logits))
-            eps = 1e-8
-            loss = -np.mean(y * np.log(probs + eps) + (1 - y) * np.log(1 - probs + eps))
-            d = (probs - y)
-        grads = self.model.backward(cache, d)
-        self.optimizer.step(self.model.layers, grads)
-        return float(loss)
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y_t)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+        self.optimizer.step()
+        return float(loss.detach().cpu().item())
 
     def state_dict(self) -> dict:
         return {
             "agent_id": self.agent_id,
             "group": self.group,
-            "layers": [{"w": p.w.tolist(), "b": p.b.tolist()} for p in self.model.layers],
+            "model": {k: v.detach().cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
         }
 
     def load_state_dict(self, state: dict) -> None:
-        for p, ps in zip(self.model.layers, state["layers"]):
-            p.w[:] = np.asarray(ps["w"], dtype=np.float32)
-            p.b[:] = np.asarray(ps["b"], dtype=np.float32)
+        model_state = {k: torch.tensor(v, dtype=torch.float32, device=self.device) for k, v in state["model"].items()}
+        self.model.load_state_dict(model_state)
 
 
 def build_trainable_agents(cfg, seed: int = 0) -> list[ValueAgent]:
