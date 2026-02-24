@@ -152,6 +152,13 @@ void BackgammonEnv::reset_standard() {
     s_.ply = 0;
 
     dice_ = Dice{1, 1};
+
+    // Randomize starting player on reset.
+    std::uniform_int_distribution<int> starter(0, 1);
+    if (starter(rng_) == 1) {
+        swap_perspective();
+        s_.ply = 1;
+    }
 }
 
 Dice BackgammonEnv::roll_dice() {
