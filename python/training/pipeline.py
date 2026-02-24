@@ -59,13 +59,14 @@ def _plot(metrics_history: list[dict], out_dir: Path) -> None:
         for focus_opp in all_opponents:
             plt.figure(figsize=(6, 3))
             for opp in all_opponents:
-                ys = [m["agents"][aid]["winrate_vs_opponents"].get(opp, 0.0) for m in metrics_history]
+                ys = [m["agents"][aid]["winrate_vs_opponents"].get(opp, 0.0) * 100.0 for m in metrics_history]
                 lw = 2.4 if opp == focus_opp else 1.0
                 alpha = 1.0 if opp == focus_opp else 0.4
                 plt.plot(xs, ys, label=opp, linewidth=lw, alpha=alpha)
             plt.title(f"{aid} winrates (focus: {focus_opp})")
             plt.xlabel("epoch")
-            plt.ylabel("winrate")
+            plt.ylabel("winrate (%)")
+            plt.ylim(0.0, 100.0)
             plt.legend(fontsize=6, ncol=2)
             plt.tight_layout()
             plt.savefig(winrates_dir / f"{aid}_winrates_focus_{focus_opp}.png")
@@ -91,11 +92,30 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     metrics_history: list[dict] = []
 
     for epoch in range(cfg.train.num_epochs):
+        print(f"Epoch {epoch}\n")
+        print("Playing started")
+        play_t0 = time.time()
         game_results, games_sec = league.run_epoch(agents, epoch)
+        play_dt = max(time.time() - play_t0, 1e-6)
+        print(f"Playing took {play_dt:.2f} seconds")
         for game in game_results:
             for st in game.steps:
                 outcome = 1.0 if st["agent_id"] == game.winner else 0.0
                 replay.add(**st, terminal_outcome=outcome)
+
+        winrates_vs_baseline = []
+        winrates_vs_random = []
+        for agent in agents:
+            pair_baseline = _games_for_pair(game_results, agent.agent_id, "baseline")
+            pair_random = _games_for_pair(game_results, agent.agent_id, "random")
+            wr_baseline = sum(1 for g in pair_baseline if g.winner == agent.agent_id) / len(pair_baseline) if pair_baseline else 0.0
+            wr_random = sum(1 for g in pair_random if g.winner == agent.agent_id) / len(pair_random) if pair_random else 0.0
+            winrates_vs_baseline.append(round(wr_baseline * 100.0, 2))
+            winrates_vs_random.append(round(wr_random * 100.0, 2))
+
+        print(f"Winrates vs baseline: {winrates_vs_baseline}")
+        print(f"Winrates vs random: {winrates_vs_random}\n")
+        print("Training started")
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         t0 = time.time()
@@ -149,6 +169,9 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             per_agent[a.agent_id]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[a.agent_id]["winrate_vs_opponents"].get(t, 0.0) for t in tr_ids]))
             per_agent[a.agent_id]["winrate_vs_random"] = per_agent[a.agent_id]["winrate_vs_opponents"].get("random", 0.0)
             per_agent[a.agent_id]["winrate_vs_baseline"] = per_agent[a.agent_id]["winrate_vs_opponents"].get("baseline", 0.0)
+
+        print(f"Training took {train_dt:.2f} seconds")
+        print(f"Losses: {[round(float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0), 6) for a in agents]}\n")
 
         gpu_mem = 0.0
         if torch.cuda.is_available():
