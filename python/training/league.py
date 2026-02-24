@@ -12,6 +12,11 @@ try:
 except Exception:  # pragma: no cover
     bg_env = None
 
+try:
+    import batched_bg_env
+except Exception:  # pragma: no cover
+    batched_bg_env = None
+
 
 class _FallbackEnv:
     def __init__(self, seed: int = 0):
@@ -116,6 +121,113 @@ class LeagueController:
         vals = np.where(np.asarray(done_mask, dtype=bool), 1.0, probs)
         return moves[int(np.argmax(vals))]
 
+    def _select_moves_value_batched(self, states: np.ndarray, legal_moves_list: list[np.ndarray], agent: ValueAgent) -> np.ndarray:
+        actions = np.full((len(legal_moves_list), 8), 255, dtype=np.uint8)
+        candidate_obs: list[np.ndarray] = []
+        candidate_done: list[bool] = []
+        candidate_owner: list[int] = []
+
+        for i, moves in enumerate(legal_moves_list):
+            if len(moves) == 0:
+                continue
+            if len(moves) == 1:
+                actions[i] = moves[0]
+                continue
+            sim = bg_env.Env(int(self.seed + i)) if bg_env is not None else _FallbackEnv(int(self.seed + i))
+            sim.set_state_raw(states[i])
+            for mv in moves:
+                sim.set_state_raw(states[i])
+                _, done = sim.step_move(mv)
+                candidate_obs.append(self.state_vector(sim))
+                candidate_done.append(done)
+                candidate_owner.append(i)
+
+        if candidate_obs:
+            obs_t = torch.as_tensor(np.stack(candidate_obs).astype(np.float32), dtype=torch.float32, device=agent.device)
+            probs = agent.predict_proba_tensor(obs_t).reshape(-1).detach().cpu().numpy()
+            vals = np.where(np.asarray(candidate_done, dtype=bool), 1.0, probs)
+
+            grouped_vals: dict[int, list[float]] = {}
+            for owner, val in zip(candidate_owner, vals):
+                grouped_vals.setdefault(owner, []).append(float(val))
+            for i, moves in enumerate(legal_moves_list):
+                if len(moves) <= 1:
+                    continue
+                best_idx = int(np.argmax(grouped_vals[i]))
+                actions[i] = moves[best_idx]
+
+        return actions
+
+    def _select_actions_batched(self, actor, states: np.ndarray, legal_moves_list: list[np.ndarray]) -> np.ndarray:
+        if isinstance(actor, ValueAgent):
+            return self._select_moves_value_batched(states, legal_moves_list, actor)
+        actions = np.full((len(legal_moves_list), 8), 255, dtype=np.uint8)
+        for i, moves in enumerate(legal_moves_list):
+            if len(moves) == 0:
+                continue
+            if actor.agent_id == "baseline":
+                scores = moves[:, 1::2].sum(axis=1)
+                actions[i] = moves[int(np.argmax(scores))]
+            else:
+                actions[i] = moves[np.random.randint(len(moves))]
+        return actions
+
+    def _play_games_batched(self, p1, p2, game_ids: list[str], epoch: int):
+        if batched_bg_env is None:
+            return [self.play_game(p1, p2, gid, epoch) for gid in game_ids]
+
+        n_games = len(game_ids)
+        env = batched_bg_env.Env(n_games, self.seed + epoch * 100_000)
+        env.reset()
+        histories = [[] for _ in range(n_games)]
+        winners = [p1.agent_id for _ in range(n_games)]
+        turns = [0 for _ in range(n_games)]
+        done = np.zeros((n_games,), dtype=bool)
+        players = [p1, p2]
+
+        for turn in range(self.cfg.max_turns_per_game):
+            if np.all(done):
+                break
+            env.roll_dice()
+            actor = players[turn % 2]
+            opp = players[(turn + 1) % 2]
+
+            states = np.asarray(env.get_states_raw(), dtype=np.int16)
+            legal_moves = list(env.legal_moves())
+            actions = self._select_actions_batched(actor, states, legal_moves)
+
+            rewards, done_step = env.step_apply(actions)
+            rewards = np.asarray(rewards, dtype=np.float32)
+            done_step = np.asarray(done_step, dtype=np.uint8).astype(bool)
+
+            for i in range(n_games):
+                if done[i]:
+                    continue
+                histories[i].append({
+                    "state_vector": states[i][:52].astype(np.float32),
+                    "agent_id": actor.agent_id,
+                    "opponent_id": opp.agent_id,
+                    "game_id": game_ids[i],
+                    "step_index": turns[i],
+                    "epoch": epoch,
+                })
+                turns[i] += 1
+                if done_step[i]:
+                    winners[i] = actor.agent_id if rewards[i] > 0 else opp.agent_id
+                    done[i] = True
+
+        return [
+            GameResult(
+                game_id=game_ids[i],
+                steps=histories[i],
+                winner=winners[i],
+                turns=turns[i],
+                player_1_id=p1.agent_id,
+                player_2_id=p2.agent_id,
+            )
+            for i in range(n_games)
+        ]
+
     def play_game(self, p1, p2, game_id: str, epoch: int):
         env = (bg_env.Env(self.seed + hash(game_id) % 100000) if bg_env is not None else _FallbackEnv(self.seed + hash(game_id) % 100000))
         env.reset()
@@ -157,10 +269,10 @@ class LeagueController:
         opponents = [self.random, self.baseline]
         for i, a in enumerate(trainable_agents):
             for b in trainable_agents[i + 1:]:
-                for g in range(self.cfg.games_per_pair):
-                    results.append(self.play_game(a, b, f"e{epoch}_t{i}_{b.agent_id}_{g}", epoch))
+                pair_game_ids = [f"e{epoch}_t{i}_{b.agent_id}_{g}" for g in range(self.cfg.games_per_pair)]
+                results.extend(self._play_games_batched(a, b, pair_game_ids, epoch))
             for opp in opponents:
-                for g in range(self.cfg.games_per_pair):
-                    results.append(self.play_game(a, opp, f"e{epoch}_{a.agent_id}_{opp.agent_id}_{g}", epoch))
+                pair_game_ids = [f"e{epoch}_{a.agent_id}_{opp.agent_id}_{g}" for g in range(self.cfg.games_per_pair)]
+                results.extend(self._play_games_batched(a, opp, pair_game_ids, epoch))
         dt = max(time.time() - t0, 1e-6)
         return results, len(results) / dt
