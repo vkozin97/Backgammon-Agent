@@ -55,7 +55,7 @@ class TrainConfig:
 
 @dataclass
 class LeagueConfig:
-    games_per_pair: int = 1
+    games_per_pair: int = 5
     max_turns_per_game: int = 400
     replay_capacity: int = 100_000
     min_replay_size_to_train: int = 100
@@ -79,7 +79,8 @@ class ExperimentConfig:
     model_group_c: ModelConfig = field(default_factory=lambda: ModelConfig(p_dropout=0.10, dropout_layout=[0, 2]))
     train: TrainConfig = field(default_factory=TrainConfig)
     league: LeagueConfig = field(default_factory=LeagueConfig)
-    checkpoint_dir: str = "python/training_stats"
+    checkpoint_dir: str = "training_stats/checkpoints"
+    plots_dir: str = "training_stats/plots"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

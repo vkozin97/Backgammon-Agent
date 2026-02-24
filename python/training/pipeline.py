@@ -146,5 +146,5 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
 
-    _plot(metrics_history, Path(cfg.checkpoint_dir) / "plots")
+    _plot(metrics_history, Path(cfg.plots_dir))
     return metrics_history
