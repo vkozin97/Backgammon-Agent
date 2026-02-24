@@ -11,6 +11,7 @@ bg/.vs/*
 __pycache__/
 .spyproject/
 *.pyc
+python/python/
 
 # IDE
 .vscode/
