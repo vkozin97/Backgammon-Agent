@@ -1,5 +1,6 @@
 # Runtime dependencies for Python tools and bindings
 numpy==2.0.2
+torch==2.5.1
 pybind11==3.0.2
 pygame==2.6.1
 matplotlib==3.9.2

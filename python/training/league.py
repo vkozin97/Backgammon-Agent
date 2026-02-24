@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 import numpy as np
+import torch
 
 from .agents import ValueAgent
 
@@ -101,14 +102,18 @@ class LeagueController:
         if len(moves) == 1:
             return moves[0]
         state = np.asarray(env.get_state_raw(), dtype=np.int16)
-        vals = []
+        obs_batch = []
+        done_mask = []
         for mv in moves:
             env.set_state_raw(state)
             _, done = env.step_move(mv)
-            obs = self.state_vector(env)[None, :]
-            p = agent.predict_proba(obs)[0, 0]
-            vals.append(1.0 if done else float(p))
+            obs_batch.append(self.state_vector(env))
+            done_mask.append(done)
         env.set_state_raw(state)
+
+        obs_t = torch.as_tensor(np.stack(obs_batch).astype(np.float32), dtype=torch.float32, device=agent.device)
+        probs = agent.predict_proba_tensor(obs_t).reshape(-1).detach().cpu().numpy()
+        vals = np.where(np.asarray(done_mask, dtype=bool), 1.0, probs)
         return moves[int(np.argmax(vals))]
 
     def play_game(self, p1, p2, game_id: str, epoch: int):

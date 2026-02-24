@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 import numpy as np
+import torch
 
 from .agents import build_trainable_agents
 from .config import ExperimentConfig, save_config
@@ -99,13 +100,28 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         t0 = time.time()
         if len(replay) >= cfg.league.min_replay_size_to_train:
+            agents_by_group: dict[str, list] = {}
             for agent in agents:
+                agents_by_group.setdefault(agent.group, []).append(agent)
+
+            for group_agents in agents_by_group.values():
                 for _ in range(cfg.train.updates_per_epoch_per_agent):
-                    batch = replay.sample(cfg.train.batch_size, cfg.league.alpha_recency, cfg.league.alpha_uniform,
-                                          cfg.league.recency_window, cfg.league.max_samples_per_game_in_batch)
-                    x = np.stack([b.state_vector for b in batch]).astype(np.float32)
-                    y = np.array([b.terminal_outcome for b in batch], dtype=np.float32).reshape(-1, 1)
-                    train_losses[agent.agent_id].append(agent.train_batch(x, y))
+                    # One replay sample and one host->device transfer per architecture group.
+                    batch = replay.sample(
+                        cfg.train.batch_size,
+                        cfg.league.alpha_recency,
+                        cfg.league.alpha_uniform,
+                        cfg.league.recency_window,
+                        cfg.league.max_samples_per_game_in_batch,
+                    )
+                    x_np = np.stack([b.state_vector for b in batch]).astype(np.float32)
+                    y_np = np.array([b.terminal_outcome for b in batch], dtype=np.float32).reshape(-1, 1)
+
+                    x_t = torch.as_tensor(x_np, dtype=torch.float32, device=group_agents[0].device)
+                    y_t = torch.as_tensor(y_np, dtype=torch.float32, device=group_agents[0].device)
+
+                    for agent in group_agents:
+                        train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
         train_dt = max(time.time() - t0, 1e-6)
         steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
 
@@ -134,11 +150,16 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             per_agent[a.agent_id]["winrate_vs_random"] = per_agent[a.agent_id]["winrate_vs_opponents"].get("random", 0.0)
             per_agent[a.agent_id]["winrate_vs_baseline"] = per_agent[a.agent_id]["winrate_vs_opponents"].get("baseline", 0.0)
 
+        gpu_mem = 0.0
+        if torch.cuda.is_available():
+            gpu_mem = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+            torch.cuda.reset_peak_memory_stats()
+
         metrics = {
             "epoch": epoch,
             "games_sec": games_sec,
             "steps_sec": steps_per_sec,
-            "gpu_mem_mb": 0.0,
+            "gpu_mem_mb": gpu_mem,
             "agents": per_agent,
         }
         metrics_history.append(metrics)
