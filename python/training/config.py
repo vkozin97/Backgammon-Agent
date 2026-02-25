@@ -36,11 +36,11 @@ class ModelConfig:
 class TrainConfig:
     num_epochs: int = 3
     updates_per_epoch_per_agent: int = 100
-    batch_size: int = 30_000
+    batch_size: int = 60_000
     optimizer_type: str = "sgd"
     learning_rate: float = 1e-1
     lr_decay_factor: float = 0.98
-    lr_decay_every_steps: int = 10
+    lr_decay_every_steps: int = 5
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -58,7 +58,7 @@ class TrainConfig:
 @dataclass
 class LeagueConfig:
     games_per_pair: int = 5
-    max_turns_per_game: int = 400
+    max_turns_per_game: int = 1000
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 0.8
