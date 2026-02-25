@@ -20,7 +20,8 @@ def test_config_roundtrip(tmp_path: Path):
     save_config(cfg, p)
     loaded = load_config(p)
     assert loaded.train.num_epochs == cfg.train.num_epochs
-    assert loaded.checkpoint_dir == "python/training_stats"
+    assert loaded.train.winrate_window_size == cfg.train.winrate_window_size
+    assert loaded.checkpoint_dir == cfg.checkpoint_dir
 
 
 def test_one_training_epoch_and_checkpoint(tmp_path: Path):
@@ -32,19 +33,26 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     cfg.league.min_replay_size_to_train = 1
     cfg.league.max_turns_per_game = 10
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
 
     metrics = run_training(cfg)
     assert len(metrics) == 1
     ck = Path(cfg.checkpoint_dir) / "epoch_0000" / "agents.json"
     assert ck.exists()
-    winrates_dir = Path(cfg.checkpoint_dir) / "plots" / "winrates"
-    loss_dir = Path(cfg.checkpoint_dir) / "plots" / "loss"
+    winrates_dir = Path(cfg.plots_dir) / "winrates"
+    loss_dir = Path(cfg.plots_dir) / "loss"
+    lr_dir = Path(cfg.plots_dir) / "lr"
+    winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
     if importlib.util.find_spec("matplotlib") is not None:
         assert winrates_dir.exists()
         assert loss_dir.exists()
-        # 14 graphs per agent => 13 winrate-focus + 1 loss.
-        assert len(list(winrates_dir.glob("*.png"))) == 12 * 13
-        assert len(list(loss_dir.glob("*.png"))) == 12
+        trainable_agents = build_trainable_agents(cfg, cfg.train.seed)
+        total_agents = len(trainable_agents) + 2
+        opponents_per_agent = total_agents - 1
+        assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent
+        assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent
+        assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
+        assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents)
 
     agents = build_trainable_agents(cfg, cfg.train.seed)
     load_checkpoint(cfg, agents, 0)
