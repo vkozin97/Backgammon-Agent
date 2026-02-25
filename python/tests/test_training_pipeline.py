@@ -37,12 +37,16 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
 
     metrics = run_training(cfg)
     assert len(metrics) == 1
+    assert "decision_temperature" in metrics[0]
+    assert "decision_topk_freq" in metrics[0]
+    assert len(metrics[0]["decision_topk_freq"]) == 10
     ck = Path(cfg.checkpoint_dir) / "epoch_0000" / "agents.json"
     assert ck.exists()
     winrates_dir = Path(cfg.plots_dir) / "winrates"
     loss_dir = Path(cfg.plots_dir) / "loss"
     lr_dir = Path(cfg.plots_dir) / "lr"
     winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
+    decision_dir = Path(cfg.plots_dir) / "decision_temperature"
     if importlib.util.find_spec("matplotlib") is not None:
         assert winrates_dir.exists()
         assert loss_dir.exists()
@@ -53,6 +57,8 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents)
+        assert (decision_dir / "decision_temperature.png").exists()
+        assert len(list(decision_dir.glob("selected_action_top_*.png"))) == 10
 
     agents = build_trainable_agents(cfg, cfg.train.seed)
     load_checkpoint(cfg, agents, 0)
@@ -75,3 +81,20 @@ def test_pair_matching_uses_participants_not_game_id():
     pair = _games_for_pair(games, "trainable_0", "trainable_1")
     assert len(pair) == 1
     assert pair[0].game_id == "opaque_1"
+
+
+def test_temperature_decay_progression(tmp_path: Path):
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 2
+    cfg.train.updates_per_epoch_per_agent = 0
+    cfg.league.games_per_pair = 1
+    cfg.league.max_turns_per_game = 2
+    cfg.league.selfplay_temperature = 1.0
+    cfg.league.temperature_decay = 0.9
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+
+    metrics = run_training(cfg)
+    assert len(metrics) == 2
+    assert metrics[0]["decision_temperature"] == 1.0
+    assert abs(metrics[1]["decision_temperature"] - 0.9) < 1e-9

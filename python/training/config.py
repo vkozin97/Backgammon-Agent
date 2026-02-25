@@ -70,6 +70,7 @@ class LeagueConfig:
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
     selfplay_temperature: float = 0.0
+    temperature_decay: float = 0.9
     evaluation_games_per_pair: int = 1
     checkpoint_frequency_epochs: int = 1
     metrics_flush_frequency: int = 1

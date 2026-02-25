@@ -107,8 +107,49 @@ class LeagueController:
     def __init__(self, cfg, seed: int = 0):
         self.cfg = cfg
         self.seed = seed
+        self.rng = np.random.default_rng(seed)
         self.random = RandomAgent()
         self.baseline = BaselineAgent()
+        self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
+        self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
+        self._decision_count = 0
+
+    def set_decision_temperature(self, temperature: float) -> None:
+        self.decision_temperature = float(temperature)
+
+    def reset_decision_stats(self) -> None:
+        self._decision_topk_hits.fill(0.0)
+        self._decision_count = 0
+
+    def get_decision_stats(self) -> dict:
+        if self._decision_count <= 0:
+            freqs = np.zeros((10,), dtype=np.float64)
+        else:
+            freqs = self._decision_topk_hits / float(self._decision_count)
+        return {
+            "decision_count": int(self._decision_count),
+            "topk_freq": freqs.astype(np.float32).tolist(),
+        }
+
+    def _sample_action_index(self, values: np.ndarray) -> int:
+        temp = float(self.decision_temperature)
+        if temp <= 0.0:
+            return int(np.argmax(values))
+
+        centered = values - float(np.max(values))
+        logits = centered / temp
+        exp_logits = np.exp(logits)
+        probs = exp_logits / float(np.sum(exp_logits))
+        idx = int(self.rng.choice(len(values), p=probs))
+        return idx
+
+    def _record_topk_hit(self, values: np.ndarray, selected_idx: int) -> None:
+        sorted_idx = np.argsort(-values, kind="mergesort")
+        rank = int(np.flatnonzero(sorted_idx == selected_idx)[0]) + 1
+        for k in range(1, 11):
+            if rank <= k:
+                self._decision_topk_hits[k - 1] += 1.0
+        self._decision_count += 1
 
     @staticmethod
     def state_vector(env) -> np.ndarray:
@@ -221,7 +262,10 @@ class LeagueController:
             for i, moves in enumerate(legal_moves_list):
                 if len(moves) <= 1:
                     continue
-                actions[i] = moves[int(np.argmax(grouped_vals[i]))]
+                values_i = np.asarray(grouped_vals[i], dtype=np.float32)
+                selected_idx = self._sample_action_index(values_i)
+                self._record_topk_hit(values_i, selected_idx)
+                actions[i] = moves[selected_idx]
 
         return actions
 
@@ -349,6 +393,7 @@ class LeagueController:
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
+        self.reset_decision_stats()
         opponents = [self.random, self.baseline]
         specs: list[_GameSpec] = []
 
