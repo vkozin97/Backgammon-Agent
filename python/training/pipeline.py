@@ -62,12 +62,44 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
+    decision_dir = out_dir / "decision_temperature"
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
+    decision_dir.mkdir(parents=True, exist_ok=True)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
+
+
+    xs = [m["epoch"] for m in metrics_history]
+
+    temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
+    if any(np.isfinite(v) for v in temps):
+        plt.figure(figsize=(6, 3))
+        plt.plot(xs, temps)
+        plt.title("Decision temperature")
+        plt.xlabel("epoch")
+        plt.ylabel("temperature")
+        plt.tight_layout()
+        plt.savefig(decision_dir / "decision_temperature.png")
+        plt.close()
+
+    for k in range(1, 11):
+        topk_series = []
+        for m in metrics_history:
+            vals = m.get("decision_topk_freq", [])
+            topk_series.append(float(vals[k - 1]) * 100.0 if len(vals) >= k else np.nan)
+        if any(np.isfinite(v) for v in topk_series):
+            plt.figure(figsize=(6, 3))
+            plt.plot(xs, topk_series)
+            plt.title(f"Selected action in top-{k} values")
+            plt.xlabel("epoch")
+            plt.ylabel("frequency (%)")
+            plt.ylim(0.0, 100.0)
+            plt.tight_layout()
+            plt.savefig(decision_dir / f"selected_action_top_{k}.png")
+            plt.close()
 
     for aid in agents:
         opponents_for_agent = sorted(metrics_history[-1]["agents"][aid]["winrate_vs_opponents"].keys())
@@ -147,11 +179,15 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
     all_agent_ids = [x.agent_id for x in agents] + ["random", "baseline"]
 
+    current_temperature = float(cfg.league.selfplay_temperature)
+
     for epoch in range(cfg.train.num_epochs):
         print(f"Epoch {epoch}\n")
         print("Playing started")
         play_t0 = time.time()
+        league.set_decision_temperature(current_temperature)
         game_results, games_sec = league.run_epoch(agents, epoch)
+        decision_stats = league.get_decision_stats()
         play_dt = max(time.time() - play_t0, 1e-6)
         print(f"Playing took {play_dt:.2f} seconds")
         for game in game_results:
@@ -252,6 +288,9 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             "gpu_mem_mb": gpu_mem,
             "replay_sampling_total_sec": replay_sample_time_total,
             "replay_sampling_avg_ms": avg_sample_ms,
+            "decision_temperature": float(current_temperature),
+            "decision_count": int(decision_stats["decision_count"]),
+            "decision_topk_freq": decision_stats["topk_freq"],
             "agents": per_agent,
         }
         metrics_history.append(metrics)
@@ -262,5 +301,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
+
+        current_temperature *= float(cfg.league.temperature_decay)
 
     return metrics_history

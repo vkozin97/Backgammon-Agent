@@ -34,7 +34,7 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    num_epochs: int = 50
+    num_epochs: int = 100
     updates_per_epoch_per_agent: int = 100
     batch_size: int = 60_000
     optimizer_type: str = "sgd"
@@ -69,7 +69,8 @@ class LeagueConfig:
     recency_decay: float = 0.98
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
-    selfplay_temperature: float = 0.0
+    selfplay_temperature: float = 1.0
+    temperature_decay: float = 0.9
     evaluation_games_per_pair: int = 1
     checkpoint_frequency_epochs: int = 1
     metrics_flush_frequency: int = 1
