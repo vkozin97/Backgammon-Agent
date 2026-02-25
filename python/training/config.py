@@ -66,7 +66,6 @@ class LeagueConfig:
     recency_window: int = 2
     recency_decay: float = 0.98
     sampling_mode: str = "window"
-    max_samples_per_game_in_batch: int | None = 4
     parallel_env_workers: int = 1
     selfplay_temperature: float = 0.0
     evaluation_games_per_pair: int = 1

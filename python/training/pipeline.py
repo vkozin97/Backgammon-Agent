@@ -88,7 +88,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
-    replay = ReplayBuffer(cfg.league.replay_storage_dir)
+    replay = ReplayBuffer(cfg.league.replay_storage_dir, recency_decay=cfg.league.recency_decay)
     metrics_history: list[dict] = []
 
     for epoch in range(cfg.train.num_epochs):
@@ -130,17 +130,14 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
                 for _ in range(cfg.train.updates_per_epoch_per_agent):
                     # One replay sample and one host->device transfer per architecture group.
                     sample_t0 = time.time()
-                    batch = replay.sample(
+                    x_np, y_np = replay.sample(
                         cfg.train.batch_size,
                         cfg.league.alpha_recency,
                         cfg.league.alpha_uniform,
                         cfg.league.recency_window,
-                        cfg.league.max_samples_per_game_in_batch,
                     )
                     replay_sample_time_total += time.time() - sample_t0
                     replay_sample_calls += 1
-                    x_np = np.stack([b.state_vector for b in batch]).astype(np.float32)
-                    y_np = np.array([b.terminal_outcome for b in batch], dtype=np.float32).reshape(-1, 1)
 
                     x_t = torch.as_tensor(x_np, dtype=torch.float32, device=group_agents[0].device)
                     y_t = torch.as_tensor(y_np, dtype=torch.float32, device=group_agents[0].device)

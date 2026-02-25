@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
-import random
 import sqlite3
 import tempfile
 import time
@@ -11,25 +8,14 @@ import time
 import numpy as np
 
 
-@dataclass
-class ReplayItem:
-    state_vector: np.ndarray
-    agent_id: str
-    opponent_id: str
-    game_id: str
-    step_index: int
-    epoch: int
-    terminal_outcome: float
-    recency_index: int
-    timestamp: float
-
-
 class ReplayBuffer:
-    def __init__(self, storage_dir: str | None = None):
+    def __init__(self, storage_dir: str | None = None, recency_decay: float = 0.98):
         base_dir = Path(storage_dir) if storage_dir else Path(tempfile.gettempdir()) / "backgammon_replay"
         base_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = base_dir / "replay.sqlite3"
         self._conn = sqlite3.connect(self.db_path)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS replay (
@@ -47,11 +33,36 @@ class ReplayBuffer:
             """
         )
         self._conn.commit()
-        self._weight_cache: dict[int, list[float]] = {}
+
+        self._rng = np.random.default_rng()
+        self._recency_decay = float(recency_decay)
+        self._renorm_every = 2048
+        self._pending_writes = 0
+        self._commit_every = 256
+
+        rows = self._conn.execute("SELECT recency_index FROM replay ORDER BY recency_index ASC").fetchall()
+        self._recency_indices = np.array([int(r[0]) for r in rows], dtype=np.int64)
+        self._size = int(self._recency_indices.size)
+
+        if self._size == 0:
+            self._recency_weights = np.empty(0, dtype=np.float64)
+        else:
+            ages = np.arange(self._size - 1, -1, -1, dtype=np.float64)
+            self._recency_weights = np.power(self._recency_decay, ages, dtype=np.float64)
+            self._normalize_weights(force=True)
+
+    def _normalize_weights(self, force: bool = False) -> None:
+        if self._recency_weights.size == 0:
+            return
+        if not force and self._size % self._renorm_every != 0:
+            return
+        max_w = float(np.max(self._recency_weights))
+        if max_w > 0.0:
+            self._recency_weights /= max_w
 
     def add(self, **kwargs) -> None:
         state_vector = np.asarray(kwargs["state_vector"], dtype=np.float32)
-        self._conn.execute(
+        cur = self._conn.execute(
             """
             INSERT INTO replay (
                 state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, timestamp
@@ -69,69 +80,29 @@ class ReplayBuffer:
                 time.time(),
             ),
         )
-        self._conn.commit()
+
+        rid = int(cur.lastrowid)
+        self._recency_indices = np.append(self._recency_indices, rid)
+        if self._recency_weights.size == 0:
+            self._recency_weights = np.array([1.0], dtype=np.float64)
+        else:
+            self._recency_weights *= self._recency_decay
+            self._recency_weights = np.append(self._recency_weights, 1.0)
+            self._normalize_weights()
+
+        self._size += 1
+        self._pending_writes += 1
+        if self._pending_writes >= self._commit_every:
+            self._conn.commit()
+            self._pending_writes = 0
 
     def __len__(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM replay").fetchone()
-        return int(row[0] if row else 0)
+        return self._size
 
-    def _load_all_items(self) -> list[ReplayItem]:
-        rows = self._conn.execute(
-            """
-            SELECT recency_index, state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, timestamp
-            FROM replay
-            ORDER BY recency_index ASC
-            """
-        ).fetchall()
-        items: list[ReplayItem] = []
-        for row in rows:
-            vec = np.frombuffer(row[1], dtype=np.float32, count=int(row[2])).copy()
-            items.append(
-                ReplayItem(
-                    recency_index=int(row[0]),
-                    state_vector=vec,
-                    agent_id=row[3],
-                    opponent_id=row[4],
-                    game_id=row[5],
-                    step_index=int(row[6]),
-                    epoch=int(row[7]),
-                    terminal_outcome=float(row[8]),
-                    timestamp=float(row[9]),
-                )
-            )
-        return items
-
-
-    def _build_recency_weights(self, count: int, target_center_mass: float = 0.8) -> list[float]:
-        if count <= 1:
-            return [1.0]
-        cached = self._weight_cache.get(count)
-        if cached is not None:
-            return cached
-
-        x = np.linspace(0.0, 1.0, count, dtype=np.float64)
-
-        def weights_for(beta: float) -> np.ndarray:
-            exp_beta = np.exp(beta)
-            return (np.exp(beta * x) - 1.0) / (exp_beta - 1.0)
-
-        lo, hi = 1e-6, 32.0
-        for _ in range(80):
-            mid = (lo + hi) / 2.0
-            w = weights_for(mid)
-            w_sum = float(np.sum(w))
-            if w_sum <= 0.0:
-                lo = mid
-                continue
-            com = float(np.sum(x * w) / w_sum)
-            if com < target_center_mass:
-                lo = mid
-            else:
-                hi = mid
-
-        weights = weights_for((lo + hi) / 2.0).tolist()
-        self._weight_cache[count] = weights
-        return weights
+    def _flush_if_needed(self) -> None:
+        if self._pending_writes > 0:
+            self._conn.commit()
+            self._pending_writes = 0
 
     def sample(
         self,
@@ -139,48 +110,59 @@ class ReplayBuffer:
         alpha_recency: float,
         alpha_uniform: float,
         recency_window: int,
-        max_samples_per_game_in_batch: int | None = None,
-    ) -> list[ReplayItem]:
-        all_items = self._load_all_items()
-        if not all_items:
-            return []
+    ) -> tuple[np.ndarray, np.ndarray]:
+        del recency_window
+        if self._size == 0:
+            return np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32)
 
-        recency_weights = self._build_recency_weights(len(all_items), target_center_mass=0.8)
+        recency_n = max(int(batch_size * alpha_recency), 0)
+        uniform_n = max(int(batch_size * alpha_uniform), 0)
 
-        recency_n = int(batch_size * alpha_recency)
-        uniform_n = batch_size - recency_n
+        selected_pos: list[np.ndarray] = []
 
-        weighted_items = random.choices(all_items, weights=recency_weights, k=max(recency_n, 0)) if recency_n > 0 else []
-        uniform_items = random.choices(all_items, k=max(uniform_n, 0)) if uniform_n > 0 else []
+        if recency_n > 0:
+            probs = self._recency_weights / np.sum(self._recency_weights)
+            recency_pos = self._rng.choice(self._size, size=recency_n, replace=True, p=probs)
+            selected_pos.append(recency_pos)
 
-        mix = weighted_items + uniform_items
-        if len(mix) < batch_size:
-            mix += random.choices(all_items, k=batch_size - len(mix))
+        if uniform_n > 0:
+            uniform_pos = self._rng.integers(0, self._size, size=uniform_n)
+            selected_pos.append(uniform_pos)
 
-        if max_samples_per_game_in_batch is None:
-            return mix[:batch_size]
+        if selected_pos:
+            sampled_pos = np.concatenate(selected_pos)
+        else:
+            sampled_pos = self._rng.integers(0, self._size, size=batch_size)
 
-        counts: Counter[str] = Counter()
-        filtered: list[ReplayItem] = []
-        for item in mix:
-            if counts[item.game_id] >= max_samples_per_game_in_batch:
-                continue
-            filtered.append(item)
-            counts[item.game_id] += 1
+        if sampled_pos.size < batch_size:
+            extra = self._rng.integers(0, self._size, size=batch_size - sampled_pos.size)
+            sampled_pos = np.concatenate([sampled_pos, extra])
 
-        while len(filtered) < batch_size and all_items:
-            c = random.choice(all_items)
-            if counts[c.game_id] < max_samples_per_game_in_batch:
-                filtered.append(c)
-                counts[c.game_id] += 1
-            else:
-                break
-        return filtered[:batch_size]
+        sampled_ids = self._recency_indices[sampled_pos[:batch_size]]
+
+        unique_ids = np.unique(sampled_ids)
+        placeholders = ",".join(["?"] * int(unique_ids.size))
+        rows = self._conn.execute(
+            f"SELECT recency_index, state_vector, terminal_outcome FROM replay WHERE recency_index IN ({placeholders})",
+            [int(x) for x in unique_ids],
+        ).fetchall()
+
+        decoded: dict[int, tuple[np.ndarray, float]] = {}
+        for recency_index, state_blob, terminal_outcome in rows:
+            decoded[int(recency_index)] = (
+                np.frombuffer(state_blob, dtype=np.float32).copy(),
+                float(terminal_outcome),
+            )
+
+        states = np.stack([decoded[int(idx)][0] for idx in sampled_ids]).astype(np.float32)
+        outcomes = np.array([decoded[int(idx)][1] for idx in sampled_ids], dtype=np.float32).reshape(-1, 1)
+        return states, outcomes
 
     def get_meta(self) -> dict[str, int | str]:
-        row = self._conn.execute("SELECT MAX(recency_index) FROM replay").fetchone()
-        counter = int(row[0]) + 1 if row and row[0] is not None else 0
-        return {"size": len(self), "counter": counter, "db_path": str(self.db_path)}
+        self._flush_if_needed()
+        counter = int(self._recency_indices[-1]) + 1 if self._size > 0 else 0
+        return {"size": self._size, "counter": counter, "db_path": str(self.db_path)}
 
     def close(self) -> None:
+        self._flush_if_needed()
         self._conn.close()
