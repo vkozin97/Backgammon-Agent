@@ -53,6 +53,8 @@ class TrainConfig:
     eval_device: str = "cuda"
     seed: int = 42
     loss_type: str = "bce_with_logits"
+    plot_every_k_epochs: int = 10
+    winrate_window_size: int = 10
 
 
 @dataclass
