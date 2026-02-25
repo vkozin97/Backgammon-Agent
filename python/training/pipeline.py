@@ -182,19 +182,25 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     current_temperature = float(cfg.league.selfplay_temperature)
 
     for epoch in range(cfg.train.num_epochs):
+        epoch_t0 = time.time()
         print(f"Epoch {epoch}\n")
-        print("Playing started")
+        print("[1/6] Self-play started")
         play_t0 = time.time()
         league.set_decision_temperature(current_temperature)
         game_results, games_sec = league.run_epoch(agents, epoch)
         decision_stats = league.get_decision_stats()
         play_dt = max(time.time() - play_t0, 1e-6)
-        print(f"Playing took {play_dt:.2f} seconds")
+        print(f"[1/6] Self-play took {play_dt:.2f} seconds")
+
+        replay_add_t0 = time.time()
         for game in game_results:
             for st in game.steps:
                 outcome = 1.0 if st["agent_id"] == game.winner else 0.0
                 replay.add(**st, terminal_outcome=outcome)
+        replay_add_dt = max(time.time() - replay_add_t0, 1e-6)
+        print(f"[2/6] Replay append took {replay_add_dt:.2f} seconds")
 
+        winrates_t0 = time.time()
         winrates_vs_baseline = []
         winrates_vs_random = []
         for agent in agents:
@@ -204,10 +210,12 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             wr_random = sum(1 for g in pair_random if g.winner == agent.agent_id) / len(pair_random) if pair_random else 0.0
             winrates_vs_baseline.append(round(wr_baseline * 100.0, 2))
             winrates_vs_random.append(round(wr_random * 100.0, 2))
+        winrates_dt = max(time.time() - winrates_t0, 1e-6)
+        print(f"[3/6] Winrate aggregation took {winrates_dt:.2f} seconds")
 
         print(f"Winrates vs baseline: {winrates_vs_baseline}")
         print(f"Winrates vs random: {winrates_vs_random}\n")
-        print("Training started")
+        print("[4/6] Training started")
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         t0 = time.time()
@@ -272,8 +280,9 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("baseline", 0.0)
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
-        print(f"Training took {train_dt:.2f} seconds")
-        print(f"Replay sampling time: total={replay_sample_time_total:.2f}s avg={avg_sample_ms:.2f}ms calls={replay_sample_calls}")
+        pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)
+        print(f"[4/6] Training (model update only) took {pure_train_dt:.2f} seconds")
+        print(f"[5/6] Replay sampling took {replay_sample_time_total:.2f} seconds (avg={avg_sample_ms:.2f}ms, calls={replay_sample_calls})")
         print(f"Losses: {[round(float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0), 6) for a in agents]}\n")
 
         gpu_mem = 0.0
@@ -283,17 +292,29 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         metrics = {
             "epoch": epoch,
+            "epoch_total_sec": max(time.time() - epoch_t0, 1e-6),
             "games_sec": games_sec,
             "steps_sec": steps_per_sec,
             "gpu_mem_mb": gpu_mem,
             "replay_sampling_total_sec": replay_sample_time_total,
             "replay_sampling_avg_ms": avg_sample_ms,
+            "timings": {
+                "selfplay_sec": play_dt,
+                "replay_append_sec": replay_add_dt,
+                "winrate_aggregation_sec": winrates_dt,
+                "training_total_sec": train_dt,
+                "training_model_only_sec": pure_train_dt,
+                "replay_sampling_sec": replay_sample_time_total,
+            },
             "decision_temperature": float(current_temperature),
             "decision_count": int(decision_stats["decision_count"]),
             "decision_topk_freq": decision_stats["topk_freq"],
             "agents": per_agent,
         }
         metrics_history.append(metrics)
+
+        epoch_total_dt = float(metrics["epoch_total_sec"])
+        print(f"[6/6] Epoch total took {epoch_total_dt:.2f} seconds\n")
 
         should_plot = (epoch + 1) % max(cfg.train.plot_every_k_epochs, 1) == 0 or epoch == cfg.train.num_epochs - 1
         if should_plot:
