@@ -96,6 +96,9 @@ class ValueAgent:
             )
         self.loss_type = train_cfg.loss_type
         self.grad_clip_norm = train_cfg.grad_clip_norm
+        self.lr_decay_factor = train_cfg.lr_decay_factor
+        self.lr_decay_every_steps = train_cfg.lr_decay_every_steps
+        self.train_step = 0
 
     def predict_logits(self, x: np.ndarray, training: bool = False) -> np.ndarray:
         self.model.train(training)
@@ -130,6 +133,10 @@ class ValueAgent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
         self.optimizer.step()
+        self.train_step += 1
+        if self.lr_decay_every_steps > 0 and self.train_step % self.lr_decay_every_steps == 0:
+            for pg in self.optimizer.param_groups:
+                pg["lr"] *= self.lr_decay_factor
         return float(loss.detach().cpu().item())
 
     def state_dict(self) -> dict:
