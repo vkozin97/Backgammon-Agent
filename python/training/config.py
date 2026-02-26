@@ -37,8 +37,8 @@ class TrainConfig:
     num_epochs: int = 100
     updates_per_epoch_per_agent: int = 100
     batch_size: int = 60_000
-    optimizer_type: str = "sgd"
-    learning_rate: float = 1e-1
+    optimizer_type: str = "adam"
+    learning_rate: float = 1e-3
     lr_decay_factor: float = 0.98
     lr_decay_every_steps: int = 5
     weight_decay: float = 0.0
