@@ -93,9 +93,9 @@ DICE_GAP = 12
 LEGAL_MOVES_UNIQUE = True
 
 # Viewer hyperparameters
-agent_mode = "none"  # "none" | "hint" | "play"
+agent_mode = "hint"  # "none" | "hint" | "play"
 agent_id = "trainable_0"
-agent_epoch = 0
+agent_epoch = 44
 agent_checkpoint_dir = "training_stats/checkpoints"
 
 
