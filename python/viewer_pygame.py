@@ -553,6 +553,48 @@ def main():
 
     piece_anim = None
     shake_anim = None
+    macro_anim_steps = []
+    macro_anim_idx = 0
+    macro_anim_turn_white = True
+    macro_anim_value = None
+    macro_anim_move = np.full((8,), 255, dtype=np.uint8)
+
+    def start_macro_animation(chosen_mv: np.ndarray, chosen_value):
+        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim
+        mv = np.asarray(chosen_mv, dtype=np.uint8)
+        steps = []
+        for k in range(4):
+            fr = int(mv[2 * k])
+            to = int(mv[2 * k + 1])
+            if fr == 255 or to == 255:
+                continue
+            steps.append((fr, to))
+        macro_anim_steps = steps
+        macro_anim_idx = 0
+        macro_anim_turn_white = turn_white
+        macro_anim_value = chosen_value
+        macro_anim_move = mv.copy()
+        env.set_state_raw(turn_start_state)
+        if not macro_anim_steps:
+            return
+        prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        env_from, env_to = macro_anim_steps[macro_anim_idx]
+        ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+        if not ok:
+            macro_anim_steps = []
+            info_lines.append("Failed to animate selected macro-step.")
+            return
+        post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
+        to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
+        piece_anim = {
+            "start": checker_position_for_state(prev_state, from_disp, macro_anim_turn_white),
+            "end": checker_position_for_state(post_state, to_disp, macro_anim_turn_white),
+            "is_white": macro_anim_turn_white,
+            "start_time": pygame.time.get_ticks() / 1000.0,
+            "t": 0.0,
+        }
+        macro_anim_idx += 1
     running = True
     while running:
         clock.tick(FPS)
@@ -609,6 +651,40 @@ def main():
             else:
                 shake_anim["t"] = t
 
+        if piece_anim is None and macro_anim_steps:
+            if macro_anim_idx < len(macro_anim_steps):
+                prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                env_from, env_to = macro_anim_steps[macro_anim_idx]
+                ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+                if not ok:
+                    info_lines.append("Failed to animate selected macro-step.")
+                    macro_anim_steps = []
+                else:
+                    post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
+                    to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
+                    piece_anim = {
+                        "start": checker_position_for_state(prev_state, from_disp, macro_anim_turn_white),
+                        "end": checker_position_for_state(post_state, to_disp, macro_anim_turn_white),
+                        "is_white": macro_anim_turn_white,
+                        "start_time": pygame.time.get_ticks() / 1000.0,
+                        "t": 0.0,
+                    }
+                    macro_anim_idx += 1
+            else:
+                value_suffix = f" | v={macro_anim_value:.4f}" if macro_anim_value is not None else ""
+                info_lines.append(f"Macro: {move_to_str(macro_anim_move, turn_white=macro_anim_turn_white)}{value_suffix}")
+                done = int(np.asarray(env.get_state_raw())[49]) >= 15
+                if done:
+                    env.reset()
+                    turn_white = True
+                else:
+                    env.commit_turn()
+                    turn_white = not macro_anim_turn_white
+                start_turn()
+                moves = refresh_moves()
+                macro_anim_steps = []
+
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit, piece_anim, shake_anim
@@ -622,6 +698,8 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                elif macro_anim_steps:
+                    continue
                 elif event.key == pygame.K_n:
                     env.reset()
                     turn_white = True
@@ -639,19 +717,10 @@ def main():
                 elif event.key == pygame.K_DOWN:
                     selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1)
                 elif event.key == pygame.K_RETURN and len(move_hints) > 0:
-                    env.set_state_raw(turn_start_state)
                     _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
-                    _, done = env.step_move(chosen_mv)
-                    value_suffix = f" | v={chosen_v:.4f}" if chosen_v is not None else ""
-                    info_lines.append(f"Macro: {move_to_str(chosen_mv, turn_white=turn_white)}{value_suffix}")
-                    if done:
-                        env.reset()
-                        turn_white = True
-                    else:
-                        turn_white = not turn_white
-                    start_turn()
-                    moves = refresh_moves()
-                    continue
+                    start_macro_animation(chosen_mv, chosen_v)
+            if macro_anim_steps:
+                continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if undo_rect.collidepoint(mx, my) and history:
