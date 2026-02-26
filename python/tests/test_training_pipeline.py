@@ -1,6 +1,7 @@
 from pathlib import Path
 import importlib.util
 import sqlite3
+import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
 from training.pipeline import run_training, load_checkpoint, _games_for_pair
@@ -10,11 +11,7 @@ from training.league import BaselineAgent, RandomAgent, pass_move, GameResult
 
 class _NoMoveEnv:
     def legal_moves(self):
-        import numpy as np
-
         return np.empty((0, 8), dtype=np.uint8)
-
-
 
 
 def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
