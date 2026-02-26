@@ -87,6 +87,7 @@ class ReplayBuffer:
         self._states: list[np.ndarray] = []
         self._outcomes: list[float] = []
         self._agent_ids: list[str] = []
+        self._agent_to_positions: dict[str, list[int]] = {}
         self._id_to_pos: dict[int, int] = {}
         for recency_index, state_blob, terminal_outcome, agent_id in rows:
             rid = int(recency_index)
@@ -94,7 +95,9 @@ class ReplayBuffer:
             self._recency_indices.append(rid)
             self._states.append(np.frombuffer(state_blob, dtype=np.float32).copy())
             self._outcomes.append(float(terminal_outcome))
-            self._agent_ids.append(str(agent_id))
+            aid = str(agent_id)
+            self._agent_ids.append(aid)
+            self._agent_to_positions.setdefault(aid, []).append(pos)
             self._id_to_pos[rid] = pos
 
         self._size = len(self._recency_indices)
@@ -140,7 +143,9 @@ class ReplayBuffer:
         self._id_to_pos[rid] = self._size
         self._states.append(state_vector)
         self._outcomes.append(terminal_outcome)
-        self._agent_ids.append(str(kwargs["agent_id"]))
+        agent_id = str(kwargs["agent_id"])
+        self._agent_ids.append(agent_id)
+        self._agent_to_positions.setdefault(agent_id, []).append(self._size)
 
         self._pending_rows.append(
             (
@@ -238,6 +243,52 @@ class ReplayBuffer:
         outcomes = np.array([self._outcomes[ix] for ix in sampled_pos], dtype=np.float32).reshape(-1, 1)
         agent_ids = np.array([self._agent_ids[ix] for ix in sampled_pos], dtype=np.str_)
         return states, outcomes, agent_ids
+
+    def sample_stratified_with_agent_ids(
+        self,
+        batch_sizes_by_agent: dict[str, int],
+        alpha_recency: float,
+        alpha_uniform: float,
+        recency_window: int,
+    ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        result: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        if self._size == 0:
+            return {
+                aid: (
+                    np.empty((0, 0), dtype=np.float32),
+                    np.empty((0, 1), dtype=np.float32),
+                )
+                for aid in batch_sizes_by_agent
+            }
+
+        total_required = sum(max(int(v), 0) for v in batch_sizes_by_agent.values())
+        pooled_pos = self._sample_positions(total_required, alpha_recency, alpha_uniform, recency_window)
+        pooled_agent_ids = np.array([self._agent_ids[ix] for ix in pooled_pos], dtype=np.str_)
+
+        for agent_id, batch_size in batch_sizes_by_agent.items():
+            target_size = int(batch_size)
+            if target_size <= 0:
+                result[agent_id] = (np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32))
+                continue
+
+            agent_positions = self._agent_to_positions.get(agent_id, [])
+            if not agent_positions:
+                result[agent_id] = (np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32))
+                continue
+
+            selected = pooled_pos[pooled_agent_ids == agent_id]
+            if selected.size < target_size:
+                refill = self._rng.choice(np.asarray(agent_positions, dtype=np.int64), size=target_size - selected.size, replace=True)
+                selected = np.concatenate([selected, refill])
+            else:
+                take_idx = self._rng.permutation(selected.size)[:target_size]
+                selected = selected[take_idx]
+
+            states = np.stack([self._states[ix] for ix in selected]).astype(np.float32)
+            outcomes = np.array([self._outcomes[ix] for ix in selected], dtype=np.float32).reshape(-1, 1)
+            result[agent_id] = (states, outcomes)
+
+        return result
 
     def sample(
         self,

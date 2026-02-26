@@ -371,41 +371,24 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         replay_sample_time_total = 0.0
         replay_sample_calls = 0
         if len(replay) >= cfg.league.min_replay_size_to_train:
-            required_per_agent = int(cfg.train.updates_per_epoch_per_agent * cfg.train.batch_size)
-            pool_oversample_factor = 4
-            total_required = required_per_agent * len(agents) * pool_oversample_factor
+            batch_by_agent = {agent.agent_id: cfg.train.batch_size for agent in agents}
 
-            sample_t0 = time.time()
-            pool_x, pool_y, pool_agent_ids = replay.sample_with_agent_ids(
-                total_required,
-                cfg.league.alpha_recency,
-                cfg.league.alpha_uniform,
-                cfg.league.recency_window,
-            )
-            replay_sample_time_total += time.time() - sample_t0
-            replay_sample_calls += 1
+            for _ in range(cfg.train.updates_per_epoch_per_agent):
+                sample_t0 = time.time()
+                stratified_batches = replay.sample_stratified_with_agent_ids(
+                    batch_by_agent,
+                    cfg.league.alpha_recency,
+                    cfg.league.alpha_uniform,
+                    cfg.league.recency_window,
+                )
+                replay_sample_time_total += time.time() - sample_t0
+                replay_sample_calls += 1
 
-            for agent in agents:
-                mask = pool_agent_ids == agent.agent_id
-                x_agent = pool_x[mask]
-                y_agent = pool_y[mask]
-                if x_agent.shape[0] == 0:
-                    continue
-
-                if x_agent.shape[0] < required_per_agent:
-                    refill_idx = np.random.randint(0, x_agent.shape[0], size=required_per_agent)
-                    x_agent = x_agent[refill_idx]
-                    y_agent = y_agent[refill_idx]
-                else:
-                    take_idx = np.random.permutation(x_agent.shape[0])[:required_per_agent]
-                    x_agent = x_agent[take_idx]
-                    y_agent = y_agent[take_idx]
-
-                for update_idx in range(cfg.train.updates_per_epoch_per_agent):
-                    left = update_idx * cfg.train.batch_size
-                    right = left + cfg.train.batch_size
-                    x_np = x_agent[left:right]
-                    y_np = y_agent[left:right]
+                for agent in agents:
+                    x_np, y_np = stratified_batches.get(
+                        agent.agent_id,
+                        (np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32)),
+                    )
                     if x_np.shape[0] == 0:
                         continue
 
