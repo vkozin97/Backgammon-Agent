@@ -45,6 +45,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     winrates_dir = Path(cfg.plots_dir) / "winrates"
     loss_dir = Path(cfg.plots_dir) / "loss"
     lr_dir = Path(cfg.plots_dir) / "lr"
+    replay_dir = Path(cfg.plots_dir) / "replay"
     winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
     decision_dir = Path(cfg.plots_dir) / "decision_temperature"
     if importlib.util.find_spec("matplotlib") is not None:
@@ -56,7 +57,8 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
         assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
-        assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents)
+        assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
+        assert (replay_dir / "replay_size.png").exists()
         assert (decision_dir / "decision_temperature.png").exists()
         assert len(list(decision_dir.glob("selected_action_top_*.png"))) == 10
 

@@ -53,20 +53,30 @@ def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     return out
 
 
-def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) -> None:
+def _plot(
+    metrics_history: list[dict],
+    out_dir: Path,
+    winrate_window_size: int,
+    alpha_recency: float,
+    alpha_uniform: float,
+    recency_decay: float,
+) -> None:
     try:
         import matplotlib.pyplot as plt
+        from matplotlib import colors as mcolors
     except Exception:
         return
     winrates_dir = out_dir / "winrates"
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
+    replay_dir = out_dir / "replay"
     decision_dir = out_dir / "decision_temperature"
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
+    replay_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
@@ -100,6 +110,73 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
             plt.tight_layout()
             plt.savefig(decision_dir / f"selected_action_top_{k}.png")
             plt.close()
+
+    replay_sizes = [int(m.get("replay_size", 0)) for m in metrics_history]
+    if replay_sizes and any(size > 0 for size in replay_sizes):
+        x_epoch = np.asarray(xs, dtype=np.float64)
+        y_size = np.asarray(replay_sizes, dtype=np.float64)
+        if x_epoch.size == 1:
+            x_left = float(x_epoch[0] - 0.5)
+            x_right = float(x_epoch[0] + 0.5)
+        else:
+            x_left = float(x_epoch[0])
+            x_right = float(x_epoch[-1])
+        x_dense = np.linspace(x_left, x_right, max(400, 50 * len(x_epoch)))
+        y_dense = np.interp(x_dense, x_epoch, y_size)
+        y_max = float(np.max(y_dense))
+        if y_max > 0.0:
+            ny = 256
+            y_grid = np.linspace(0.0, y_max, ny)
+            area_weights = np.full((ny, x_dense.size), np.nan, dtype=np.float64)
+            for i in range(x_dense.size):
+                cur_size = float(y_dense[i])
+                if cur_size <= 0.0:
+                    continue
+                n_states = max(int(round(cur_size)), 1)
+                uniform_prob = 1.0 / float(n_states)
+                if abs(recency_decay - 1.0) < 1e-12:
+                    recency_den = float(n_states)
+                else:
+                    recency_den = float((1.0 - recency_decay**n_states) / (1.0 - recency_decay))
+
+                valid = y_grid <= cur_size
+                ratio = np.clip(y_grid[valid] / cur_size, 0.0, 1.0)
+                age = (1.0 - ratio) * max(n_states - 1, 0)
+                recency_prob = np.power(recency_decay, age) / recency_den
+                mix_prob = alpha_recency * recency_prob + alpha_uniform * uniform_prob
+                area_weights[valid, i] = mix_prob
+
+            finite = np.isfinite(area_weights)
+            if np.any(finite):
+                min_w = float(np.nanmin(area_weights))
+                max_w = float(np.nanmax(area_weights))
+                if max_w > min_w:
+                    area_norm = (area_weights - min_w) / (max_w - min_w)
+                else:
+                    area_norm = np.zeros_like(area_weights)
+
+                alpha_mask = np.where(np.isfinite(area_norm), 0.95, 0.0)
+                area_norm = np.nan_to_num(area_norm, nan=0.0)
+                cmap = mcolors.LinearSegmentedColormap.from_list("white_to_orange", ["#ffffff", "#ff8c00"])
+
+                plt.figure(figsize=(6, 3))
+                plt.imshow(
+                    area_norm,
+                    extent=[x_left, x_right, 0.0, y_max],
+                    origin="lower",
+                    aspect="auto",
+                    cmap=cmap,
+                    alpha=alpha_mask,
+                    interpolation="bilinear",
+                )
+                plt.plot(x_epoch, y_size, color="#ff8c00", linewidth=2.0)
+                plt.title("Replay size")
+                plt.xlabel("epoch")
+                plt.ylabel("states in replay")
+                plt.ylim(0.0, y_max)
+                plt.tight_layout()
+                plt.savefig(replay_dir / "replay_size.png")
+                plt.close()
 
     for aid in agents:
         opponents_for_agent = sorted(metrics_history[-1]["agents"][aid]["winrate_vs_opponents"].keys())
@@ -145,28 +222,79 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
             plt.savefig(winrates_windowed_dir / f"{aid}_winrates_windowed_focus_{focus_opp}.png")
             plt.close()
 
-        losses = [m["agents"][aid].get("train_loss_epoch") for m in metrics_history]
-        if any(v is not None for v in losses):
-            sanitized_loss = [float(v) if v is not None else np.nan for v in losses]
+        loss_steps: list[float] = []
+        loss_epoch_end_steps: list[int] = []
+        loss_learning_steps_per_epoch: list[int] = []
+        loss_cursor = 0
+        for m in metrics_history:
+            epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
+            if epoch_loss_steps:
+                sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
+                loss_steps.extend(sanitized_epoch_loss)
+                loss_learning_steps_per_epoch.append(len(sanitized_epoch_loss))
+            loss_cursor += len(epoch_loss_steps)
+            loss_epoch_end_steps.append(loss_cursor)
+
+        if loss_steps:
+            loss_xs = list(range(1, len(loss_steps) + 1))
+            loss_epoch_boundaries = sorted({x for x in loss_epoch_end_steps[:-1] if 0 < x < len(loss_steps)})
+            base_steps = loss_learning_steps_per_epoch[0] if loss_learning_steps_per_epoch else len(loss_steps)
+            loss_window = max(int(round(base_steps * 0.25)), 1)
+            loss_steps_windowed = _exp_windowed(loss_steps, loss_window)
+
             plt.figure(figsize=(6, 3))
-            plt.plot(xs, sanitized_loss)
+            plt.plot(loss_xs, loss_steps, label="loss", linewidth=1.2)
+            plt.plot(loss_xs, loss_steps_windowed, linestyle="--", label=f"windowed (w={loss_window})", linewidth=1.3)
+            for boundary in loss_epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle=":", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} train loss")
-            plt.xlabel("epoch")
+            plt.xlabel("learning step")
             plt.ylabel("loss")
+            plt.legend(fontsize=7)
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
 
-        lrs = [m["agents"][aid].get("learning_rate") for m in metrics_history]
-        if any(v is not None for v in lrs):
-            sanitized_lr = [float(v) if v is not None else np.nan for v in lrs]
+        lr_steps: list[float] = []
+        epoch_end_steps: list[int] = []
+        learning_steps_per_epoch: list[int] = []
+        cursor = 0
+        for m in metrics_history:
+            epoch_lr_steps = m["agents"][aid].get("learning_rate_steps_epoch", [])
+            if epoch_lr_steps:
+                sanitized_epoch_lr = [float(v) for v in epoch_lr_steps]
+                lr_steps.extend(sanitized_epoch_lr)
+                learning_steps_per_epoch.append(len(sanitized_epoch_lr))
+            cursor += len(epoch_lr_steps)
+            epoch_end_steps.append(cursor)
+
+        if lr_steps:
+            lr_xs = list(range(1, len(lr_steps) + 1))
+            epoch_boundaries = sorted({x for x in epoch_end_steps[:-1] if 0 < x < len(lr_steps)})
+
             plt.figure(figsize=(6, 3))
-            plt.plot(xs, sanitized_lr)
+            plt.plot(lr_xs, lr_steps)
+            for boundary in epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle="--", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} learning rate")
-            plt.xlabel("epoch")
+            plt.xlabel("learning step")
             plt.ylabel("lr")
             plt.tight_layout()
             plt.savefig(lr_dir / f"{aid}_lr.png")
+            plt.close()
+
+            base_steps = learning_steps_per_epoch[0] if learning_steps_per_epoch else len(lr_steps)
+            lr_window = max(int(round(base_steps * 0.25)), 1)
+            lr_steps_windowed = _exp_windowed(lr_steps, lr_window)
+            plt.figure(figsize=(6, 3))
+            plt.plot(lr_xs, lr_steps_windowed)
+            for boundary in epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle="--", color="gray", linewidth=0.8, alpha=0.8)
+            plt.title(f"{aid} learning rate windowed (w={lr_window})")
+            plt.xlabel("learning step")
+            plt.ylabel("windowed lr")
+            plt.tight_layout()
+            plt.savefig(lr_dir / f"{aid}_lr_windowed.png")
             plt.close()
 
 
@@ -220,6 +348,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         print("[4/6] Training started")
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
+        train_lrs_steps: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         t0 = time.time()
         replay_sample_time_total = 0.0
         replay_sample_calls = 0
@@ -246,12 +375,16 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
                     for agent in group_agents:
                         train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
+                        train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
         train_dt = max(time.time() - t0, 1e-6)
         steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
 
         per_agent = {aid: {
             "train_loss_epoch": None,
+            "train_loss_steps_epoch": [],
             "learning_rate": None,
+            "learning_rate_steps_epoch": [],
+            "learning_steps_epoch": 0,
             "winrate_vs_random": 0.0,
             "winrate_vs_baseline": 0.0,
             "aggregate_winrate_vs_trainable": 0.0,
@@ -261,7 +394,10 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         for a in agents:
             per_agent[a.agent_id]["train_loss_epoch"] = float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0)
+            per_agent[a.agent_id]["train_loss_steps_epoch"] = train_losses[a.agent_id]
             per_agent[a.agent_id]["learning_rate"] = float(a.optimizer.param_groups[0]["lr"])
+            per_agent[a.agent_id]["learning_rate_steps_epoch"] = train_lrs_steps[a.agent_id]
+            per_agent[a.agent_id]["learning_steps_epoch"] = len(train_lrs_steps[a.agent_id])
 
         for aid in all_agent_ids:
             for opp in all_agent_ids:
@@ -300,6 +436,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             "gpu_mem_mb": gpu_mem,
             "replay_sampling_total_sec": replay_sample_time_total,
             "replay_sampling_avg_ms": avg_sample_ms,
+            "replay_size": int(len(replay)),
             "timings": {
                 "selfplay_sec": play_dt,
                 "replay_append_sec": replay_add_dt,
@@ -320,7 +457,14 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         should_plot = (epoch + 1) % max(cfg.train.plot_every_k_epochs, 1) == 0 or epoch == cfg.train.num_epochs - 1
         if should_plot:
-            _plot(metrics_history, Path(cfg.plots_dir), cfg.train.winrate_window_size)
+            _plot(
+                metrics_history,
+                Path(cfg.plots_dir),
+                cfg.train.winrate_window_size,
+                cfg.league.alpha_recency,
+                cfg.league.alpha_uniform,
+                cfg.league.recency_decay,
+            )
 
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
