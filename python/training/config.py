@@ -40,7 +40,7 @@ class TrainConfig:
     optimizer_type: str = "adam"
     learning_rate: float = 1e-3
     lr_decay_factor: float = 0.98
-    lr_decay_every_steps: int = 5
+    lr_decay_every_steps: int = 50
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
