@@ -280,7 +280,15 @@ def move_steps_from_mv(mv8, turn_white=True):
 
 
 def normalize_steps(steps):
-    return tuple(sorted((int(fr), int(to)) for fr, to in steps))
+    def _norm_point(v):
+        if isinstance(v, str):
+            if v == "BAR":
+                return 30
+            if v == "OFF":
+                return 25
+        return int(v)
+
+    return tuple(sorted((_norm_point(fr), _norm_point(to)) for fr, to in steps))
 
 
 def matching_move_indices(moves, manual_steps, turn_white):
