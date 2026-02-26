@@ -15,6 +15,33 @@ class _NoMoveEnv:
         return np.empty((0, 8), dtype=np.uint8)
 
 
+
+
+def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(tmp_path / "replay"))
+    for i in range(40):
+        aid = "trainable_0" if i % 2 == 0 else "trainable_1"
+        replay.add(
+            state_vector=[float(i), 0.0],
+            agent_id=aid,
+            opponent_id="opp",
+            game_id=f"g_{i // 2}",
+            step_index=i,
+            epoch=0,
+            terminal_outcome=1.0 if aid == "trainable_0" else 0.0,
+        )
+
+    x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2, recency_window=2)
+    replay.close()
+
+    assert x.shape[0] == 64
+    assert y.shape == (64, 1)
+    assert a.shape == (64,)
+    assert set(a.tolist()).issubset({"trainable_0", "trainable_1"})
+
+
 def test_config_roundtrip(tmp_path: Path):
     cfg = ExperimentConfig()
     p = tmp_path / "cfg.json"

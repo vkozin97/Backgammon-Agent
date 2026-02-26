@@ -364,29 +364,48 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         replay_sample_time_total = 0.0
         replay_sample_calls = 0
         if len(replay) >= cfg.league.min_replay_size_to_train:
-            agents_by_group: dict[str, list] = {}
+            required_per_agent = int(cfg.train.updates_per_epoch_per_agent * cfg.train.batch_size)
+            pool_oversample_factor = 4
+            total_required = required_per_agent * len(agents) * pool_oversample_factor
+
+            sample_t0 = time.time()
+            pool_x, pool_y, pool_agent_ids = replay.sample_with_agent_ids(
+                total_required,
+                cfg.league.alpha_recency,
+                cfg.league.alpha_uniform,
+                cfg.league.recency_window,
+            )
+            replay_sample_time_total += time.time() - sample_t0
+            replay_sample_calls += 1
+
             for agent in agents:
-                agents_by_group.setdefault(agent.group, []).append(agent)
+                mask = pool_agent_ids == agent.agent_id
+                x_agent = pool_x[mask]
+                y_agent = pool_y[mask]
+                if x_agent.shape[0] == 0:
+                    continue
 
-            for group_agents in agents_by_group.values():
-                for _ in range(cfg.train.updates_per_epoch_per_agent):
-                    # One replay sample and one host->device transfer per architecture group.
-                    sample_t0 = time.time()
-                    x_np, y_np = replay.sample(
-                        cfg.train.batch_size,
-                        cfg.league.alpha_recency,
-                        cfg.league.alpha_uniform,
-                        cfg.league.recency_window,
-                    )
-                    replay_sample_time_total += time.time() - sample_t0
-                    replay_sample_calls += 1
+                if x_agent.shape[0] < required_per_agent:
+                    refill_idx = np.random.randint(0, x_agent.shape[0], size=required_per_agent)
+                    x_agent = x_agent[refill_idx]
+                    y_agent = y_agent[refill_idx]
+                else:
+                    take_idx = np.random.permutation(x_agent.shape[0])[:required_per_agent]
+                    x_agent = x_agent[take_idx]
+                    y_agent = y_agent[take_idx]
 
-                    x_t = torch.as_tensor(x_np, dtype=torch.float32, device=group_agents[0].device)
-                    y_t = torch.as_tensor(y_np, dtype=torch.float32, device=group_agents[0].device)
+                for update_idx in range(cfg.train.updates_per_epoch_per_agent):
+                    left = update_idx * cfg.train.batch_size
+                    right = left + cfg.train.batch_size
+                    x_np = x_agent[left:right]
+                    y_np = y_agent[left:right]
+                    if x_np.shape[0] == 0:
+                        continue
 
-                    for agent in group_agents:
-                        train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
-                        train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
+                    x_t = torch.as_tensor(x_np, dtype=torch.float32, device=agent.device)
+                    y_t = torch.as_tensor(y_np, dtype=torch.float32, device=agent.device)
+                    train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
+                    train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
         train_dt = max(time.time() - t0, 1e-6)
         steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
 
