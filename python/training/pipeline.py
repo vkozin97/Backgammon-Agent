@@ -10,7 +10,7 @@ import torch
 from .agents import build_trainable_agents
 from .config import ExperimentConfig, save_config
 from .league import LeagueController
-from .replay import ReplayBuffer
+from .replay import ReplayBuffer, build_recency_weights
 
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -38,6 +38,14 @@ def load_checkpoint(cfg: ExperimentConfig, agents, epoch: int) -> None:
         a.load_state_dict(s)
 
 
+def _clear_replay_storage(storage_dir: str) -> None:
+    replay_dir = Path(storage_dir)
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    for p in replay_dir.glob("replay.sqlite3*"):
+        if p.is_file():
+            p.unlink()
+
+
 def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     if not values:
         return []
@@ -59,7 +67,7 @@ def _plot(
     winrate_window_size: int,
     alpha_recency: float,
     alpha_uniform: float,
-    recency_decay: float,
+    recency_center_mass_ratio: float,
 ) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -134,15 +142,13 @@ def _plot(
                     continue
                 n_states = max(int(round(cur_size)), 1)
                 uniform_prob = 1.0 / float(n_states)
-                if abs(recency_decay - 1.0) < 1e-12:
-                    recency_den = float(n_states)
-                else:
-                    recency_den = float((1.0 - recency_decay**n_states) / (1.0 - recency_decay))
+                recency_weights = build_recency_weights(n_states, recency_center_mass_ratio)
+                recency_probs = recency_weights / np.sum(recency_weights)
 
                 valid = y_grid <= cur_size
                 ratio = np.clip(y_grid[valid] / cur_size, 0.0, 1.0)
-                age = (1.0 - ratio) * max(n_states - 1, 0)
-                recency_prob = np.power(recency_decay, age) / recency_den
+                pos = np.clip(np.round(ratio * max(n_states - 1, 0)).astype(np.int64), 0, max(n_states - 1, 0))
+                recency_prob = recency_probs[pos]
                 mix_prob = alpha_recency * recency_prob + alpha_uniform * uniform_prob
                 area_weights[valid, i] = mix_prob
 
@@ -302,7 +308,12 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
-    replay = ReplayBuffer(cfg.league.replay_storage_dir, recency_decay=cfg.league.recency_decay)
+    _clear_replay_storage(cfg.league.replay_storage_dir)
+    replay = ReplayBuffer(
+        cfg.league.replay_storage_dir,
+        recency_decay=cfg.league.recency_decay,
+        recency_center_mass_ratio=cfg.league.recency_center_mass_ratio,
+    )
     metrics_history: list[dict] = []
 
     all_agent_ids = [x.agent_id for x in agents] + ["random", "baseline"]
@@ -463,7 +474,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
                 cfg.train.winrate_window_size,
                 cfg.league.alpha_recency,
                 cfg.league.alpha_uniform,
-                cfg.league.recency_decay,
+                cfg.league.recency_center_mass_ratio,
             )
 
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:

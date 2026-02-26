@@ -67,6 +67,7 @@ class LeagueConfig:
     alpha_uniform: float = 0.2
     recency_window: int = 2
     recency_decay: float = 0.98
+    recency_center_mass_ratio: float = 0.8
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
     selfplay_temperature: float = 1.0
