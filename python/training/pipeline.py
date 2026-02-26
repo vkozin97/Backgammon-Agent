@@ -145,28 +145,79 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
             plt.savefig(winrates_windowed_dir / f"{aid}_winrates_windowed_focus_{focus_opp}.png")
             plt.close()
 
-        losses = [m["agents"][aid].get("train_loss_epoch") for m in metrics_history]
-        if any(v is not None for v in losses):
-            sanitized_loss = [float(v) if v is not None else np.nan for v in losses]
+        loss_steps: list[float] = []
+        loss_epoch_end_steps: list[int] = []
+        loss_learning_steps_per_epoch: list[int] = []
+        loss_cursor = 0
+        for m in metrics_history:
+            epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
+            if epoch_loss_steps:
+                sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
+                loss_steps.extend(sanitized_epoch_loss)
+                loss_learning_steps_per_epoch.append(len(sanitized_epoch_loss))
+            loss_cursor += len(epoch_loss_steps)
+            loss_epoch_end_steps.append(loss_cursor)
+
+        if loss_steps:
+            loss_xs = list(range(1, len(loss_steps) + 1))
+            loss_epoch_boundaries = sorted({x for x in loss_epoch_end_steps[:-1] if 0 < x < len(loss_steps)})
+            base_steps = loss_learning_steps_per_epoch[0] if loss_learning_steps_per_epoch else len(loss_steps)
+            loss_window = max(int(round(base_steps * 0.25)), 1)
+            loss_steps_windowed = _exp_windowed(loss_steps, loss_window)
+
             plt.figure(figsize=(6, 3))
-            plt.plot(xs, sanitized_loss)
+            plt.plot(loss_xs, loss_steps, label="loss", linewidth=1.2)
+            plt.plot(loss_xs, loss_steps_windowed, linestyle="--", label=f"windowed (w={loss_window})", linewidth=1.3)
+            for boundary in loss_epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle=":", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} train loss")
-            plt.xlabel("epoch")
+            plt.xlabel("learning step")
             plt.ylabel("loss")
+            plt.legend(fontsize=7)
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
 
-        lrs = [m["agents"][aid].get("learning_rate") for m in metrics_history]
-        if any(v is not None for v in lrs):
-            sanitized_lr = [float(v) if v is not None else np.nan for v in lrs]
+        lr_steps: list[float] = []
+        epoch_end_steps: list[int] = []
+        learning_steps_per_epoch: list[int] = []
+        cursor = 0
+        for m in metrics_history:
+            epoch_lr_steps = m["agents"][aid].get("learning_rate_steps_epoch", [])
+            if epoch_lr_steps:
+                sanitized_epoch_lr = [float(v) for v in epoch_lr_steps]
+                lr_steps.extend(sanitized_epoch_lr)
+                learning_steps_per_epoch.append(len(sanitized_epoch_lr))
+            cursor += len(epoch_lr_steps)
+            epoch_end_steps.append(cursor)
+
+        if lr_steps:
+            lr_xs = list(range(1, len(lr_steps) + 1))
+            epoch_boundaries = sorted({x for x in epoch_end_steps[:-1] if 0 < x < len(lr_steps)})
+
             plt.figure(figsize=(6, 3))
-            plt.plot(xs, sanitized_lr)
+            plt.plot(lr_xs, lr_steps)
+            for boundary in epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle="--", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} learning rate")
-            plt.xlabel("epoch")
+            plt.xlabel("learning step")
             plt.ylabel("lr")
             plt.tight_layout()
             plt.savefig(lr_dir / f"{aid}_lr.png")
+            plt.close()
+
+            base_steps = learning_steps_per_epoch[0] if learning_steps_per_epoch else len(lr_steps)
+            lr_window = max(int(round(base_steps * 0.25)), 1)
+            lr_steps_windowed = _exp_windowed(lr_steps, lr_window)
+            plt.figure(figsize=(6, 3))
+            plt.plot(lr_xs, lr_steps_windowed)
+            for boundary in epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle="--", color="gray", linewidth=0.8, alpha=0.8)
+            plt.title(f"{aid} learning rate windowed (w={lr_window})")
+            plt.xlabel("learning step")
+            plt.ylabel("windowed lr")
+            plt.tight_layout()
+            plt.savefig(lr_dir / f"{aid}_lr_windowed.png")
             plt.close()
 
 
@@ -220,6 +271,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         print("[4/6] Training started")
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
+        train_lrs_steps: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         t0 = time.time()
         replay_sample_time_total = 0.0
         replay_sample_calls = 0
@@ -246,12 +298,16 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
                     for agent in group_agents:
                         train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
+                        train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
         train_dt = max(time.time() - t0, 1e-6)
         steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
 
         per_agent = {aid: {
             "train_loss_epoch": None,
+            "train_loss_steps_epoch": [],
             "learning_rate": None,
+            "learning_rate_steps_epoch": [],
+            "learning_steps_epoch": 0,
             "winrate_vs_random": 0.0,
             "winrate_vs_baseline": 0.0,
             "aggregate_winrate_vs_trainable": 0.0,
@@ -261,7 +317,10 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         for a in agents:
             per_agent[a.agent_id]["train_loss_epoch"] = float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0)
+            per_agent[a.agent_id]["train_loss_steps_epoch"] = train_losses[a.agent_id]
             per_agent[a.agent_id]["learning_rate"] = float(a.optimizer.param_groups[0]["lr"])
+            per_agent[a.agent_id]["learning_rate_steps_epoch"] = train_lrs_steps[a.agent_id]
+            per_agent[a.agent_id]["learning_steps_epoch"] = len(train_lrs_steps[a.agent_id])
 
         for aid in all_agent_ids:
             for opp in all_agent_ids:
