@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import sqlite3
 
 from training.config import ExperimentConfig, save_config, load_config
 from training.pipeline import run_training, load_checkpoint, _games_for_pair
@@ -12,6 +13,33 @@ class _NoMoveEnv:
         import numpy as np
 
         return np.empty((0, 8), dtype=np.uint8)
+
+
+
+
+def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(tmp_path / "replay"))
+    for i in range(40):
+        aid = "trainable_0" if i % 2 == 0 else "trainable_1"
+        replay.add(
+            state_vector=[float(i), 0.0],
+            agent_id=aid,
+            opponent_id="opp",
+            game_id=f"g_{i // 2}",
+            step_index=i,
+            epoch=0,
+            terminal_outcome=1.0 if aid == "trainable_0" else 0.0,
+        )
+
+    x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2, recency_window=2)
+    replay.close()
+
+    assert x.shape[0] == 64
+    assert y.shape == (64, 1)
+    assert a.shape == (64,)
+    assert set(a.tolist()).issubset({"trainable_0", "trainable_1"})
 
 
 def test_config_roundtrip(tmp_path: Path):
@@ -100,3 +128,30 @@ def test_temperature_decay_progression(tmp_path: Path):
     assert len(metrics) == 2
     assert metrics[0]["decision_temperature"] == 1.0
     assert abs(metrics[1]["decision_temperature"] - 0.9) < 1e-9
+
+
+def test_run_training_clears_replay_db_on_fresh_start(tmp_path: Path):
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    db_path = replay_dir / "replay.sqlite3"
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE stale (id INTEGER PRIMARY KEY)")
+    conn.execute("INSERT INTO stale (id) VALUES (1)")
+    conn.commit()
+    conn.close()
+
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 0
+    cfg.league.replay_storage_dir = str(replay_dir)
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+
+    metrics = run_training(cfg)
+    assert metrics == []
+
+    conn = sqlite3.connect(db_path)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    conn.close()
+    assert "replay" in tables
+    assert "stale" not in tables

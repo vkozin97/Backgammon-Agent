@@ -10,7 +10,7 @@ import torch
 from .agents import build_trainable_agents
 from .config import ExperimentConfig, save_config
 from .league import LeagueController
-from .replay import ReplayBuffer
+from .replay import ReplayBuffer, build_recency_weights
 
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -38,6 +38,20 @@ def load_checkpoint(cfg: ExperimentConfig, agents, epoch: int) -> None:
         a.load_state_dict(s)
 
 
+def _clear_replay_storage(storage_dir: str) -> None:
+    replay_dir = Path(storage_dir)
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    for p in replay_dir.glob("replay.sqlite3*"):
+        if not p.is_file():
+            continue
+        try:
+            p.unlink()
+        except PermissionError:
+            # On Windows a live SQLite handle can keep the file locked.
+            # Fallback cleanup is performed by ReplayBuffer(clear_existing=True).
+            continue
+
+
 def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     if not values:
         return []
@@ -59,7 +73,7 @@ def _plot(
     winrate_window_size: int,
     alpha_recency: float,
     alpha_uniform: float,
-    recency_decay: float,
+    recency_center_mass_ratio: float,
 ) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -134,15 +148,13 @@ def _plot(
                     continue
                 n_states = max(int(round(cur_size)), 1)
                 uniform_prob = 1.0 / float(n_states)
-                if abs(recency_decay - 1.0) < 1e-12:
-                    recency_den = float(n_states)
-                else:
-                    recency_den = float((1.0 - recency_decay**n_states) / (1.0 - recency_decay))
+                recency_weights = build_recency_weights(n_states, recency_center_mass_ratio)
+                recency_probs = recency_weights / np.sum(recency_weights)
 
                 valid = y_grid <= cur_size
                 ratio = np.clip(y_grid[valid] / cur_size, 0.0, 1.0)
-                age = (1.0 - ratio) * max(n_states - 1, 0)
-                recency_prob = np.power(recency_decay, age) / recency_den
+                pos = np.clip(np.round(ratio * max(n_states - 1, 0)).astype(np.int64), 0, max(n_states - 1, 0))
+                recency_prob = recency_probs[pos]
                 mix_prob = alpha_recency * recency_prob + alpha_uniform * uniform_prob
                 area_weights[valid, i] = mix_prob
 
@@ -302,7 +314,13 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
-    replay = ReplayBuffer(cfg.league.replay_storage_dir, recency_decay=cfg.league.recency_decay)
+    _clear_replay_storage(cfg.league.replay_storage_dir)
+    replay = ReplayBuffer(
+        cfg.league.replay_storage_dir,
+        recency_decay=cfg.league.recency_decay,
+        recency_center_mass_ratio=cfg.league.recency_center_mass_ratio,
+        clear_existing=True,
+    )
     metrics_history: list[dict] = []
 
     all_agent_ids = [x.agent_id for x in agents] + ["random", "baseline"]
@@ -353,29 +371,48 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         replay_sample_time_total = 0.0
         replay_sample_calls = 0
         if len(replay) >= cfg.league.min_replay_size_to_train:
-            agents_by_group: dict[str, list] = {}
+            required_per_agent = int(cfg.train.updates_per_epoch_per_agent * cfg.train.batch_size)
+            pool_oversample_factor = 4
+            total_required = required_per_agent * len(agents) * pool_oversample_factor
+
+            sample_t0 = time.time()
+            pool_x, pool_y, pool_agent_ids = replay.sample_with_agent_ids(
+                total_required,
+                cfg.league.alpha_recency,
+                cfg.league.alpha_uniform,
+                cfg.league.recency_window,
+            )
+            replay_sample_time_total += time.time() - sample_t0
+            replay_sample_calls += 1
+
             for agent in agents:
-                agents_by_group.setdefault(agent.group, []).append(agent)
+                mask = pool_agent_ids == agent.agent_id
+                x_agent = pool_x[mask]
+                y_agent = pool_y[mask]
+                if x_agent.shape[0] == 0:
+                    continue
 
-            for group_agents in agents_by_group.values():
-                for _ in range(cfg.train.updates_per_epoch_per_agent):
-                    # One replay sample and one host->device transfer per architecture group.
-                    sample_t0 = time.time()
-                    x_np, y_np = replay.sample(
-                        cfg.train.batch_size,
-                        cfg.league.alpha_recency,
-                        cfg.league.alpha_uniform,
-                        cfg.league.recency_window,
-                    )
-                    replay_sample_time_total += time.time() - sample_t0
-                    replay_sample_calls += 1
+                if x_agent.shape[0] < required_per_agent:
+                    refill_idx = np.random.randint(0, x_agent.shape[0], size=required_per_agent)
+                    x_agent = x_agent[refill_idx]
+                    y_agent = y_agent[refill_idx]
+                else:
+                    take_idx = np.random.permutation(x_agent.shape[0])[:required_per_agent]
+                    x_agent = x_agent[take_idx]
+                    y_agent = y_agent[take_idx]
 
-                    x_t = torch.as_tensor(x_np, dtype=torch.float32, device=group_agents[0].device)
-                    y_t = torch.as_tensor(y_np, dtype=torch.float32, device=group_agents[0].device)
+                for update_idx in range(cfg.train.updates_per_epoch_per_agent):
+                    left = update_idx * cfg.train.batch_size
+                    right = left + cfg.train.batch_size
+                    x_np = x_agent[left:right]
+                    y_np = y_agent[left:right]
+                    if x_np.shape[0] == 0:
+                        continue
 
-                    for agent in group_agents:
-                        train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
-                        train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
+                    x_t = torch.as_tensor(x_np, dtype=torch.float32, device=agent.device)
+                    y_t = torch.as_tensor(y_np, dtype=torch.float32, device=agent.device)
+                    train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
+                    train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
         train_dt = max(time.time() - t0, 1e-6)
         steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
 
@@ -463,7 +500,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
                 cfg.train.winrate_window_size,
                 cfg.league.alpha_recency,
                 cfg.league.alpha_uniform,
-                cfg.league.recency_decay,
+                cfg.league.recency_center_mass_ratio,
             )
 
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
