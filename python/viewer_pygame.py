@@ -1,8 +1,12 @@
 import sys
+import json
+from pathlib import Path
 import numpy as np
 import pygame
 
 import bg_env  # pybind11 module
+from training.agents import build_trainable_agents
+from training.config import ExperimentConfig
 
 
 # ----------------- raw decode -----------------
@@ -87,6 +91,54 @@ TRI_MARGIN = 10
 DICE_SIZE = 42
 DICE_GAP = 12
 LEGAL_MOVES_UNIQUE = True
+
+# Viewer hyperparameters
+agent_mode = "hint"  # "none" | "hint" | "play"
+agent_id = "trainable_0"
+agent_epoch = 44
+agent_checkpoint_dir = "training_stats/checkpoints"
+
+
+def _agent_index_from_id(agent_id: str) -> int:
+    if not agent_id.startswith("trainable_"):
+        raise ValueError(f"Unsupported agent_id={agent_id!r}. Expected trainable_N.")
+    return int(agent_id.split("_", 1)[1])
+
+
+def load_eval_agent(agent_id: str, agent_epoch: int, checkpoint_dir: str):
+    ckpt = Path(checkpoint_dir) / f"epoch_{agent_epoch:04d}"
+    cfg_data = json.loads((ckpt / "config.json").read_text(encoding="utf-8"))
+    cfg = ExperimentConfig.from_dict(cfg_data)
+    agents = build_trainable_agents(cfg, cfg.train.seed)
+    states = json.loads((ckpt / "agents.json").read_text(encoding="utf-8"))
+    for a, s in zip(agents, states):
+        a.load_state_dict(s)
+    idx = _agent_index_from_id(agent_id)
+    if not (0 <= idx < len(agents)):
+        raise ValueError(f"agent_id index out of range: {agent_id!r}")
+    return agents[idx]
+
+
+def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
+    if agent is None:
+        return [
+            (i, np.asarray(mv, dtype=np.uint8), None)
+            for i, mv in enumerate(sorted_moves_for_panel(moves, turn_white=turn_white))
+        ]
+    sim = bg_env.Env(0)
+    state0 = np.asarray(env.get_state_raw(), dtype=np.int16)
+    result = []
+    for i, mv in enumerate(moves):
+        sim.set_state_raw(state0)
+        _, done = sim.step_move(np.asarray(mv, dtype=np.uint8))
+        if done:
+            value = 1.0
+        else:
+            obs = np.asarray(sim.get_state_raw(), dtype=np.float32)[:52].reshape(1, -1)
+            value = float(agent.predict_proba(obs).reshape(-1)[0])
+        result.append((i, np.asarray(mv, dtype=np.uint8), float(value)))
+    result.sort(key=lambda x: (-x[2], tuple(int(v) for v in x[1].tolist())))
+    return result
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -228,7 +280,15 @@ def move_steps_from_mv(mv8, turn_white=True):
 
 
 def normalize_steps(steps):
-    return tuple(sorted((int(fr), int(to)) for fr, to in steps))
+    def _norm_point(v):
+        if isinstance(v, str):
+            if v == "BAR":
+                return 30
+            if v == "OFF":
+                return 25
+        return int(v)
+
+    return tuple(sorted((_norm_point(fr), _norm_point(to)) for fr, to in steps))
 
 
 def matching_move_indices(moves, manual_steps, turn_white):
@@ -407,7 +467,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     return point_rects, bar_rect, dice_rects, undo_rect, ok_rect
 
 
-def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white):
+def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -422,11 +482,19 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
 
     y += 30
     max_lines = (H - y - 150) // 18
-    panel_moves = sorted_moves_for_panel(moves, turn_white)
+    if move_hints:
+        panel_moves = [mv for _, mv, _ in move_hints]
+    else:
+        panel_moves = sorted_moves_for_panel(moves, turn_white)
     for i in range(min(len(panel_moves), max_lines)):
         steps = move_steps_from_mv(panel_moves[i], turn_white=turn_white)
         line = " | ".join(f"{a}->{b}" for a, b in steps) if steps else "(empty)"
-        draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, (45, 45, 45))
+        color = (45, 45, 45)
+        if i == selected_hint_idx:
+            color = (220, 180, 0)
+        if move_hints and i < len(move_hints) and move_hints[i][2] is not None:
+            line = f"{line}  v={move_hints[i][2]:.4f}"
+        draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, color)
         y += 18
 
     y = H - 120
@@ -447,6 +515,10 @@ def main():
     env = bg_env.Env(123)
     env.reset()
 
+    agent = None
+    if agent_mode in ("hint", "play"):
+        agent = load_eval_agent(agent_id, agent_epoch, agent_checkpoint_dir)
+
     turn_white = True
     info_lines = ["Started. Click points (or bar) to move checkers."]
 
@@ -457,7 +529,7 @@ def main():
         return mv
 
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
             dice_values = [d[0], d[1]]
@@ -470,14 +542,59 @@ def main():
         history = []
         env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
+        turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
 
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
+    selected_hint_idx = 0
+    turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
     start_turn()
     moves = refresh_moves()
 
     piece_anim = None
     shake_anim = None
+    macro_anim_steps = []
+    macro_anim_idx = 0
+    macro_anim_turn_white = True
+    macro_anim_value = None
+    macro_anim_move = np.full((8,), 255, dtype=np.uint8)
+
+    def start_macro_animation(chosen_mv: np.ndarray, chosen_value):
+        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim
+        mv = np.asarray(chosen_mv, dtype=np.uint8)
+        steps = []
+        for k in range(4):
+            fr = int(mv[2 * k])
+            to = int(mv[2 * k + 1])
+            if fr == 255 or to == 255:
+                continue
+            steps.append((fr, to))
+        macro_anim_steps = steps
+        macro_anim_idx = 0
+        macro_anim_turn_white = turn_white
+        macro_anim_value = chosen_value
+        macro_anim_move = mv.copy()
+        env.set_state_raw(turn_start_state)
+        if not macro_anim_steps:
+            return
+        prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        env_from, env_to = macro_anim_steps[macro_anim_idx]
+        ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+        if not ok:
+            macro_anim_steps = []
+            info_lines.append("Failed to animate selected macro-step.")
+            return
+        post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
+        to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
+        piece_anim = {
+            "start": checker_position_for_state(prev_state, from_disp, macro_anim_turn_white),
+            "end": checker_position_for_state(post_state, to_disp, macro_anim_turn_white),
+            "is_white": macro_anim_turn_white,
+            "start_time": pygame.time.get_ticks() / 1000.0,
+            "t": 0.0,
+        }
+        macro_anim_idx += 1
     running = True
     while running:
         clock.tick(FPS)
@@ -500,6 +617,25 @@ def main():
         selected_die_idx = active_idx
         required_steps = max_micro_steps_in_moves(moves, turn_white)
         can_submit = len(moves) == 0 or len(manual_steps) == required_steps
+        move_hints = evaluate_moves(env, moves, agent, turn_white)
+        if move_hints:
+            selected_hint_idx = max(0, min(selected_hint_idx, len(move_hints) - 1))
+        else:
+            selected_hint_idx = 0
+
+        if agent_mode == "play" and not turn_white and len(move_hints) > 0:
+            env.set_state_raw(turn_start_state)
+            _, best_mv, best_v = move_hints[0]
+            _, done = env.step_move(best_mv)
+            info_lines.append(f"Agent({agent_id}) black: {move_to_str(best_mv, turn_white=False)} | v={best_v:.4f}")
+            if done:
+                env.reset()
+                turn_white = True
+            else:
+                turn_white = not turn_white
+            start_turn()
+            moves = refresh_moves()
+            continue
 
         now = pygame.time.get_ticks() / 1000.0
         if piece_anim is not None:
@@ -515,11 +651,45 @@ def main():
             else:
                 shake_anim["t"] = t
 
+        if piece_anim is None and macro_anim_steps:
+            if macro_anim_idx < len(macro_anim_steps):
+                prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                env_from, env_to = macro_anim_steps[macro_anim_idx]
+                ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+                if not ok:
+                    info_lines.append("Failed to animate selected macro-step.")
+                    macro_anim_steps = []
+                else:
+                    post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
+                    to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
+                    piece_anim = {
+                        "start": checker_position_for_state(prev_state, from_disp, macro_anim_turn_white),
+                        "end": checker_position_for_state(post_state, to_disp, macro_anim_turn_white),
+                        "is_white": macro_anim_turn_white,
+                        "start_time": pygame.time.get_ticks() / 1000.0,
+                        "t": 0.0,
+                    }
+                    macro_anim_idx += 1
+            else:
+                value_suffix = f" | v={macro_anim_value:.4f}" if macro_anim_value is not None else ""
+                info_lines.append(f"Macro: {move_to_str(macro_anim_move, turn_white=macro_anim_turn_white)}{value_suffix}")
+                done = int(np.asarray(env.get_state_raw())[49]) >= 15
+                if done:
+                    env.reset()
+                    turn_white = True
+                else:
+                    env.commit_turn()
+                    turn_white = not macro_anim_turn_white
+                start_turn()
+                moves = refresh_moves()
+                macro_anim_steps = []
+
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit, piece_anim, shake_anim
         )
-        draw_panel(screen, font, small, moves, info_lines, manual_steps, turn_white)
+        draw_panel(screen, font, small, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx)
         pygame.display.flip()
 
         for event in pygame.event.get():
@@ -528,6 +698,8 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                elif macro_anim_steps:
+                    continue
                 elif event.key == pygame.K_n:
                     env.reset()
                     turn_white = True
@@ -538,6 +710,17 @@ def main():
                     start_turn()
                     moves = refresh_moves()
                     info_lines.append(f"Reroll: {dice_values}")
+                elif pygame.K_0 <= event.key <= pygame.K_9:
+                    selected_hint_idx = min(event.key - pygame.K_0, max(0, len(move_hints) - 1))
+                elif event.key == pygame.K_UP:
+                    selected_hint_idx = max(0, selected_hint_idx - 1)
+                elif event.key == pygame.K_DOWN:
+                    selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1)
+                elif event.key == pygame.K_RETURN and len(move_hints) > 0:
+                    _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
+                    start_macro_animation(chosen_mv, chosen_v)
+            if macro_anim_steps:
+                continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if undo_rect.collidepoint(mx, my) and history:
@@ -550,11 +733,21 @@ def main():
                     continue
 
                 if ok_rect.collidepoint(mx, my) and can_submit:
+                    chosen_value = None
+                    if move_hints and move_hints[0][2] is not None:
+                        matched = matching_move_indices(moves, manual_steps, turn_white)
+                        if matched:
+                            matched_set = set(matched)
+                            for move_i, _, value in move_hints:
+                                if move_i in matched_set:
+                                    chosen_value = value
+                                    break
                     done = int(np.asarray(env.get_state_raw())[49]) >= 15
                     reward = 1.0 if done else 0.0
                     if not done:
                         env.commit_turn()
-                    info_lines.append(f"Apply: {' | '.join(f'{a}->{b}' for a,b in manual_steps)} | r={reward} done={done}")
+                    value_suffix = f" | v={chosen_value:.4f}" if chosen_value is not None else ""
+                    info_lines.append(f"Apply: {' | '.join(f'{a}->{b}' for a,b in manual_steps)} | r={reward} done={done}{value_suffix}")
                     if done:
                         env.reset()
                         turn_white = True
