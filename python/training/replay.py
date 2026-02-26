@@ -37,12 +37,26 @@ class ReplayBuffer:
         self._rng = np.random.default_rng()
         self._recency_decay = float(recency_decay)
         self._renorm_every = 2048
-        self._pending_writes = 0
         self._commit_every = 256
+        self._pending_rows: list[tuple] = []
 
-        rows = self._conn.execute("SELECT recency_index FROM replay ORDER BY recency_index ASC").fetchall()
-        self._recency_indices = np.array([int(r[0]) for r in rows], dtype=np.int64)
-        self._size = int(self._recency_indices.size)
+        rows = self._conn.execute(
+            "SELECT recency_index, state_vector, terminal_outcome FROM replay ORDER BY recency_index ASC"
+        ).fetchall()
+        self._recency_indices: list[int] = []
+        self._states: list[np.ndarray] = []
+        self._outcomes: list[float] = []
+        self._id_to_pos: dict[int, int] = {}
+        for recency_index, state_blob, terminal_outcome in rows:
+            rid = int(recency_index)
+            pos = len(self._recency_indices)
+            self._recency_indices.append(rid)
+            self._states.append(np.frombuffer(state_blob, dtype=np.float32).copy())
+            self._outcomes.append(float(terminal_outcome))
+            self._id_to_pos[rid] = pos
+
+        self._size = len(self._recency_indices)
+        self._next_recency_index = int(self._recency_indices[-1]) + 1 if self._size > 0 else 1
 
         if self._size == 0:
             self._recency_weights = np.empty(0, dtype=np.float64)
@@ -60,14 +74,32 @@ class ReplayBuffer:
         if max_w > 0.0:
             self._recency_weights /= max_w
 
-    def add(self, **kwargs) -> None:
-        state_vector = np.asarray(kwargs["state_vector"], dtype=np.float32)
-        cur = self._conn.execute(
+    def _insert_pending_rows(self) -> None:
+        if not self._pending_rows:
+            return
+        self._conn.executemany(
             """
             INSERT INTO replay (
                 state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, timestamp
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
+            self._pending_rows,
+        )
+        self._conn.commit()
+        self._pending_rows = []
+
+    def _add_single(self, **kwargs) -> None:
+        state_vector = np.asarray(kwargs["state_vector"], dtype=np.float32)
+        terminal_outcome = float(kwargs["terminal_outcome"])
+
+        rid = self._next_recency_index
+        self._next_recency_index += 1
+        self._recency_indices.append(rid)
+        self._id_to_pos[rid] = self._size
+        self._states.append(state_vector)
+        self._outcomes.append(terminal_outcome)
+
+        self._pending_rows.append(
             (
                 state_vector.tobytes(),
                 int(state_vector.size),
@@ -76,13 +108,15 @@ class ReplayBuffer:
                 kwargs["game_id"],
                 int(kwargs["step_index"]),
                 int(kwargs["epoch"]),
-                float(kwargs["terminal_outcome"]),
+                terminal_outcome,
                 time.time(),
-            ),
+            )
         )
+        self._size += 1
 
-        rid = int(cur.lastrowid)
-        self._recency_indices = np.append(self._recency_indices, rid)
+    def add(self, **kwargs) -> None:
+        self._add_single(**kwargs)
+
         if self._recency_weights.size == 0:
             self._recency_weights = np.array([1.0], dtype=np.float64)
         else:
@@ -90,19 +124,33 @@ class ReplayBuffer:
             self._recency_weights = np.append(self._recency_weights, 1.0)
             self._normalize_weights()
 
-        self._size += 1
-        self._pending_writes += 1
-        if self._pending_writes >= self._commit_every:
-            self._conn.commit()
-            self._pending_writes = 0
+        if len(self._pending_rows) >= self._commit_every:
+            self._insert_pending_rows()
+
+    def add_many(self, records: list[dict]) -> None:
+        if not records:
+            return
+
+        for rec in records:
+            self._add_single(**rec)
+
+        n = len(records)
+        if self._recency_weights.size == 0:
+            self._recency_weights = np.power(self._recency_decay, np.arange(n - 1, -1, -1), dtype=np.float64)
+        else:
+            self._recency_weights *= np.power(self._recency_decay, n)
+            tail = np.power(self._recency_decay, np.arange(n - 1, -1, -1), dtype=np.float64)
+            self._recency_weights = np.concatenate([self._recency_weights, tail])
+            self._normalize_weights()
+
+        if len(self._pending_rows) >= self._commit_every:
+            self._insert_pending_rows()
 
     def __len__(self) -> int:
         return self._size
 
     def _flush_if_needed(self) -> None:
-        if self._pending_writes > 0:
-            self._conn.commit()
-            self._pending_writes = 0
+        self._insert_pending_rows()
 
     def sample(
         self,
@@ -138,29 +186,16 @@ class ReplayBuffer:
             extra = self._rng.integers(0, self._size, size=batch_size - sampled_pos.size)
             sampled_pos = np.concatenate([sampled_pos, extra])
 
-        sampled_ids = self._recency_indices[sampled_pos[:batch_size]]
+        sampled_ids = [self._recency_indices[i] for i in sampled_pos[:batch_size]]
+        sampled_ix = [self._id_to_pos[idx] for idx in sampled_ids]
 
-        unique_ids = np.unique(sampled_ids)
-        placeholders = ",".join(["?"] * int(unique_ids.size))
-        rows = self._conn.execute(
-            f"SELECT recency_index, state_vector, terminal_outcome FROM replay WHERE recency_index IN ({placeholders})",
-            [int(x) for x in unique_ids],
-        ).fetchall()
-
-        decoded: dict[int, tuple[np.ndarray, float]] = {}
-        for recency_index, state_blob, terminal_outcome in rows:
-            decoded[int(recency_index)] = (
-                np.frombuffer(state_blob, dtype=np.float32).copy(),
-                float(terminal_outcome),
-            )
-
-        states = np.stack([decoded[int(idx)][0] for idx in sampled_ids]).astype(np.float32)
-        outcomes = np.array([decoded[int(idx)][1] for idx in sampled_ids], dtype=np.float32).reshape(-1, 1)
+        states = np.stack([self._states[ix] for ix in sampled_ix]).astype(np.float32)
+        outcomes = np.array([self._outcomes[ix] for ix in sampled_ix], dtype=np.float32).reshape(-1, 1)
         return states, outcomes
 
     def get_meta(self) -> dict[str, int | str]:
         self._flush_if_needed()
-        counter = int(self._recency_indices[-1]) + 1 if self._size > 0 else 0
+        counter = int(self._next_recency_index)
         return {"size": self._size, "counter": counter, "db_path": str(self.db_path)}
 
     def close(self) -> None:
