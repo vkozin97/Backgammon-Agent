@@ -42,6 +42,41 @@ def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
     assert set(a.tolist()).issubset({"trainable_0", "trainable_1"})
 
 
+def test_replay_sample_stratified_with_agent_ids_returns_requested_counts(tmp_path: Path):
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(tmp_path / "replay"))
+    for i in range(60):
+        aid = "trainable_0" if i % 3 != 0 else "trainable_1"
+        replay.add(
+            state_vector=[float(i), 1.0],
+            agent_id=aid,
+            opponent_id="opp",
+            game_id=f"g_{i // 2}",
+            step_index=i,
+            epoch=0,
+            terminal_outcome=1.0 if aid == "trainable_0" else 0.0,
+        )
+
+    sampled = replay.sample_stratified_with_agent_ids(
+        {"trainable_0": 32, "trainable_1": 24, "unknown": 16},
+        alpha_recency=0.8,
+        alpha_uniform=0.2,
+        recency_window=2,
+    )
+    replay.close()
+
+    x0, y0 = sampled["trainable_0"]
+    x1, y1 = sampled["trainable_1"]
+    xu, yu = sampled["unknown"]
+
+    assert x0.shape[0] == 32
+    assert y0.shape == (32, 1)
+    assert x1.shape[0] == 24
+    assert y1.shape == (24, 1)
+    assert xu.shape[0] == 0
+    assert yu.shape == (0, 1)
+
 def test_config_roundtrip(tmp_path: Path):
     cfg = ExperimentConfig()
     p = tmp_path / "cfg.json"
