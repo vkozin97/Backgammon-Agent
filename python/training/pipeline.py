@@ -194,9 +194,11 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         replay_add_t0 = time.time()
         for game in game_results:
+            records = []
             for st in game.steps:
                 outcome = 1.0 if st["agent_id"] == game.winner else 0.0
-                replay.add(**st, terminal_outcome=outcome)
+                records.append({**st, "terminal_outcome": outcome})
+            replay.add_many(records)
         replay_add_dt = max(time.time() - replay_add_t0, 1e-6)
         print(f"[2/6] Replay append took {replay_add_dt:.2f} seconds")
 
