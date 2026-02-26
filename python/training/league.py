@@ -254,7 +254,7 @@ class LeagueController:
 
         if candidate_obs:
             probs = self._predict_probs_single_cuda_call(candidate_actor, np.stack(candidate_obs).astype(np.float32))
-            vals = np.where(np.asarray(candidate_done, dtype=bool), 1.0, probs)
+            vals = np.where(np.asarray(candidate_done, dtype=bool), 1.0, 1.0 - probs)
 
             grouped_vals: dict[int, list[float]] = {}
             for owner, val in zip(candidate_owner, vals):
