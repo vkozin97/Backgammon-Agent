@@ -86,7 +86,7 @@ def _plot(
 
     temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
     if any(np.isfinite(v) for v in temps):
-        plt.figure(figsize=(6, 3))
+        plt.figure(figsize=(18, 9))
         plt.plot(xs, temps)
         plt.title("Decision temperature")
         plt.xlabel("epoch")
@@ -101,7 +101,7 @@ def _plot(
             vals = m.get("decision_topk_freq", [])
             topk_series.append(float(vals[k - 1]) * 100.0 if len(vals) >= k else np.nan)
         if any(np.isfinite(v) for v in topk_series):
-            plt.figure(figsize=(6, 3))
+            plt.figure(figsize=(18, 9))
             plt.plot(xs, topk_series)
             plt.title(f"Selected action in top-{k} values")
             plt.xlabel("epoch")
@@ -159,7 +159,7 @@ def _plot(
                 area_norm = np.nan_to_num(area_norm, nan=0.0)
                 cmap = mcolors.LinearSegmentedColormap.from_list("white_to_orange", ["#ffffff", "#ff8c00"])
 
-                plt.figure(figsize=(6, 3))
+                plt.figure(figsize=(18, 9))
                 plt.imshow(
                     area_norm,
                     extent=[x_left, x_right, 0.0, y_max],
@@ -194,7 +194,7 @@ def _plot(
         }
 
         for focus_opp in opponents_for_agent:
-            plt.figure(figsize=(6, 3))
+            plt.figure(figsize=(18, 9))
             for opp in opponents_for_agent:
                 lw = 2.4 if opp == focus_opp else 1.0
                 alpha = 1.0 if opp == focus_opp else 0.4
@@ -208,7 +208,7 @@ def _plot(
             plt.savefig(winrates_dir / f"{aid}_winrates_focus_{focus_opp}.png")
             plt.close()
 
-            plt.figure(figsize=(6, 3))
+            plt.figure(figsize=(18, 9))
             for opp in opponents_for_agent:
                 lw = 2.4 if opp == focus_opp else 1.0
                 alpha = 1.0 if opp == focus_opp else 0.4
@@ -242,7 +242,7 @@ def _plot(
             loss_window = max(int(round(base_steps * 0.25)), 1)
             loss_steps_windowed = _exp_windowed(loss_steps, loss_window)
 
-            plt.figure(figsize=(6, 3))
+            plt.figure(figsize=(18, 9))
             plt.plot(loss_xs, loss_steps, label="loss", linewidth=1.2)
             plt.plot(loss_xs, loss_steps_windowed, linestyle="--", label=f"windowed (w={loss_window})", linewidth=1.3)
             for boundary in loss_epoch_boundaries:
@@ -272,7 +272,7 @@ def _plot(
             lr_xs = list(range(1, len(lr_steps) + 1))
             epoch_boundaries = sorted({x for x in epoch_end_steps[:-1] if 0 < x < len(lr_steps)})
 
-            plt.figure(figsize=(6, 3))
+            plt.figure(figsize=(18, 9))
             plt.plot(lr_xs, lr_steps)
             for boundary in epoch_boundaries:
                 plt.axvline(x=boundary + 0.5, linestyle="--", color="gray", linewidth=0.8, alpha=0.8)
@@ -286,7 +286,7 @@ def _plot(
             base_steps = learning_steps_per_epoch[0] if learning_steps_per_epoch else len(lr_steps)
             lr_window = max(int(round(base_steps * 0.25)), 1)
             lr_steps_windowed = _exp_windowed(lr_steps, lr_window)
-            plt.figure(figsize=(6, 3))
+            plt.figure(figsize=(18, 9))
             plt.plot(lr_xs, lr_steps_windowed)
             for boundary in epoch_boundaries:
                 plt.axvline(x=boundary + 0.5, linestyle="--", color="gray", linewidth=0.8, alpha=0.8)
