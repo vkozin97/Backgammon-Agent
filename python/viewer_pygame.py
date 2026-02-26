@@ -135,7 +135,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
             value = 1.0
         else:
             obs = np.asarray(sim.get_state_raw(), dtype=np.float32)[:52].reshape(1, -1)
-            value = float(agent.predict_proba(obs).reshape(-1)[0])
+            value = 1.0 - float(agent.predict_proba(obs).reshape(-1)[0])
         result.append((i, np.asarray(mv, dtype=np.uint8), float(value)))
     result.sort(key=lambda x: (-x[2], tuple(int(v) for v in x[1].tolist())))
     return result
@@ -493,7 +493,7 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
         if i == selected_hint_idx:
             color = (220, 180, 0)
         if move_hints and i < len(move_hints) and move_hints[i][2] is not None:
-            line = f"{line}  v={move_hints[i][2]:.4f}"
+            line = f"{line}  1-p={move_hints[i][2]:.4f}"
         draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, color)
         y += 18
 
@@ -672,7 +672,7 @@ def main():
                     }
                     macro_anim_idx += 1
             else:
-                value_suffix = f" | v={macro_anim_value:.4f}" if macro_anim_value is not None else ""
+                value_suffix = f" | 1-p={macro_anim_value:.4f}" if macro_anim_value is not None else ""
                 info_lines.append(f"Macro: {move_to_str(macro_anim_move, turn_white=macro_anim_turn_white)}{value_suffix}")
                 done = int(np.asarray(env.get_state_raw())[49]) >= 15
                 if done:
@@ -746,7 +746,7 @@ def main():
                     reward = 1.0 if done else 0.0
                     if not done:
                         env.commit_turn()
-                    value_suffix = f" | v={chosen_value:.4f}" if chosen_value is not None else ""
+                    value_suffix = f" | 1-p={chosen_value:.4f}" if chosen_value is not None else ""
                     info_lines.append(f"Apply: {' | '.join(f'{a}->{b}' for a,b in manual_steps)} | r={reward} done={done}{value_suffix}")
                     if done:
                         env.reset()
