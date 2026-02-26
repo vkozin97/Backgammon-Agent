@@ -62,13 +62,11 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
-    lr_windowed_dir = out_dir / "lr_windowed"
     decision_dir = out_dir / "decision_temperature"
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
-    lr_windowed_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
@@ -147,14 +145,35 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
             plt.savefig(winrates_windowed_dir / f"{aid}_winrates_windowed_focus_{focus_opp}.png")
             plt.close()
 
-        losses = [m["agents"][aid].get("train_loss_epoch") for m in metrics_history]
-        if any(v is not None for v in losses):
-            sanitized_loss = [float(v) if v is not None else np.nan for v in losses]
+        loss_steps: list[float] = []
+        loss_epoch_end_steps: list[int] = []
+        loss_learning_steps_per_epoch: list[int] = []
+        loss_cursor = 0
+        for m in metrics_history:
+            epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
+            if epoch_loss_steps:
+                sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
+                loss_steps.extend(sanitized_epoch_loss)
+                loss_learning_steps_per_epoch.append(len(sanitized_epoch_loss))
+            loss_cursor += len(epoch_loss_steps)
+            loss_epoch_end_steps.append(loss_cursor)
+
+        if loss_steps:
+            loss_xs = list(range(1, len(loss_steps) + 1))
+            loss_epoch_boundaries = sorted({x for x in loss_epoch_end_steps[:-1] if 0 < x < len(loss_steps)})
+            base_steps = loss_learning_steps_per_epoch[0] if loss_learning_steps_per_epoch else len(loss_steps)
+            loss_window = max(int(round(base_steps * 0.25)), 1)
+            loss_steps_windowed = _exp_windowed(loss_steps, loss_window)
+
             plt.figure(figsize=(6, 3))
-            plt.plot(xs, sanitized_loss)
+            plt.plot(loss_xs, loss_steps, label="loss", linewidth=1.2)
+            plt.plot(loss_xs, loss_steps_windowed, linestyle="--", label=f"windowed (w={loss_window})", linewidth=1.3)
+            for boundary in loss_epoch_boundaries:
+                plt.axvline(x=boundary + 0.5, linestyle=":", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} train loss")
-            plt.xlabel("epoch")
+            plt.xlabel("learning step")
             plt.ylabel("loss")
+            plt.legend(fontsize=7)
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
@@ -198,7 +217,7 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
             plt.xlabel("learning step")
             plt.ylabel("windowed lr")
             plt.tight_layout()
-            plt.savefig(lr_windowed_dir / f"{aid}_lr_windowed.png")
+            plt.savefig(lr_dir / f"{aid}_lr_windowed.png")
             plt.close()
 
 
@@ -285,6 +304,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         per_agent = {aid: {
             "train_loss_epoch": None,
+            "train_loss_steps_epoch": [],
             "learning_rate": None,
             "learning_rate_steps_epoch": [],
             "learning_steps_epoch": 0,
@@ -297,6 +317,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         for a in agents:
             per_agent[a.agent_id]["train_loss_epoch"] = float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0)
+            per_agent[a.agent_id]["train_loss_steps_epoch"] = train_losses[a.agent_id]
             per_agent[a.agent_id]["learning_rate"] = float(a.optimizer.param_groups[0]["lr"])
             per_agent[a.agent_id]["learning_rate_steps_epoch"] = train_lrs_steps[a.agent_id]
             per_agent[a.agent_id]["learning_steps_epoch"] = len(train_lrs_steps[a.agent_id])
