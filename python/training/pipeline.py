@@ -42,8 +42,14 @@ def _clear_replay_storage(storage_dir: str) -> None:
     replay_dir = Path(storage_dir)
     replay_dir.mkdir(parents=True, exist_ok=True)
     for p in replay_dir.glob("replay.sqlite3*"):
-        if p.is_file():
+        if not p.is_file():
+            continue
+        try:
             p.unlink()
+        except PermissionError:
+            # On Windows a live SQLite handle can keep the file locked.
+            # Fallback cleanup is performed by ReplayBuffer(clear_existing=True).
+            continue
 
 
 def _exp_windowed(values: list[float], window_size: int) -> list[float]:
@@ -313,6 +319,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         cfg.league.replay_storage_dir,
         recency_decay=cfg.league.recency_decay,
         recency_center_mass_ratio=cfg.league.recency_center_mass_ratio,
+        clear_existing=True,
     )
     metrics_history: list[dict] = []
 

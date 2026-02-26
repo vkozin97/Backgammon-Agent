@@ -43,6 +43,7 @@ class ReplayBuffer:
         storage_dir: str | None = None,
         recency_decay: float = 0.98,
         recency_center_mass_ratio: float = 0.8,
+        clear_existing: bool = False,
     ):
         base_dir = Path(storage_dir) if storage_dir else Path(tempfile.gettempdir()) / "backgammon_replay"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +68,10 @@ class ReplayBuffer:
             """
         )
         self._conn.commit()
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        if clear_existing:
+            self._conn.execute("DELETE FROM replay")
+            self._conn.commit()
 
         self._rng = np.random.default_rng()
         self._recency_decay = float(recency_decay)
