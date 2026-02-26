@@ -53,20 +53,30 @@ def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     return out
 
 
-def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) -> None:
+def _plot(
+    metrics_history: list[dict],
+    out_dir: Path,
+    winrate_window_size: int,
+    alpha_recency: float,
+    alpha_uniform: float,
+    recency_decay: float,
+) -> None:
     try:
         import matplotlib.pyplot as plt
+        from matplotlib import colors as mcolors
     except Exception:
         return
     winrates_dir = out_dir / "winrates"
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
+    replay_dir = out_dir / "replay"
     decision_dir = out_dir / "decision_temperature"
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
+    replay_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
@@ -100,6 +110,73 @@ def _plot(metrics_history: list[dict], out_dir: Path, winrate_window_size: int) 
             plt.tight_layout()
             plt.savefig(decision_dir / f"selected_action_top_{k}.png")
             plt.close()
+
+    replay_sizes = [int(m.get("replay_size", 0)) for m in metrics_history]
+    if replay_sizes and any(size > 0 for size in replay_sizes):
+        x_epoch = np.asarray(xs, dtype=np.float64)
+        y_size = np.asarray(replay_sizes, dtype=np.float64)
+        if x_epoch.size == 1:
+            x_left = float(x_epoch[0] - 0.5)
+            x_right = float(x_epoch[0] + 0.5)
+        else:
+            x_left = float(x_epoch[0])
+            x_right = float(x_epoch[-1])
+        x_dense = np.linspace(x_left, x_right, max(400, 50 * len(x_epoch)))
+        y_dense = np.interp(x_dense, x_epoch, y_size)
+        y_max = float(np.max(y_dense))
+        if y_max > 0.0:
+            ny = 256
+            y_grid = np.linspace(0.0, y_max, ny)
+            area_weights = np.full((ny, x_dense.size), np.nan, dtype=np.float64)
+            for i in range(x_dense.size):
+                cur_size = float(y_dense[i])
+                if cur_size <= 0.0:
+                    continue
+                n_states = max(int(round(cur_size)), 1)
+                uniform_prob = 1.0 / float(n_states)
+                if abs(recency_decay - 1.0) < 1e-12:
+                    recency_den = float(n_states)
+                else:
+                    recency_den = float((1.0 - recency_decay**n_states) / (1.0 - recency_decay))
+
+                valid = y_grid <= cur_size
+                ratio = np.clip(y_grid[valid] / cur_size, 0.0, 1.0)
+                age = (1.0 - ratio) * max(n_states - 1, 0)
+                recency_prob = np.power(recency_decay, age) / recency_den
+                mix_prob = alpha_recency * recency_prob + alpha_uniform * uniform_prob
+                area_weights[valid, i] = mix_prob
+
+            finite = np.isfinite(area_weights)
+            if np.any(finite):
+                min_w = float(np.nanmin(area_weights))
+                max_w = float(np.nanmax(area_weights))
+                if max_w > min_w:
+                    area_norm = (area_weights - min_w) / (max_w - min_w)
+                else:
+                    area_norm = np.zeros_like(area_weights)
+
+                alpha_mask = np.where(np.isfinite(area_norm), 0.95, 0.0)
+                area_norm = np.nan_to_num(area_norm, nan=0.0)
+                cmap = mcolors.LinearSegmentedColormap.from_list("white_to_orange", ["#ffffff", "#ff8c00"])
+
+                plt.figure(figsize=(6, 3))
+                plt.imshow(
+                    area_norm,
+                    extent=[x_left, x_right, 0.0, y_max],
+                    origin="lower",
+                    aspect="auto",
+                    cmap=cmap,
+                    alpha=alpha_mask,
+                    interpolation="bilinear",
+                )
+                plt.plot(x_epoch, y_size, color="#ff8c00", linewidth=2.0)
+                plt.title("Replay size")
+                plt.xlabel("epoch")
+                plt.ylabel("states in replay")
+                plt.ylim(0.0, y_max)
+                plt.tight_layout()
+                plt.savefig(replay_dir / "replay_size.png")
+                plt.close()
 
     for aid in agents:
         opponents_for_agent = sorted(metrics_history[-1]["agents"][aid]["winrate_vs_opponents"].keys())
@@ -359,6 +436,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
             "gpu_mem_mb": gpu_mem,
             "replay_sampling_total_sec": replay_sample_time_total,
             "replay_sampling_avg_ms": avg_sample_ms,
+            "replay_size": int(len(replay)),
             "timings": {
                 "selfplay_sec": play_dt,
                 "replay_append_sec": replay_add_dt,
@@ -379,7 +457,14 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
 
         should_plot = (epoch + 1) % max(cfg.train.plot_every_k_epochs, 1) == 0 or epoch == cfg.train.num_epochs - 1
         if should_plot:
-            _plot(metrics_history, Path(cfg.plots_dir), cfg.train.winrate_window_size)
+            _plot(
+                metrics_history,
+                Path(cfg.plots_dir),
+                cfg.train.winrate_window_size,
+                cfg.league.alpha_recency,
+                cfg.league.alpha_uniform,
+                cfg.league.recency_decay,
+            )
 
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
