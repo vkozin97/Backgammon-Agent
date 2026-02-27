@@ -227,9 +227,11 @@ def _plot(
     _print_plot_timing("replay-size plot", step_t0, plot_total_t0)
 
     step_t0 = time.perf_counter()
+    fixed_opponents = {"random", "conservative_baseline"}
     for aid in agents:
         agent_t0 = time.perf_counter()
-        opponents_for_agent = sorted(metrics_history[-1]["agents"][aid]["winrate_vs_opponents"].keys())
+        latest_opponents = set(metrics_history[-1]["agents"][aid].get("winrate_vs_opponents", {}).keys())
+        opponents_for_agent = sorted((latest_opponents | fixed_opponents) - {aid})
         xs = [m["epoch"] for m in metrics_history]
 
         # Winrate graphs: each figure contains all opponent lines,
