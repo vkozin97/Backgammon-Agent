@@ -521,7 +521,11 @@ def main():
     if agent_mode in ("hint", "play"):
         agent = load_eval_agent(agent_id, agent_epoch, agent_checkpoint_dir)
 
-    turn_white = True
+    def is_white_turn_from_env() -> bool:
+        ply = int(np.asarray(env.get_state_raw(), dtype=np.int16)[52])
+        return (ply % 2) == 0
+
+    turn_white = is_white_turn_from_env()
     info_lines = ["Started. Click points (or bar) to move checkers."]
 
     def refresh_moves():
@@ -552,6 +556,7 @@ def main():
     turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
     start_turn()
     moves = refresh_moves()
+    info_lines.append(f"First turn: {'white' if turn_white else 'black'}")
 
     piece_anim = None
     shake_anim = None
@@ -632,7 +637,7 @@ def main():
             info_lines.append(f"Agent({agent_id}) black: {move_to_str(best_mv, turn_white=False)} | v={best_v:.4f}")
             if done:
                 env.reset()
-                turn_white = True
+                turn_white = is_white_turn_from_env()
             else:
                 turn_white = not turn_white
             start_turn()
@@ -679,7 +684,7 @@ def main():
                 done = int(np.asarray(env.get_state_raw())[49]) >= 15
                 if done:
                     env.reset()
-                    turn_white = True
+                    turn_white = is_white_turn_from_env()
                 else:
                     env.commit_turn()
                     turn_white = not macro_anim_turn_white
@@ -704,10 +709,10 @@ def main():
                     continue
                 elif event.key == pygame.K_n:
                     env.reset()
-                    turn_white = True
+                    turn_white = is_white_turn_from_env()
                     start_turn()
                     moves = refresh_moves()
-                    info_lines.append("Reset env.")
+                    info_lines.append(f"Reset env. First turn: {'white' if turn_white else 'black'}")
                 elif event.key == pygame.K_r:
                     start_turn()
                     moves = refresh_moves()
@@ -752,7 +757,7 @@ def main():
                     info_lines.append(f"Apply: {' | '.join(f'{a}->{b}' for a,b in manual_steps)} | r={reward} done={done}{value_suffix}")
                     if done:
                         env.reset()
-                        turn_white = True
+                        turn_white = is_white_turn_from_env()
                     else:
                         turn_white = not turn_white
                     start_turn()
