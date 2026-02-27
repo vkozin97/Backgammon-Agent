@@ -53,7 +53,7 @@ class TorchMLPValueModel(nn.Module):
             dropout_layout=cfg.dropout_layout,
             p_dropout=cfg.p_dropout,
         )
-        self.out = nn.Linear(cfg.hidden_dims[-1], 1)
+        self.out = nn.Linear(cfg.hidden_dims[-1], cfg.output_dim)
         with torch.no_grad():
             self.out.bias.fill_(cfg.final_bias_init)
 
@@ -81,7 +81,7 @@ class TorchConvHeadValueModel(nn.Module):
             dropout_layout=cfg.dropout_layout,
             p_dropout=cfg.p_dropout,
         )
-        self.out = nn.Linear(cfg.head_hidden_dims[-1], 1)
+        self.out = nn.Linear(cfg.head_hidden_dims[-1], cfg.output_dim)
         with torch.no_grad():
             self.out.bias.fill_(cfg.final_bias_init)
 
@@ -125,7 +125,7 @@ class TorchDeepConvValueModel(nn.Module):
             dropout_layout=cfg.dropout_layout,
             p_dropout=cfg.p_dropout,
         )
-        self.out = nn.Linear(cfg.hidden_dims[-1], 1)
+        self.out = nn.Linear(cfg.hidden_dims[-1], cfg.output_dim)
         with torch.no_grad():
             self.out.bias.fill_(cfg.final_bias_init)
 
@@ -173,6 +173,8 @@ class ValueAgent:
                 weight_decay=train_cfg.weight_decay,
             )
         self.loss_type = train_cfg.loss_type
+        self.loss_weights = np.asarray(train_cfg.loss_weights, dtype=np.float32)
+        self.target_expansion = train_cfg.target_expansion
         self.grad_clip_norm = train_cfg.grad_clip_norm
         self.lr_decay_factor = train_cfg.lr_decay_factor
         self.lr_decay_every_steps = train_cfg.lr_decay_every_steps
@@ -203,11 +205,18 @@ class ValueAgent:
         self.model.train(True)
         self.optimizer.zero_grad(set_to_none=True)
         logits = self.model(x_t)
+        y_expanded = self._expand_targets(y_t, logits.shape[1])
         if self.loss_type == "mse":
             probs = torch.sigmoid(logits)
-            loss = torch.mean((probs - y_t) ** 2)
+            loss = torch.mean((probs - y_expanded) ** 2)
+        elif self.loss_type == "smooth_l1":
+            probs = torch.sigmoid(logits)
+            loss = torch.nn.functional.smooth_l1_loss(probs, y_expanded)
         else:
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y_t)
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y_expanded, reduction="none")
+            if logits.shape[1] > 1:
+                loss = loss * self._loss_weights_tensor(logits.shape[1], logits.device)
+            loss = torch.mean(loss)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
         self.optimizer.step()
@@ -226,7 +235,46 @@ class ValueAgent:
 
     def load_state_dict(self, state: dict) -> None:
         model_state = {k: torch.tensor(v, dtype=torch.float32, device=self.device) for k, v in state["model"].items()}
-        self.model.load_state_dict(model_state)
+        current_state = self.model.state_dict()
+        adapted_state: dict[str, torch.Tensor] = {}
+        for key, cur_tensor in current_state.items():
+            old_tensor = model_state.get(key)
+            if old_tensor is None:
+                adapted_state[key] = cur_tensor
+                continue
+            if old_tensor.shape == cur_tensor.shape:
+                adapted_state[key] = old_tensor
+                continue
+            if key in {"out.weight", "out.bias"} and old_tensor.ndim == cur_tensor.ndim:
+                merged = cur_tensor.clone()
+                copy_n = min(old_tensor.shape[0], cur_tensor.shape[0])
+                merged[:copy_n] = old_tensor[:copy_n]
+                adapted_state[key] = merged
+                continue
+            adapted_state[key] = cur_tensor
+        self.model.load_state_dict(adapted_state, strict=False)
+
+    def _expand_targets(self, y_t: torch.Tensor, output_dim: int) -> torch.Tensor:
+        if y_t.ndim == 1:
+            y_t = y_t.unsqueeze(1)
+        if y_t.shape[1] == output_dim:
+            return y_t
+        if output_dim == 1:
+            return y_t[:, :1]
+        if self.target_expansion == "first_head_only":
+            expanded = torch.zeros((y_t.shape[0], output_dim), dtype=y_t.dtype, device=y_t.device)
+            expanded[:, :1] = y_t[:, :1]
+            return expanded
+        return y_t[:, :1].repeat(1, output_dim)
+
+    def _loss_weights_tensor(self, output_dim: int, device: torch.device) -> torch.Tensor:
+        if self.loss_weights.size == output_dim:
+            weights = self.loss_weights
+        elif self.loss_weights.size == 1:
+            weights = np.full((output_dim,), float(self.loss_weights[0]), dtype=np.float32)
+        else:
+            weights = np.ones((output_dim,), dtype=np.float32)
+        return torch.as_tensor(weights.reshape(1, output_dim), dtype=torch.float32, device=device)
 
 
 def build_trainable_agents(cfg, seed: int = 0) -> list[ValueAgent]:
