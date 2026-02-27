@@ -36,13 +36,13 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    num_epochs: int = 100
-    updates_per_epoch_per_agent: int = 100
-    batch_size: int = 60_000
+    num_epochs: int = 400
+    updates_per_epoch_per_agent: int = 40
+    batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-3
-    lr_decay_factor: float = 0.98
-    lr_decay_every_steps: int = 50
+    lr_decay_factor: float = 0.96
+    lr_decay_every_steps: int = 40
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -55,7 +55,7 @@ class TrainConfig:
     eval_device: str = "cuda"
     seed: int = 42
     loss_type: str = "bce_with_logits"
-    plot_every_k_epochs: int = 5
+    plot_every_k_epochs: int = 20
     winrate_window_size: int = 10
 
 
@@ -65,11 +65,11 @@ class LeagueConfig:
     max_turns_per_game: int = 1000
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
-    alpha_recency: float = 0.8
-    alpha_uniform: float = 0.2
+    alpha_recency: float = 1.0
+    alpha_uniform: float = 0.0
     recency_window: int = 2
     recency_decay: float = 0.98
-    recency_center_mass_ratio: float = 0.8
+    recency_center_mass_ratio: float = 0.9
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
     selfplay_temperature: float = 1.0
@@ -88,10 +88,10 @@ class ExperimentConfig:
         p_dropout=0.10,
         dropout_layout=[1, 2],
         hidden_dims=[128, 64],
-        conv_channels=[96, 128, 128],
+        conv_channels=[64, 64, 64],
         conv_kernel_sizes=[3, 3, 2],
         conv_pooling_type="max",
-        conv_output_dim=512,
+        conv_output_dim=256,
     ))
     train: TrainConfig = field(default_factory=TrainConfig)
     league: LeagueConfig = field(default_factory=LeagueConfig)
