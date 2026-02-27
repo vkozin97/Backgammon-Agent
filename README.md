@@ -7,14 +7,14 @@
 Проект включает:
 - быстрый и детерминируемый игровой core на C++;
 - Python API для экспериментов, обучения и визуального дебага;
-- value-only training pipeline для 12 агентов (3 архитектуры по 4 агента).
+- value-only training pipeline для 12 агентов (4 архитектуры по 3 агента).
 
 ## Что реализовано в value-only pipeline
 
 В `python/training/` реализованы модули:
 - `config.py` — полный набор гиперпараметров и загрузка/сохранение конфига;
-- `agents.py` — 12 обучаемых агентов (группы A/B/C) с обязательным dropout;
-- `league.py` — лига матчей каждый-с-каждым и против `RandomAgent`/`BaselineAgent`;
+- `agents.py` — 12 обучаемых агентов (группы A/B/C/D) с обязательным dropout;
+- `league.py` — лига матчей каждый-с-каждым и против `RandomAgent`;
 - `replay.py` — единый replay-buffer с recency+uniform sampling (80/20);
 - `pipeline.py` — цикл эпох: генерация партий, обучение, метрики, checkpoint, plotting.
 
@@ -30,10 +30,10 @@ python python/train_value_only.py
 - `python/training_stats/plots/loss/`
 
 Для каждого агента сохраняются графики:
-- 13 графиков `winrate vs <opponent>`;
+- по одному графику `winrate vs <opponent>` для каждого соперника;
 - 1 график `train loss`.
 
-Итого: 14 графиков на агента.
+Итого: число графиков winrate на агента равно числу соперников, плюс 1 график `train loss`.
 
 ## Тесты
 

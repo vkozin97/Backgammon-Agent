@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 52
+    input_dim: int = 158
     output_mode: str = "logit"
     activation_fn: str = "relu"
     weight_init: str = "xavier"
@@ -30,17 +30,19 @@ class ModelConfig:
     conv_pooling_params: dict[str, Any] = field(default_factory=dict)
     fusion_mode: str = "concat"
     head_hidden_dims: list[int] = field(default_factory=lambda: [128, 64, 32])
+    conv_out_channels: int = 64
+    conv_output_dim: int = 512
 
 
 @dataclass
 class TrainConfig:
-    num_epochs: int = 100
-    updates_per_epoch_per_agent: int = 100
-    batch_size: int = 60_000
+    num_epochs: int = 400
+    updates_per_epoch_per_agent: int = 40
+    batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-3
-    lr_decay_factor: float = 0.98
-    lr_decay_every_steps: int = 50
+    lr_decay_factor: float = 0.96
+    lr_decay_every_steps: int = 40
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -53,7 +55,7 @@ class TrainConfig:
     eval_device: str = "cuda"
     seed: int = 42
     loss_type: str = "bce_with_logits"
-    plot_every_k_epochs: int = 5
+    plot_every_k_epochs: int = 20
     winrate_window_size: int = 10
 
 
@@ -63,11 +65,11 @@ class LeagueConfig:
     max_turns_per_game: int = 1000
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
-    alpha_recency: float = 0.8
-    alpha_uniform: float = 0.2
+    alpha_recency: float = 1.0
+    alpha_uniform: float = 0.0
     recency_window: int = 2
     recency_decay: float = 0.98
-    recency_center_mass_ratio: float = 0.8
+    recency_center_mass_ratio: float = 0.9
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
     selfplay_temperature: float = 1.0
@@ -81,7 +83,16 @@ class LeagueConfig:
 class ExperimentConfig:
     model_group_a: ModelConfig = field(default_factory=lambda: ModelConfig(hidden_dims=[128, 64], num_layers=3, p_dropout=0.10, dropout_layout=[1, 2]))
     model_group_b: ModelConfig = field(default_factory=lambda: ModelConfig(hidden_dims=[256, 256, 128, 128, 64], num_layers=6, p_dropout=0.15, dropout_layout=[1, 2, 3, 4, 5]))
-    model_group_c: ModelConfig = field(default_factory=lambda: ModelConfig(p_dropout=0.10, dropout_layout=[0, 2]))
+    model_group_c: ModelConfig = field(default_factory=lambda: ModelConfig(p_dropout=0.10, dropout_layout=[0, 2], hidden_dims=[128, 64], conv_out_channels=64, conv_kernel_sizes=[6]))
+    model_group_d: ModelConfig = field(default_factory=lambda: ModelConfig(
+        p_dropout=0.10,
+        dropout_layout=[1, 2],
+        hidden_dims=[128, 64],
+        conv_channels=[64, 64, 64],
+        conv_kernel_sizes=[3, 3, 2],
+        conv_pooling_type="max",
+        conv_output_dim=256,
+    ))
     train: TrainConfig = field(default_factory=TrainConfig)
     league: LeagueConfig = field(default_factory=LeagueConfig)
     checkpoint_dir: str = "training_stats/checkpoints"
@@ -96,6 +107,7 @@ class ExperimentConfig:
             model_group_a=ModelConfig(**data.get("model_group_a", {})),
             model_group_b=ModelConfig(**data.get("model_group_b", {})),
             model_group_c=ModelConfig(**data.get("model_group_c", {})),
+            model_group_d=ModelConfig(**data.get("model_group_d", {})),
             train=TrainConfig(**data.get("train", {})),
             league=LeagueConfig(**data.get("league", {})),
             checkpoint_dir=data.get("checkpoint_dir", "python/training_stats"),
