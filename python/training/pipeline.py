@@ -74,6 +74,17 @@ def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     return out
 
 
+def _uniform_windowed(values: list[float], window_size: int) -> list[float]:
+    if not values:
+        return []
+    w = max(int(window_size), 1)
+    out: list[float] = []
+    for i in range(len(values)):
+        left = max(0, i - w + 1)
+        chunk = values[left:i + 1]
+        out.append(float(np.mean(np.asarray(chunk, dtype=np.float64))))
+    return out
+
 def _plot(
     metrics_history: list[dict],
     out_dir: Path,
@@ -208,7 +219,7 @@ def _plot(
             for opp in opponents_for_agent
         }
         windowed_series_by_opp = {
-            opp: _exp_windowed(series_by_opp[opp], winrate_window_size)
+            opp: _uniform_windowed(series_by_opp[opp], winrate_window_size)
             for opp in opponents_for_agent
         }
 
@@ -243,33 +254,25 @@ def _plot(
 
         loss_steps: list[float] = []
         loss_epoch_end_steps: list[int] = []
-        loss_learning_steps_per_epoch: list[int] = []
         loss_cursor = 0
         for m in metrics_history:
             epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
             if epoch_loss_steps:
                 sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
                 loss_steps.extend(sanitized_epoch_loss)
-                loss_learning_steps_per_epoch.append(len(sanitized_epoch_loss))
             loss_cursor += len(epoch_loss_steps)
             loss_epoch_end_steps.append(loss_cursor)
 
         if loss_steps:
             loss_xs = list(range(1, len(loss_steps) + 1))
             loss_epoch_boundaries = sorted({x for x in loss_epoch_end_steps[:-1] if 0 < x < len(loss_steps)})
-            base_steps = loss_learning_steps_per_epoch[0] if loss_learning_steps_per_epoch else len(loss_steps)
-            loss_window = max(int(round(base_steps * 0.25)), 1)
-            loss_steps_windowed = _exp_windowed(loss_steps, loss_window)
-
             plt.figure(figsize=(18, 9))
-            plt.plot(loss_xs, loss_steps, label="loss", linewidth=1.2)
-            plt.plot(loss_xs, loss_steps_windowed, linestyle="--", label=f"windowed (w={loss_window})", linewidth=1.3)
+            plt.plot(loss_xs, loss_steps, linewidth=1.2)
             for boundary in loss_epoch_boundaries:
                 plt.axvline(x=boundary + 0.5, linestyle=":", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} train loss")
             plt.xlabel("learning step")
             plt.ylabel("loss")
-            plt.legend(fontsize=7)
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
@@ -317,6 +320,40 @@ def _plot(
             plt.close()
 
 
+    overall_series: dict[str, list[float]] = {}
+    for aid in agents:
+        vals = []
+        for m in metrics_history:
+            opp_vals = list(m["agents"][aid].get("winrate_vs_opponents", {}).values())
+            vals.append(float(np.mean(opp_vals) * 100.0) if opp_vals else 0.0)
+        overall_series[aid] = vals
+
+    if overall_series:
+        plt.figure(figsize=(18, 9))
+        for aid in agents:
+            plt.plot(xs, overall_series[aid], label=aid, linewidth=1.4)
+        plt.title("Agents overall average winrate vs all opponents")
+        plt.xlabel("epoch")
+        plt.ylabel("winrate (%)")
+        plt.ylim(0.0, 100.0)
+        plt.legend(fontsize=7, ncol=3)
+        plt.tight_layout()
+        plt.savefig(winrates_dir / "overall_avg_winrates.png")
+        plt.close()
+
+        plt.figure(figsize=(18, 9))
+        for aid in agents:
+            plt.plot(xs, _uniform_windowed(overall_series[aid], winrate_window_size), label=aid, linewidth=1.4)
+        plt.title(f"Agents overall average winrate windowed (w={max(int(winrate_window_size), 1)})")
+        plt.xlabel("epoch")
+        plt.ylabel("windowed winrate (%)")
+        plt.ylim(0.0, 100.0)
+        plt.legend(fontsize=7, ncol=3)
+        plt.tight_layout()
+        plt.savefig(winrates_windowed_dir / "overall_avg_winrates_windowed.png")
+        plt.close()
+
+
 def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
@@ -335,7 +372,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         load_checkpoint(cfg, agents, start_epoch - 1)
     metrics_history: list[dict] = []
 
-    all_agent_ids = [x.agent_id for x in agents] + ["random"]
+    all_agent_ids = [x.agent_id for x in agents] + ["random", "conservative_baseline"]
 
     current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
 
@@ -442,7 +479,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                 per_agent[aid]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
 
             per_agent[aid]["winrate_vs_random"] = per_agent[aid]["winrate_vs_opponents"].get("random", 0.0)
-            per_agent[aid]["winrate_vs_baseline"] = 0.0
+            per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("conservative_baseline", 0.0)
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)

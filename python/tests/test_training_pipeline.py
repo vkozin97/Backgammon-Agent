@@ -6,7 +6,7 @@ import numpy as np
 from training.config import ExperimentConfig, save_config, load_config
 from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step
 from training.agents import build_trainable_agents
-from training.league import RandomAgent, pass_move, GameResult
+from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
 
 class _NoMoveEnv:
@@ -111,10 +111,10 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
         assert winrates_dir.exists()
         assert loss_dir.exists()
         trainable_agents = build_trainable_agents(cfg, cfg.train.seed)
-        total_agents = len(trainable_agents) + 1
+        total_agents = len(trainable_agents) + 2
         opponents_per_agent = total_agents - 1
-        assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent
-        assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent
+        assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
+        assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
         assert (replay_dir / "replay_size.png").exists()
@@ -130,6 +130,7 @@ def test_fixed_agents_support_empty_legal_moves():
     env = _NoMoveEnv()
     expected = pass_move()
     assert (RandomAgent().select(env) == expected).all()
+    assert (ConservativeBaselineAgent().select(env) == expected).all()
 
 
 def test_pair_matching_uses_participants_not_game_id():
