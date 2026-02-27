@@ -317,24 +317,29 @@ def _plot(
             plt.close()
 
 
-def run_training(cfg: ExperimentConfig) -> list[dict]:
+def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
-    _clear_replay_storage(cfg.league.replay_storage_dir)
+    fresh_start = start_epoch <= 0
+    if fresh_start:
+        _clear_replay_storage(cfg.league.replay_storage_dir)
     replay = ReplayBuffer(
         cfg.league.replay_storage_dir,
         recency_decay=cfg.league.recency_decay,
         recency_center_mass_ratio=cfg.league.recency_center_mass_ratio,
-        clear_existing=True,
+        clear_existing=fresh_start,
     )
+
+    if start_epoch > 0:
+        load_checkpoint(cfg, agents, start_epoch - 1)
     metrics_history: list[dict] = []
 
     all_agent_ids = [x.agent_id for x in agents] + ["random"]
 
-    current_temperature = float(cfg.league.selfplay_temperature)
+    current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
 
-    for epoch in range(cfg.train.num_epochs):
+    for epoch in range(start_epoch, cfg.train.num_epochs):
         epoch_t0 = time.time()
         print(f"Epoch {epoch}\n")
         print("[1/6] Self-play started")

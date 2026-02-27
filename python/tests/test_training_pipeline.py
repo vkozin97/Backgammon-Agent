@@ -227,3 +227,62 @@ def test_terminal_outcome_uses_player_index_for_same_agent_ids():
 
     assert _terminal_outcome_for_step(game, step_p1) == 0.0
     assert _terminal_outcome_for_step(game, step_p2) == 1.0
+
+
+def test_run_training_can_resume_from_epoch(tmp_path: Path):
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 1
+    cfg.train.updates_per_epoch_per_agent = 0
+    cfg.league.games_per_pair = 1
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    run_training(cfg)
+
+    cfg_resume = ExperimentConfig()
+    cfg_resume.train.num_epochs = 2
+    cfg_resume.train.updates_per_epoch_per_agent = 0
+    cfg_resume.league.games_per_pair = 1
+    cfg_resume.checkpoint_dir = cfg.checkpoint_dir
+    cfg_resume.plots_dir = cfg.plots_dir
+    cfg_resume.league.replay_storage_dir = cfg.league.replay_storage_dir
+
+    metrics = run_training(cfg_resume, start_epoch=1)
+    assert len(metrics) == 1
+    assert metrics[0]["epoch"] == 1
+    assert (Path(cfg.checkpoint_dir) / "epoch_0001" / "agents.json").exists()
+
+
+def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path):
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 1
+    cfg.train.updates_per_epoch_per_agent = 0
+    cfg.league.games_per_pair = 1
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+
+    run_training(cfg)
+
+    import json
+
+    states = json.loads((Path(cfg.checkpoint_dir) / "epoch_0000" / "agents.json").read_text(encoding="utf-8"))
+    old_w = np.asarray(states[0]["model"]["out.weight"], dtype=np.float32)
+    old_b = np.asarray(states[0]["model"]["out.bias"], dtype=np.float32)
+
+    cfg_new = ExperimentConfig()
+    cfg_new.model_group_a.output_dim = 3
+    cfg_new.model_group_b.output_dim = 3
+    cfg_new.model_group_c.output_dim = 3
+    cfg_new.model_group_d.output_dim = 3
+    cfg_new.checkpoint_dir = cfg.checkpoint_dir
+
+    agents = build_trainable_agents(cfg_new, cfg_new.train.seed)
+    load_checkpoint(cfg_new, agents, 0)
+
+    new_w = agents[0].model.state_dict()["out.weight"].detach().cpu().numpy()
+    new_b = agents[0].model.state_dict()["out.bias"].detach().cpu().numpy()
+
+    assert new_w.shape[0] == 3
+    assert np.allclose(new_w[0], old_w[0])
+    assert np.allclose(new_b[0], old_b[0])

@@ -9,6 +9,7 @@ from typing import Any
 @dataclass
 class ModelConfig:
     input_dim: int = 158
+    output_dim: int = 1
     output_mode: str = "logit"
     activation_fn: str = "relu"
     weight_init: str = "xavier"
@@ -55,6 +56,8 @@ class TrainConfig:
     eval_device: str = "cuda"
     seed: int = 42
     loss_type: str = "bce_with_logits"
+    loss_weights: list[float] = field(default_factory=lambda: [1.0])
+    target_expansion: str = "repeat"
     plot_every_k_epochs: int = 20
     winrate_window_size: int = 10
 
