@@ -7,6 +7,7 @@ import pygame
 import bg_env  # pybind11 module
 from training.agents import build_trainable_agents
 from training.config import ExperimentConfig
+from training.observation import state_to_observation
 
 
 # ----------------- raw decode -----------------
@@ -134,7 +135,8 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
         if done:
             value = 1.0
         else:
-            obs = np.asarray(sim.get_state_raw(), dtype=np.float32)[:52].reshape(1, -1)
+            raw = np.asarray(sim.get_state_raw(), dtype=np.float32)
+            obs = state_to_observation(raw).reshape(1, -1)
             value = 1.0 - float(agent.predict_proba(obs).reshape(-1)[0])
         result.append((i, np.asarray(mv, dtype=np.uint8), float(value)))
     result.sort(key=lambda x: (-x[2], tuple(int(v) for v in x[1].tolist())))
