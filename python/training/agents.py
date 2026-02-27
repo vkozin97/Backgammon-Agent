@@ -231,7 +231,7 @@ class ValueAgent:
 
 def build_trainable_agents(cfg, seed: int = 0) -> list[ValueAgent]:
     agents: list[ValueAgent] = []
-    groups = ["A"] * 4 + ["B"] * 4 + ["C"] * 4 + ["D"] * 4
+    groups = ["A"] * 3 + ["B"] * 3 + ["C"] * 3 + ["D"] * 3
     for i, g in enumerate(groups):
         mcfg = (
             cfg.model_group_a
