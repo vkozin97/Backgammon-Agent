@@ -62,7 +62,6 @@ class TrainConfig:
 @dataclass
 class LeagueConfig:
     games_per_pair: int = 5
-    max_turns_per_game: int = 1000
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 1.0
@@ -103,13 +102,16 @@ class ExperimentConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExperimentConfig":
+        league_data = dict(data.get("league", {}))
+        # Backward compatibility with old checkpoints/configs.
+        league_data.pop("max_turns_per_game", None)
         return cls(
             model_group_a=ModelConfig(**data.get("model_group_a", {})),
             model_group_b=ModelConfig(**data.get("model_group_b", {})),
             model_group_c=ModelConfig(**data.get("model_group_c", {})),
             model_group_d=ModelConfig(**data.get("model_group_d", {})),
             train=TrainConfig(**data.get("train", {})),
-            league=LeagueConfig(**data.get("league", {})),
+            league=LeagueConfig(**league_data),
             checkpoint_dir=data.get("checkpoint_dir", "python/training_stats"),
         )
 

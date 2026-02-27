@@ -70,6 +70,7 @@ class GameResult:
     turns: int
     player_1_id: str
     player_2_id: str
+    winner_player_index: int = 0
 
 
 @dataclass
@@ -266,10 +267,12 @@ class LeagueController:
 
         histories = [[] for _ in range(n_games)]
         winners = [spec.p1.agent_id for spec in game_specs]
+        winner_player_indices = [0 for _ in range(n_games)]
         turns = [0 for _ in range(n_games)]
         done = np.zeros((n_games,), dtype=bool)
 
-        for turn in range(self.cfg.max_turns_per_game):
+        turn = 0
+        while True:
             active_idx = np.flatnonzero(~done)
             if len(active_idx) == 0:
                 break
@@ -307,18 +310,22 @@ class LeagueController:
                 spec = game_specs[int(i)]
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
                 opp = spec.p2 if turn % 2 == 0 else spec.p1
+                actor_player_index = 0 if turn % 2 == 0 else 1
                 histories[i].append({
                     "state_vector": self.state_vector_from_raw(states[i]),
                     "agent_id": actor.agent_id,
                     "opponent_id": opp.agent_id,
                     "game_id": spec.game_id,
                     "step_index": turns[i],
+                    "player_index": actor_player_index,
                     "epoch": epoch,
                 })
                 turns[i] += 1
                 if done_step[i]:
                     winners[i] = actor.agent_id if rewards[i] > 0 else opp.agent_id
+                    winner_player_indices[i] = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
                     done[i] = True
+            turn += 1
 
         return [
             GameResult(
@@ -328,6 +335,7 @@ class LeagueController:
                 turns=turns[i],
                 player_1_id=game_specs[i].p1.agent_id,
                 player_2_id=game_specs[i].p2.agent_id,
+                winner_player_index=winner_player_indices[i],
             )
             for i in range(n_games)
         ]
@@ -340,7 +348,8 @@ class LeagueController:
         turn = 0
         done = False
         winner = players[0].agent_id
-        while not done and turn < self.cfg.max_turns_per_game:
+        winner_player_index = 0
+        while not done:
             env.roll_dice()
             actor = players[turn % 2]
             opp = players[(turn + 1) % 2]
@@ -354,16 +363,19 @@ class LeagueController:
             else:
                 move = self._score_random(env.legal_moves())
             reward, done = env.step_move(move)
+            actor_player_index = turn % 2
             history.append({
                 "state_vector": state,
                 "agent_id": actor.agent_id,
                 "opponent_id": opp.agent_id,
                 "game_id": game_id,
                 "step_index": turn,
+                "player_index": actor_player_index,
                 "epoch": epoch,
             })
             if done:
                 winner = actor.agent_id if reward > 0 else opp.agent_id
+                winner_player_index = actor_player_index if reward > 0 else (1 - actor_player_index)
             turn += 1
         return GameResult(
             game_id=game_id,
@@ -372,6 +384,7 @@ class LeagueController:
             turns=turn,
             player_1_id=p1.agent_id,
             player_2_id=p2.agent_id,
+            winner_player_index=winner_player_index,
         )
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
