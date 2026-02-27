@@ -22,6 +22,13 @@ def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list
     return pair
 
 
+def _terminal_outcome_for_step(game, step: dict) -> float:
+    player_index = step.get("player_index")
+    if player_index is not None:
+        return 1.0 if int(player_index) == int(getattr(game, "winner_player_index", 0)) else 0.0
+    return 1.0 if step["agent_id"] == game.winner else 0.0
+
+
 def save_checkpoint(cfg: ExperimentConfig, agents, replay: ReplayBuffer, epoch: int, metrics: dict) -> None:
     d = Path(cfg.checkpoint_dir) / f"epoch_{epoch:04d}"
     d.mkdir(parents=True, exist_ok=True)
@@ -342,7 +349,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         for game in game_results:
             records = []
             for st in game.steps:
-                outcome = 1.0 if st["agent_id"] == game.winner else 0.0
+                outcome = _terminal_outcome_for_step(game, st)
                 records.append({**st, "terminal_outcome": outcome})
             replay.add_many(records)
         replay_add_dt = max(time.time() - replay_add_t0, 1e-6)

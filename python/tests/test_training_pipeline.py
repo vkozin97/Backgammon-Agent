@@ -4,7 +4,7 @@ import sqlite3
 import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
-from training.pipeline import run_training, load_checkpoint, _games_for_pair
+from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step
 from training.agents import build_trainable_agents
 from training.league import RandomAgent, pass_move, GameResult
 
@@ -91,7 +91,6 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     cfg.train.batch_size = 8
     cfg.league.games_per_pair = 1
     cfg.league.min_replay_size_to_train = 1
-    cfg.league.max_turns_per_game = 10
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
 
@@ -149,7 +148,6 @@ def test_temperature_decay_progression(tmp_path: Path):
     cfg.train.num_epochs = 2
     cfg.train.updates_per_epoch_per_agent = 0
     cfg.league.games_per_pair = 1
-    cfg.league.max_turns_per_game = 2
     cfg.league.selfplay_temperature = 1.0
     cfg.league.temperature_decay = 0.9
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
@@ -186,3 +184,46 @@ def test_run_training_clears_replay_db_on_fresh_start(tmp_path: Path):
     conn.close()
     assert "replay" in tables
     assert "stale" not in tables
+
+
+def test_league_run_epoch_includes_self_mirror_games():
+    from training.league import LeagueController, _GameSpec
+
+    cfg = ExperimentConfig().league
+    cfg.games_per_pair = 1
+    league = LeagueController(cfg, seed=123)
+
+    class DummyAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+
+    agents = [DummyAgent("trainable_0"), DummyAgent("trainable_1"), DummyAgent("trainable_2")]
+
+    captured_specs: list[_GameSpec] = []
+
+    def fake_play(specs, epoch):
+        captured_specs.extend(specs)
+        return []
+
+    league._play_all_games_batched = fake_play  # type: ignore[method-assign]
+    league.run_epoch(agents, epoch=0)
+
+    assert captured_specs
+    assert any(spec.p1.agent_id == spec.p2.agent_id for spec in captured_specs)
+
+
+def test_terminal_outcome_uses_player_index_for_same_agent_ids():
+    game = GameResult(
+        game_id="g_same",
+        steps=[],
+        winner="trainable_0",
+        turns=2,
+        player_1_id="trainable_0",
+        player_2_id="trainable_0",
+        winner_player_index=1,
+    )
+    step_p1 = {"agent_id": "trainable_0", "player_index": 0}
+    step_p2 = {"agent_id": "trainable_0", "player_index": 1}
+
+    assert _terminal_outcome_for_step(game, step_p1) == 0.0
+    assert _terminal_outcome_for_step(game, step_p2) == 1.0
