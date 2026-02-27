@@ -21,3 +21,4 @@ __pycache__/
 
 # Training stats artifacts
 python/training_stats/
+python/training_stats*

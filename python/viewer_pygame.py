@@ -96,7 +96,7 @@ LEGAL_MOVES_UNIQUE = True
 # Viewer hyperparameters
 agent_mode = "hint"  # "none" | "hint" | "play"
 agent_id = "trainable_0"
-agent_epoch = 44
+agent_epoch = 69
 agent_checkpoint_dir = "training_stats/checkpoints"
 
 
@@ -310,11 +310,6 @@ def max_micro_steps_in_moves(moves, turn_white):
     if len(moves) == 0:
         return 0
     return max(len(move_steps_from_mv(mv, turn_white=turn_white)) for mv in moves)
-
-
-
-
-
 
 
 def first_micro_step_from_env(mv8, turn_white):
