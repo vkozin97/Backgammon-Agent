@@ -323,7 +323,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
     )
     metrics_history: list[dict] = []
 
-    all_agent_ids = [x.agent_id for x in agents] + ["random", "baseline"]
+    all_agent_ids = [x.agent_id for x in agents] + ["random"]
 
     current_temperature = float(cfg.league.selfplay_temperature)
 
@@ -349,19 +349,14 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
         print(f"[2/6] Replay append took {replay_add_dt:.2f} seconds")
 
         winrates_t0 = time.time()
-        winrates_vs_baseline = []
         winrates_vs_random = []
         for agent in agents:
-            pair_baseline = _games_for_pair(game_results, agent.agent_id, "baseline")
             pair_random = _games_for_pair(game_results, agent.agent_id, "random")
-            wr_baseline = sum(1 for g in pair_baseline if g.winner == agent.agent_id) / len(pair_baseline) if pair_baseline else 0.0
             wr_random = sum(1 for g in pair_random if g.winner == agent.agent_id) / len(pair_random) if pair_random else 0.0
-            winrates_vs_baseline.append(round(wr_baseline * 100.0, 2))
             winrates_vs_random.append(round(wr_random * 100.0, 2))
         winrates_dt = max(time.time() - winrates_t0, 1e-6)
         print(f"[3/6] Winrate aggregation took {winrates_dt:.2f} seconds")
 
-        print(f"Winrates vs baseline: {winrates_vs_baseline}")
         print(f"Winrates vs random: {winrates_vs_random}\n")
         print("[4/6] Training started")
 
@@ -435,7 +430,7 @@ def run_training(cfg: ExperimentConfig) -> list[dict]:
                 per_agent[aid]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
 
             per_agent[aid]["winrate_vs_random"] = per_agent[aid]["winrate_vs_opponents"].get("random", 0.0)
-            per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("baseline", 0.0)
+            per_agent[aid]["winrate_vs_baseline"] = 0.0
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)

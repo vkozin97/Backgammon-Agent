@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from .agents import ValueAgent
+from .observation import state_to_observation
 
 try:
     from torch.func import functional_call, stack_module_state, vmap
@@ -88,17 +89,6 @@ class RandomAgent:
         return moves[np.random.randint(len(moves))]
 
 
-class BaselineAgent:
-    agent_id = "baseline"
-
-    def select(self, env) -> np.ndarray:
-        moves = env.legal_moves()
-        if len(moves) == 0:
-            return pass_move()
-        scores = moves[:, 1::2].sum(axis=1)
-        return moves[int(np.argmax(scores))]
-
-
 def pass_move() -> np.ndarray:
     return np.full((8,), 255, dtype=np.uint8)
 
@@ -109,7 +99,6 @@ class LeagueController:
         self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.random = RandomAgent()
-        self.baseline = BaselineAgent()
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
@@ -154,13 +143,11 @@ class LeagueController:
     @staticmethod
     def state_vector(env) -> np.ndarray:
         raw = np.asarray(env.get_state_raw(), dtype=np.float32)
-        return raw[:52]
+        return state_to_observation(raw)
 
-    def _score_baseline(self, moves: np.ndarray) -> np.ndarray:
-        if len(moves) == 0:
-            return pass_move()
-        scores = moves[:, 1::2].sum(axis=1)
-        return moves[int(np.argmax(scores))]
+    @staticmethod
+    def state_vector_from_raw(raw: np.ndarray) -> np.ndarray:
+        return state_to_observation(np.asarray(raw, dtype=np.float32))
 
     def _score_random(self, moves: np.ndarray) -> np.ndarray:
         if len(moves) == 0:
@@ -292,18 +279,16 @@ class LeagueController:
             legal_moves = list(env.legal_moves())
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
 
-            by_group: dict[str, list[int]] = {"A": [], "B": [], "C": []}
+            by_group: dict[str, list[int]] = {"A": [], "B": [], "C": [], "D": []}
             for i in active_idx:
                 spec = game_specs[int(i)]
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
                 if isinstance(actor, ValueAgent):
                     by_group[actor.group].append(int(i))
-                elif actor.agent_id == "baseline":
-                    actions[i] = self._score_baseline(legal_moves[i])
                 else:
                     actions[i] = self._score_random(legal_moves[i])
 
-            for group_name in ("A", "B", "C"):
+            for group_name in ("A", "B", "C", "D"):
                 idxs = by_group[group_name]
                 if not idxs:
                     continue
@@ -323,7 +308,7 @@ class LeagueController:
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
                 opp = spec.p2 if turn % 2 == 0 else spec.p1
                 histories[i].append({
-                    "state_vector": states[i][:52].astype(np.float32),
+                    "state_vector": self.state_vector_from_raw(states[i]),
                     "agent_id": actor.agent_id,
                     "opponent_id": opp.agent_id,
                     "game_id": spec.game_id,
@@ -366,8 +351,6 @@ class LeagueController:
                     [env.legal_moves()],
                     [actor],
                 )[0]
-            elif actor.agent_id == "baseline":
-                move = self._score_baseline(env.legal_moves())
             else:
                 move = self._score_random(env.legal_moves())
             reward, done = env.step_move(move)
@@ -394,7 +377,7 @@ class LeagueController:
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
         self.reset_decision_stats()
-        opponents = [self.random, self.baseline]
+        opponents = [self.random]
         specs: list[_GameSpec] = []
 
         for i, a in enumerate(trainable_agents):

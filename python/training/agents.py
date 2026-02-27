@@ -7,12 +7,32 @@ import torch
 from torch import nn
 
 from .config import ModelConfig, TrainConfig
+from .observation import POINTS_DIM, SCALAR_FEATURES_DIM, VECTOR_CHANNELS
 
 
 def _activation(name: str) -> nn.Module:
     if name == "tanh":
         return nn.Tanh()
     return nn.ReLU()
+
+
+def _build_mlp(
+    input_dim: int,
+    hidden_dims: list[int],
+    activation_name: str,
+    dropout_enabled: bool,
+    dropout_layout: list[int],
+    p_dropout: float,
+) -> nn.Sequential:
+    dims = [input_dim] + hidden_dims
+    blocks: list[nn.Module] = []
+    dropout_layers = set(dropout_layout) if dropout_enabled else set()
+    for i in range(len(dims) - 1):
+        blocks.append(nn.Linear(dims[i], dims[i + 1]))
+        blocks.append(_activation(activation_name))
+        if (i + 1) in dropout_layers:
+            blocks.append(nn.Dropout(p_dropout))
+    return nn.Sequential(*blocks)
 
 
 @dataclass
@@ -25,16 +45,15 @@ class TorchMLPValueModel(nn.Module):
     def __init__(self, cfg: ModelConfig) -> None:
         super().__init__()
         self.cfg = cfg
-        dims = [cfg.input_dim] + cfg.hidden_dims + [1]
-        blocks: list[nn.Module] = []
-        self.dropout_layers = set(cfg.dropout_layout) if cfg.dropout_enabled else set()
-        for i in range(len(dims) - 2):
-            blocks.append(nn.Linear(dims[i], dims[i + 1]))
-            blocks.append(_activation(cfg.activation_fn))
-            if (i + 1) in self.dropout_layers:
-                blocks.append(nn.Dropout(cfg.p_dropout))
-        self.backbone = nn.Sequential(*blocks)
-        self.out = nn.Linear(dims[-2], 1)
+        self.backbone = _build_mlp(
+            input_dim=cfg.input_dim,
+            hidden_dims=cfg.hidden_dims,
+            activation_name=cfg.activation_fn,
+            dropout_enabled=cfg.dropout_enabled,
+            dropout_layout=cfg.dropout_layout,
+            p_dropout=cfg.p_dropout,
+        )
+        self.out = nn.Linear(cfg.hidden_dims[-1], 1)
         with torch.no_grad():
             self.out.bias.fill_(cfg.final_bias_init)
 
@@ -42,28 +61,85 @@ class TorchMLPValueModel(nn.Module):
         return self.out(self.backbone(x))
 
 
-class TorchConvHeadValueModel(TorchMLPValueModel):
+class TorchConvHeadValueModel(nn.Module):
     def __init__(self, cfg: ModelConfig) -> None:
-        conv_cfg = ModelConfig(**{**cfg.__dict__})
-        conv_cfg.input_dim = sum(cfg.conv_channels) + 4
-        conv_cfg.hidden_dims = cfg.head_hidden_dims
-        conv_cfg.num_layers = 1 + len(cfg.head_hidden_dims)
-        super().__init__(conv_cfg)
-        self.cfg_orig = cfg
-        self.conv_1 = nn.Linear(24, cfg.conv_channels[0])
-        self.conv_2 = nn.Linear(24, cfg.conv_channels[1])
+        super().__init__()
+        self.cfg = cfg
+        self.conv = nn.Conv1d(
+            in_channels=VECTOR_CHANNELS,
+            out_channels=cfg.conv_out_channels,
+            kernel_size=6,
+        )
         self.conv_activation = _activation(cfg.conv_activation)
+        conv_len = POINTS_DIM - 6 + 1
+        mlp_in = cfg.conv_out_channels * conv_len + SCALAR_FEATURES_DIM
+        self.head = _build_mlp(
+            input_dim=mlp_in,
+            hidden_dims=cfg.head_hidden_dims,
+            activation_name=cfg.activation_fn,
+            dropout_enabled=cfg.dropout_enabled,
+            dropout_layout=cfg.dropout_layout,
+            p_dropout=cfg.p_dropout,
+        )
+        self.out = nn.Linear(cfg.head_hidden_dims[-1], 1)
+        with torch.no_grad():
+            self.out.bias.fill_(cfg.final_bias_init)
 
-    def _conv_features(self, x: torch.Tensor) -> torch.Tensor:
-        mine = x[:, :24]
-        opp = x[:, 24:48]
-        extra = x[:, 48:52]
-        f1 = self.conv_activation(self.conv_1(mine))
-        f2 = self.conv_activation(self.conv_2(opp))
-        return torch.cat([f1, f2, extra], dim=1)
+    def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        vectors = x[:, : VECTOR_CHANNELS * POINTS_DIM].reshape(-1, VECTOR_CHANNELS, POINTS_DIM)
+        scalars = x[:, VECTOR_CHANNELS * POINTS_DIM : VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM]
+        return vectors, scalars
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return super().forward(self._conv_features(x))
+        vectors, scalars = self._split(x)
+        c = self.conv_activation(self.conv(vectors)).flatten(1)
+        feat = torch.cat([c, scalars], dim=1)
+        return self.out(self.head(feat))
+
+
+class TorchDeepConvValueModel(nn.Module):
+    def __init__(self, cfg: ModelConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+        channels = [VECTOR_CHANNELS] + list(cfg.conv_channels)
+        kernels = list(cfg.conv_kernel_sizes)
+        conv_blocks: list[nn.Module] = []
+        cur_len = POINTS_DIM
+        for i, k in enumerate(kernels):
+            conv_blocks.append(nn.Conv1d(channels[i], channels[i + 1], kernel_size=k))
+            conv_blocks.append(_activation(cfg.conv_activation))
+            cur_len = cur_len - k + 1
+            if i < len(kernels) - 1:
+                conv_blocks.append(nn.MaxPool1d(kernel_size=2, stride=2))
+                cur_len = max(cur_len // 2, 1)
+        self.conv_stack = nn.Sequential(*conv_blocks)
+        self.proj = nn.Linear(channels[-1] * cur_len, cfg.conv_output_dim)
+
+        head_in = cfg.conv_output_dim + SCALAR_FEATURES_DIM
+        self.head = _build_mlp(
+            input_dim=head_in,
+            hidden_dims=cfg.hidden_dims,
+            activation_name=cfg.activation_fn,
+            dropout_enabled=cfg.dropout_enabled,
+            dropout_layout=cfg.dropout_layout,
+            p_dropout=cfg.p_dropout,
+        )
+        self.out = nn.Linear(cfg.hidden_dims[-1], 1)
+        with torch.no_grad():
+            self.out.bias.fill_(cfg.final_bias_init)
+
+    def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        vectors = x[:, : VECTOR_CHANNELS * POINTS_DIM].reshape(-1, VECTOR_CHANNELS, POINTS_DIM)
+        scalars = x[:, VECTOR_CHANNELS * POINTS_DIM : VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM]
+        return vectors, scalars
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        vectors, scalars = self._split(x)
+        c = self.conv_stack(vectors).flatten(1)
+        c = self.proj(c)
+        feat = torch.cat([scalars, c], dim=1)
+        return self.out(self.head(feat))
 
 
 class ValueAgent:
@@ -79,6 +155,8 @@ class ValueAgent:
 
         if group == "C":
             self.model: nn.Module = TorchConvHeadValueModel(model_cfg)
+        elif group == "D":
+            self.model = TorchDeepConvValueModel(model_cfg)
         else:
             self.model = TorchMLPValueModel(model_cfg)
         self.model.to(self.device)
@@ -153,8 +231,16 @@ class ValueAgent:
 
 def build_trainable_agents(cfg, seed: int = 0) -> list[ValueAgent]:
     agents: list[ValueAgent] = []
-    groups = ["A"] * 4 + ["B"] * 4 + ["C"] * 4
+    groups = ["A"] * 4 + ["B"] * 4 + ["C"] * 4 + ["D"] * 4
     for i, g in enumerate(groups):
-        mcfg = cfg.model_group_a if g == "A" else cfg.model_group_b if g == "B" else cfg.model_group_c
+        mcfg = (
+            cfg.model_group_a
+            if g == "A"
+            else cfg.model_group_b
+            if g == "B"
+            else cfg.model_group_c
+            if g == "C"
+            else cfg.model_group_d
+        )
         agents.append(ValueAgent(f"trainable_{i}", g, mcfg, cfg.train, seed + i))
     return agents
