@@ -85,6 +85,13 @@ def _uniform_windowed(values: list[float], window_size: int) -> list[float]:
         out.append(float(np.mean(np.asarray(chunk, dtype=np.float64))))
     return out
 
+
+
+def _print_plot_timing(stage: str, started_at: float, total_started_at: float) -> None:
+    stage_dt = max(time.perf_counter() - started_at, 0.0)
+    total_dt = max(time.perf_counter() - total_started_at, 0.0)
+    print(f"[plot] {stage} took {stage_dt:.2f}s (total={total_dt:.2f}s)")
+
 def _plot(
     metrics_history: list[dict],
     out_dir: Path,
@@ -93,29 +100,37 @@ def _plot(
     alpha_uniform: float,
     recency_center_mass_ratio: float,
 ) -> None:
+    plot_total_t0 = time.perf_counter()
+    print(f"[plot] Start plotting for {len(metrics_history)} epochs")
+    step_t0 = time.perf_counter()
     try:
         import matplotlib.pyplot as plt
         from matplotlib import colors as mcolors
     except Exception:
+        print("[plot] matplotlib is unavailable, skip plotting")
         return
+    _print_plot_timing("matplotlib import", step_t0, plot_total_t0)
     winrates_dir = out_dir / "winrates"
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
     replay_dir = out_dir / "replay"
     decision_dir = out_dir / "decision_temperature"
+    step_t0 = time.perf_counter()
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
     replay_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
+    _print_plot_timing("prepare output directories", step_t0, plot_total_t0)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
 
 
     xs = [m["epoch"] for m in metrics_history]
 
+    step_t0 = time.perf_counter()
     temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
     if any(np.isfinite(v) for v in temps):
         plt.figure(figsize=(18, 9))
@@ -142,7 +157,9 @@ def _plot(
             plt.tight_layout()
             plt.savefig(decision_dir / f"selected_action_top_{k}.png")
             plt.close()
+    _print_plot_timing("decision-temperature and top-k plots", step_t0, plot_total_t0)
 
+    step_t0 = time.perf_counter()
     replay_sizes = [int(m.get("replay_size", 0)) for m in metrics_history]
     if replay_sizes and any(size > 0 for size in replay_sizes):
         x_epoch = np.asarray(xs, dtype=np.float64)
@@ -207,8 +224,11 @@ def _plot(
                 plt.tight_layout()
                 plt.savefig(replay_dir / "replay_size.png")
                 plt.close()
+    _print_plot_timing("replay-size plot", step_t0, plot_total_t0)
 
+    step_t0 = time.perf_counter()
     for aid in agents:
+        agent_t0 = time.perf_counter()
         opponents_for_agent = sorted(metrics_history[-1]["agents"][aid]["winrate_vs_opponents"].keys())
         xs = [m["epoch"] for m in metrics_history]
 
@@ -252,6 +272,9 @@ def _plot(
             plt.savefig(winrates_windowed_dir / f"{aid}_winrates_windowed_focus_{focus_opp}.png")
             plt.close()
 
+        _print_plot_timing(f"{aid}: winrate plots", agent_t0, plot_total_t0)
+        agent_t0 = time.perf_counter()
+
         loss_steps: list[float] = []
         loss_epoch_end_steps: list[int] = []
         loss_cursor = 0
@@ -276,6 +299,8 @@ def _plot(
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
+        _print_plot_timing(f"{aid}: loss plot", agent_t0, plot_total_t0)
+        agent_t0 = time.perf_counter()
 
         lr_steps: list[float] = []
         epoch_end_steps: list[int] = []
@@ -318,8 +343,11 @@ def _plot(
             plt.tight_layout()
             plt.savefig(lr_dir / f"{aid}_lr_windowed.png")
             plt.close()
+        _print_plot_timing(f"{aid}: lr plots", agent_t0, plot_total_t0)
 
+    _print_plot_timing("all per-agent plot groups", step_t0, plot_total_t0)
 
+    step_t0 = time.perf_counter()
     overall_series: dict[str, list[float]] = {}
     for aid in agents:
         vals = []
@@ -352,6 +380,9 @@ def _plot(
         plt.tight_layout()
         plt.savefig(winrates_windowed_dir / "overall_avg_winrates_windowed.png")
         plt.close()
+
+    _print_plot_timing("overall average winrate plots", step_t0, plot_total_t0)
+    _print_plot_timing("full plotting stage", plot_total_t0, plot_total_t0)
 
 
 def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
