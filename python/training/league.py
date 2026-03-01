@@ -90,6 +90,79 @@ class RandomAgent:
         return moves[np.random.randint(len(moves))]
 
 
+class ConservativeBaselineAgent:
+    agent_id = "conservative_baseline"
+
+    @staticmethod
+    def _all_in_home(points: np.ndarray) -> bool:
+        return bool(np.sum(points[6:]) == 0)
+
+    @staticmethod
+    def _is_threatened_during_bearoff(raw_state: np.ndarray) -> bool:
+        points = raw_state[:24]
+        opp_points = raw_state[24:48]
+        opp_bar = int(raw_state[50])
+        if opp_bar > 0:
+            return True
+
+        home_blots = np.where(points[:6] == 1)[0]
+        return any(np.any(opp_points[:idx] > 0) for idx in home_blots)
+
+    def _score_move(self, before_state: np.ndarray, after_state: np.ndarray) -> tuple[float, ...]:
+        before_points = before_state[:24]
+        points = after_state[:24]
+
+        blots = int(np.sum(points == 1))
+        anchors = int(np.sum(points >= 2))
+        off = int(after_state[49])
+
+        built_anchor_idxs = np.where((before_points < 2) & (points >= 2))[0]
+        built_home_idxs = built_anchor_idxs[built_anchor_idxs < 6]
+        built_non_home = int(np.sum(built_anchor_idxs >= 6))
+
+        builds_home_non_nearest = bool(np.any(built_home_idxs > 0))
+        builds_home_nearest = bool(np.any(built_home_idxs == 0))
+
+        if builds_home_non_nearest:
+            anchor_build_priority = 3
+        elif built_non_home > 0:
+            anchor_build_priority = 2
+        elif builds_home_nearest:
+            anchor_build_priority = 1
+        else:
+            anchor_build_priority = 0
+
+        farthest_home_anchor = int(np.max(built_home_idxs)) if built_home_idxs.size > 0 else -1
+
+        in_bearoff = self._all_in_home(before_points)
+        threatened = self._is_threatened_during_bearoff(after_state)
+        if in_bearoff and not threatened:
+            return (float(off), float(-blots), float(anchors), float(anchor_build_priority), float(farthest_home_anchor))
+
+        return (float(-blots), float(anchors), float(anchor_build_priority), float(farthest_home_anchor), float(off))
+
+    def select(self, env) -> np.ndarray:
+        moves = env.legal_moves()
+        if len(moves) == 0:
+            return pass_move()
+        if len(moves) == 1:
+            return moves[0]
+
+        before_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        sim = bg_env.Env(0) if bg_env is not None else _FallbackEnv(0)
+        best_idx = 0
+        best_score: tuple[float, ...] | None = None
+        for idx, mv in enumerate(moves):
+            sim.set_state_raw(before_state)
+            sim.step_move(mv)
+            after_state = np.asarray(sim.get_state_raw(), dtype=np.int16)
+            score = self._score_move(before_state, after_state)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_idx = idx
+        return moves[best_idx]
+
+
 def pass_move() -> np.ndarray:
     return np.full((8,), 255, dtype=np.uint8)
 
@@ -100,6 +173,7 @@ class LeagueController:
         self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.random = RandomAgent()
+        self.conservative_baseline = ConservativeBaselineAgent()
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
@@ -154,6 +228,27 @@ class LeagueController:
         if len(moves) == 0:
             return pass_move()
         return moves[np.random.randint(len(moves))]
+
+    def _score_conservative_baseline(self, state: np.ndarray, moves: np.ndarray) -> np.ndarray:
+        if len(moves) == 0:
+            return pass_move()
+        if len(moves) == 1:
+            return moves[0]
+
+        before_state = np.asarray(state, dtype=np.int16)
+        sim = bg_env.Env(int(self.seed)) if bg_env is not None else _FallbackEnv(int(self.seed))
+
+        best_idx = 0
+        best_score: tuple[float, ...] | None = None
+        for idx, mv in enumerate(moves):
+            sim.set_state_raw(before_state)
+            sim.step_move(mv)
+            after_state = np.asarray(sim.get_state_raw(), dtype=np.int16)
+            score = self.conservative_baseline._score_move(before_state, after_state)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_idx = idx
+        return moves[best_idx]
 
     def _predict_probs_single_cuda_call(self, agents_for_samples: list[ValueAgent], obs_np: np.ndarray) -> np.ndarray:
         """Predict probabilities for mixed-agent samples with one CUDA call per architecture group."""
@@ -288,6 +383,8 @@ class LeagueController:
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
                 if isinstance(actor, ValueAgent):
                     by_group[actor.group].append(int(i))
+                elif actor.agent_id == self.conservative_baseline.agent_id:
+                    actions[i] = self._score_conservative_baseline(states[i], legal_moves[i])
                 else:
                     actions[i] = self._score_random(legal_moves[i])
 
@@ -360,6 +457,8 @@ class LeagueController:
                     [env.legal_moves()],
                     [actor],
                 )[0]
+            elif actor.agent_id == self.conservative_baseline.agent_id:
+                move = self._score_conservative_baseline(np.asarray(env.get_state_raw(), dtype=np.int16), env.legal_moves())
             else:
                 move = self._score_random(env.legal_moves())
             reward, done = env.step_move(move)
@@ -390,7 +489,7 @@ class LeagueController:
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
         self.reset_decision_stats()
-        opponents = [self.random]
+        opponents = [self.random, self.conservative_baseline]
         specs: list[_GameSpec] = []
 
         for i, a in enumerate(trainable_agents):

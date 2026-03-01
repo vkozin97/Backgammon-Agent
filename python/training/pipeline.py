@@ -74,6 +74,24 @@ def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     return out
 
 
+def _uniform_windowed(values: list[float], window_size: int) -> list[float]:
+    if not values:
+        return []
+    w = max(int(window_size), 1)
+    out: list[float] = []
+    for i in range(len(values)):
+        left = max(0, i - w + 1)
+        chunk = values[left:i + 1]
+        out.append(float(np.mean(np.asarray(chunk, dtype=np.float64))))
+    return out
+
+
+
+def _print_plot_timing(stage: str, started_at: float, total_started_at: float) -> None:
+    stage_dt = max(time.perf_counter() - started_at, 0.0)
+    total_dt = max(time.perf_counter() - total_started_at, 0.0)
+    print(f"[plot] {stage} took {stage_dt:.2f}s (total={total_dt:.2f}s)")
+
 def _plot(
     metrics_history: list[dict],
     out_dir: Path,
@@ -82,29 +100,37 @@ def _plot(
     alpha_uniform: float,
     recency_center_mass_ratio: float,
 ) -> None:
+    plot_total_t0 = time.perf_counter()
+    print(f"[plot] Start plotting for {len(metrics_history)} epochs")
+    step_t0 = time.perf_counter()
     try:
         import matplotlib.pyplot as plt
         from matplotlib import colors as mcolors
     except Exception:
+        print("[plot] matplotlib is unavailable, skip plotting")
         return
+    _print_plot_timing("matplotlib import", step_t0, plot_total_t0)
     winrates_dir = out_dir / "winrates"
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
     replay_dir = out_dir / "replay"
     decision_dir = out_dir / "decision_temperature"
+    step_t0 = time.perf_counter()
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
     replay_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
+    _print_plot_timing("prepare output directories", step_t0, plot_total_t0)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
 
 
     xs = [m["epoch"] for m in metrics_history]
 
+    step_t0 = time.perf_counter()
     temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
     if any(np.isfinite(v) for v in temps):
         plt.figure(figsize=(18, 9))
@@ -131,7 +157,9 @@ def _plot(
             plt.tight_layout()
             plt.savefig(decision_dir / f"selected_action_top_{k}.png")
             plt.close()
+    _print_plot_timing("decision-temperature and top-k plots", step_t0, plot_total_t0)
 
+    step_t0 = time.perf_counter()
     replay_sizes = [int(m.get("replay_size", 0)) for m in metrics_history]
     if replay_sizes and any(size > 0 for size in replay_sizes):
         x_epoch = np.asarray(xs, dtype=np.float64)
@@ -196,9 +224,14 @@ def _plot(
                 plt.tight_layout()
                 plt.savefig(replay_dir / "replay_size.png")
                 plt.close()
+    _print_plot_timing("replay-size plot", step_t0, plot_total_t0)
 
+    step_t0 = time.perf_counter()
+    fixed_opponents = {"random", "conservative_baseline"}
     for aid in agents:
-        opponents_for_agent = sorted(metrics_history[-1]["agents"][aid]["winrate_vs_opponents"].keys())
+        agent_t0 = time.perf_counter()
+        latest_opponents = set(metrics_history[-1]["agents"][aid].get("winrate_vs_opponents", {}).keys())
+        opponents_for_agent = sorted((latest_opponents | fixed_opponents) - {aid})
         xs = [m["epoch"] for m in metrics_history]
 
         # Winrate graphs: each figure contains all opponent lines,
@@ -208,7 +241,7 @@ def _plot(
             for opp in opponents_for_agent
         }
         windowed_series_by_opp = {
-            opp: _exp_windowed(series_by_opp[opp], winrate_window_size)
+            opp: _uniform_windowed(series_by_opp[opp], winrate_window_size)
             for opp in opponents_for_agent
         }
 
@@ -241,38 +274,35 @@ def _plot(
             plt.savefig(winrates_windowed_dir / f"{aid}_winrates_windowed_focus_{focus_opp}.png")
             plt.close()
 
+        _print_plot_timing(f"{aid}: winrate plots", agent_t0, plot_total_t0)
+        agent_t0 = time.perf_counter()
+
         loss_steps: list[float] = []
         loss_epoch_end_steps: list[int] = []
-        loss_learning_steps_per_epoch: list[int] = []
         loss_cursor = 0
         for m in metrics_history:
             epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
             if epoch_loss_steps:
                 sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
                 loss_steps.extend(sanitized_epoch_loss)
-                loss_learning_steps_per_epoch.append(len(sanitized_epoch_loss))
             loss_cursor += len(epoch_loss_steps)
             loss_epoch_end_steps.append(loss_cursor)
 
         if loss_steps:
             loss_xs = list(range(1, len(loss_steps) + 1))
             loss_epoch_boundaries = sorted({x for x in loss_epoch_end_steps[:-1] if 0 < x < len(loss_steps)})
-            base_steps = loss_learning_steps_per_epoch[0] if loss_learning_steps_per_epoch else len(loss_steps)
-            loss_window = max(int(round(base_steps * 0.25)), 1)
-            loss_steps_windowed = _exp_windowed(loss_steps, loss_window)
-
             plt.figure(figsize=(18, 9))
-            plt.plot(loss_xs, loss_steps, label="loss", linewidth=1.2)
-            plt.plot(loss_xs, loss_steps_windowed, linestyle="--", label=f"windowed (w={loss_window})", linewidth=1.3)
+            plt.plot(loss_xs, loss_steps, linewidth=1.2)
             for boundary in loss_epoch_boundaries:
                 plt.axvline(x=boundary + 0.5, linestyle=":", color="gray", linewidth=0.8, alpha=0.8)
             plt.title(f"{aid} train loss")
             plt.xlabel("learning step")
             plt.ylabel("loss")
-            plt.legend(fontsize=7)
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
+        _print_plot_timing(f"{aid}: loss plot", agent_t0, plot_total_t0)
+        agent_t0 = time.perf_counter()
 
         lr_steps: list[float] = []
         epoch_end_steps: list[int] = []
@@ -315,6 +345,46 @@ def _plot(
             plt.tight_layout()
             plt.savefig(lr_dir / f"{aid}_lr_windowed.png")
             plt.close()
+        _print_plot_timing(f"{aid}: lr plots", agent_t0, plot_total_t0)
+
+    _print_plot_timing("all per-agent plot groups", step_t0, plot_total_t0)
+
+    step_t0 = time.perf_counter()
+    overall_series: dict[str, list[float]] = {}
+    for aid in agents:
+        vals = []
+        for m in metrics_history:
+            opp_vals = list(m["agents"][aid].get("winrate_vs_opponents", {}).values())
+            vals.append(float(np.mean(opp_vals) * 100.0) if opp_vals else 0.0)
+        overall_series[aid] = vals
+
+    if overall_series:
+        plt.figure(figsize=(18, 9))
+        for aid in agents:
+            plt.plot(xs, overall_series[aid], label=aid, linewidth=1.4)
+        plt.title("Agents overall average winrate vs all opponents")
+        plt.xlabel("epoch")
+        plt.ylabel("winrate (%)")
+        plt.ylim(0.0, 100.0)
+        plt.legend(fontsize=7, ncol=3)
+        plt.tight_layout()
+        plt.savefig(winrates_dir / "overall_avg_winrates.png")
+        plt.close()
+
+        plt.figure(figsize=(18, 9))
+        for aid in agents:
+            plt.plot(xs, _uniform_windowed(overall_series[aid], winrate_window_size), label=aid, linewidth=1.4)
+        plt.title(f"Agents overall average winrate windowed (w={max(int(winrate_window_size), 1)})")
+        plt.xlabel("epoch")
+        plt.ylabel("windowed winrate (%)")
+        plt.ylim(0.0, 100.0)
+        plt.legend(fontsize=7, ncol=3)
+        plt.tight_layout()
+        plt.savefig(winrates_windowed_dir / "overall_avg_winrates_windowed.png")
+        plt.close()
+
+    _print_plot_timing("overall average winrate plots", step_t0, plot_total_t0)
+    _print_plot_timing("full plotting stage", plot_total_t0, plot_total_t0)
 
 
 def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
@@ -335,7 +405,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         load_checkpoint(cfg, agents, start_epoch - 1)
     metrics_history: list[dict] = []
 
-    all_agent_ids = [x.agent_id for x in agents] + ["random"]
+    all_agent_ids = [x.agent_id for x in agents] + ["random", "conservative_baseline"]
 
     current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
 
@@ -442,7 +512,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                 per_agent[aid]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
 
             per_agent[aid]["winrate_vs_random"] = per_agent[aid]["winrate_vs_opponents"].get("random", 0.0)
-            per_agent[aid]["winrate_vs_baseline"] = 0.0
+            per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("conservative_baseline", 0.0)
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)
