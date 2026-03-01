@@ -3,9 +3,124 @@ from __future__ import annotations
 import numpy as np
 
 POINTS_DIM = 24
-VECTOR_CHANNELS = 6
+VECTOR_CHANNELS = 10
 SCALAR_FEATURES_DIM = 14
 OBSERVATION_DIM = VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM
+
+
+def _legal_steps(points: np.ndarray, opp_points: np.ndarray, bar: int, die: int) -> list[tuple[int, int]]:
+    if bar > 0:
+        to = 24 - die
+        if 0 <= to < POINTS_DIM and opp_points[to] < 2:
+            return [(-1, to)]
+        return []
+
+    steps: list[tuple[int, int]] = []
+    for from_idx in range(POINTS_DIM):
+        if points[from_idx] <= 0:
+            continue
+        to = from_idx - die
+        if 0 <= to < POINTS_DIM and opp_points[to] < 2:
+            steps.append((from_idx, to))
+    return steps
+
+
+def _apply_step(
+    points: np.ndarray,
+    opp_points: np.ndarray,
+    bar: int,
+    opp_bar: int,
+    step: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, int, int, bool]:
+    from_idx, to_idx = step
+    p = points.copy()
+    o = opp_points.copy()
+    b = int(bar)
+    ob = int(opp_bar)
+    if from_idx == -1:
+        b -= 1
+    else:
+        p[from_idx] -= 1
+    hit = o[to_idx] == 1
+    if hit:
+        o[to_idx] = 0
+        ob += 1
+    p[to_idx] += 1
+    return p, o, b, ob, hit
+
+
+def _can_hit_with_sequence(
+    points: np.ndarray,
+    opp_points: np.ndarray,
+    bar: int,
+    opp_bar: int,
+    target_idx: int,
+    dice_seq: tuple[int, ...],
+) -> bool:
+    def dfs(p: np.ndarray, o: np.ndarray, b: int, ob: int, k: int, already_hit: bool) -> bool:
+        if already_hit:
+            return True
+        if k >= len(dice_seq):
+            return False
+        steps = _legal_steps(p, o, b, int(dice_seq[k]))
+        if not steps:
+            return dfs(p, o, b, ob, k + 1, already_hit)
+        for step in steps:
+            landed_on_target = step[1] == target_idx and o[target_idx] == 1
+            np_, no_, nb_, nob_, _ = _apply_step(p, o, b, ob, step)
+            if dfs(np_, no_, nb_, nob_, k + 1, already_hit or landed_on_target):
+                return True
+        return False
+
+    return dfs(points, opp_points, bar, opp_bar, 0, False)
+
+
+def _can_cover_with_sequence(points: np.ndarray, opp_points: np.ndarray, bar: int, target_idx: int, dice_seq: tuple[int, ...]) -> bool:
+    def dfs(p: np.ndarray, o: np.ndarray, b: int, k: int) -> bool:
+        if p[target_idx] >= 2:
+            return True
+        if k >= len(dice_seq):
+            return False
+        steps = _legal_steps(p, o, b, int(dice_seq[k]))
+        if not steps:
+            return dfs(p, o, b, k + 1)
+        for step in steps:
+            np_, no_, nb_, _, _ = _apply_step(p, o, b, 0, step)
+            if dfs(np_, no_, nb_, k + 1):
+                return True
+        return False
+
+    return dfs(points, opp_points, bar, 0)
+
+
+def _dice_roll_sequences() -> list[tuple[tuple[int, ...], float]]:
+    seqs: list[tuple[tuple[int, ...], float]] = []
+    for a in range(1, 7):
+        for b in range(1, 7):
+            seq = (a, a, a, a) if a == b else (a, b)
+            seqs.append((seq, 1.0 / 36.0))
+    return seqs
+
+
+_DICE_SEQUENCES = _dice_roll_sequences()
+
+
+def _prob_vectors(points: np.ndarray, opp_points: np.ndarray, bar: int, opp_bar: int) -> tuple[np.ndarray, np.ndarray]:
+    threatened = np.zeros((POINTS_DIM,), dtype=np.float32)
+    cover = np.zeros((POINTS_DIM,), dtype=np.float32)
+    for i in range(POINTS_DIM):
+        if points[i] != 1.0:
+            continue
+        p_hit = 0.0
+        p_cover = 0.0
+        for dice_seq, weight in _DICE_SEQUENCES:
+            if _can_hit_with_sequence(opp_points, points, int(opp_bar), int(bar), i, dice_seq):
+                p_hit += weight
+            if _can_cover_with_sequence(points, opp_points, int(bar), i, dice_seq):
+                p_cover += weight
+        threatened[i] = np.float32(p_hit)
+        cover[i] = np.float32(p_cover)
+    return threatened, cover
 
 
 def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
@@ -18,6 +133,13 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
     opp_blots = (opp_points == 1.0).astype(np.float32)
     anchors = (points >= 2.0).astype(np.float32)
     opp_anchors = (opp_points >= 2.0).astype(np.float32)
+    hit_prob_mine, cover_prob_mine = _prob_vectors(points, opp_points, int(bar), int(opp_bar))
+
+    rev_points = opp_points[::-1].copy()
+    rev_opp_points = points[::-1].copy()
+    hit_prob_opp_rev, cover_prob_opp_rev = _prob_vectors(rev_points, rev_opp_points, int(opp_bar), int(bar))
+    hit_prob_opp = hit_prob_opp_rev[::-1]
+    cover_prob_opp = cover_prob_opp_rev[::-1]
 
     pip_mine = float(np.dot(points, np.arange(1, 25, dtype=np.float32)) + bar * 25.0)
     pip_opp = float(np.dot(opp_points, np.arange(24, 0, -1, dtype=np.float32)) + opp_bar * 25.0)
@@ -49,5 +171,19 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
         ],
         dtype=np.float32,
     )
-    return np.concatenate([points, opp_points, blots, opp_blots, anchors, opp_anchors, scalars], dtype=np.float32)
-
+    return np.concatenate(
+        [
+            points,
+            opp_points,
+            blots,
+            opp_blots,
+            anchors,
+            opp_anchors,
+            hit_prob_mine,
+            cover_prob_mine,
+            hit_prob_opp,
+            cover_prob_opp,
+            scalars,
+        ],
+        dtype=np.float32,
+    )
