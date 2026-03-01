@@ -31,70 +31,86 @@ static int count_anchors(const std::array<uint8_t, 24>& a) {
 	return anchors;
 }
 
-static bool roll_hits_blot(const std::array<uint8_t, 24>& points,
+static int run_hit_order(const std::array<uint8_t, 24>& points,
+					 const std::array<uint8_t, 24>& opp_points,
+					 uint8_t opp_bar,
+					 int blot_idx,
+					 const int* dice,
+					 int dice_n) {
+	int pos = blot_idx;
+	int bar_left = int(opp_bar);
+	std::array<uint8_t, 24> opp_from_bar{};
+
+	int k = 0;
+	while (k < dice_n) {
+		const int die = dice[k];
+		if (bar_left > 0) {
+			const int to = 24 - die;
+			if (to >= 0 && to < 24) {
+				if (points[size_t(to)] >= 2) return 0;
+				opp_from_bar[size_t(to)]++;
+				bar_left--;
+			}
+			++k;
+			continue;
+		}
+
+		const int to = pos + die;
+		if (to < 0 || to >= 24) return 0;
+		if (opp_points[size_t(to)] + opp_from_bar[size_t(to)] > 0) return 1;
+		if (points[size_t(to)] > 0) return 0;
+		pos = to;
+		++k;
+	}
+	return 0;
+}
+
+static int roll_hits_blot(const std::array<uint8_t, 24>& points,
 					   const std::array<uint8_t, 24>& opp_points,
 					   uint8_t opp_bar,
 					   int blot_idx,
 					   int die_a,
 					   int die_b) {
-	int pos = blot_idx;
-	int bar_left = int(opp_bar);
-	int dice[4]{};
-	int dice_n = 0;
 	if (die_a == die_b) {
-		for (int k = 0; k < 4; ++k) dice[k] = die_a;
-		dice_n = 4;
-	} else {
-		dice[0] = die_a;
-		dice[1] = die_b;
-		dice_n = 2;
+		int dice[4]{die_a, die_a, die_a, die_a};
+		return run_hit_order(points, opp_points, opp_bar, blot_idx, dice, 4);
 	}
-
-	for (int k = 0; k < dice_n; ++k) {
-		const int die = dice[k];
-		if (bar_left > 0) {
-			const int to = 24 - die;
-			if (to < 0 || to >= 24) continue;
-			if (points[size_t(to)] >= 2) return false;
-			bar_left--;
-			continue;
-		}
-
-		const int to = pos - die;
-		if (to < 0 || to >= 24) return false;
-		if (opp_points[size_t(to)] > 0) return true;
-		if (points[size_t(to)] > 0) return false;
-		pos = to;
-	}
-	return false;
+	int dice_ab[2]{die_a, die_b};
+	int dice_ba[2]{die_b, die_a};
+	return run_hit_order(points, opp_points, opp_bar, blot_idx, dice_ab, 2)
+		+ run_hit_order(points, opp_points, opp_bar, blot_idx, dice_ba, 2);
 }
 
-static bool roll_covers_blot(const std::array<uint8_t, 24>& points,
+static int run_cover_order(const std::array<uint8_t, 24>& points,
+					   const std::array<uint8_t, 24>& opp_points,
+					   int blot_idx,
+					   const int* dice,
+					   int dice_n) {
+	int pos = blot_idx;
+	for (int k = 0; k < dice_n; ++k) {
+		const int die = dice[k];
+		const int to = pos - die;
+		if (to < 0 || to >= 24) return 0;
+		if (opp_points[size_t(to)] > 0) return 0;
+		if (points[size_t(to)] > 0) return 1;
+		pos = to;
+	}
+	return 0;
+}
+
+static int roll_covers_blot(const std::array<uint8_t, 24>& points,
 					 const std::array<uint8_t, 24>& opp_points,
 					 int blot_idx,
 					 int die_a,
 					 int die_b) {
-	int pos = blot_idx;
-	int dice[4]{};
-	int dice_n = 0;
 	if (die_a == die_b) {
-		for (int k = 0; k < 4; ++k) dice[k] = die_a;
-		dice_n = 4;
-	} else {
-		dice[0] = die_a;
-		dice[1] = die_b;
-		dice_n = 2;
+		int dice[4]{die_a, die_a, die_a, die_a};
+		return run_cover_order(points, opp_points, blot_idx, dice, 4);
 	}
-
-	for (int k = 0; k < dice_n; ++k) {
-		const int die = dice[k];
-		const int to = pos - die;
-		if (to < 0 || to >= 24) return false;
-		if (opp_points[size_t(to)] > 0) return false;
-		if (points[size_t(to)] > 0) return true;
-		pos = to;
-	}
-	return false;
+	int dice_ab[2]{die_a, die_b};
+	int dice_ba[2]{die_b, die_a};
+	return run_cover_order(points, opp_points, blot_idx, dice_ab, 2)
+		+ run_cover_order(points, opp_points, blot_idx, dice_ba, 2);
 }
 
 static void compute_prob_vectors(const std::array<uint8_t, 24>& points,
@@ -110,9 +126,9 @@ static void compute_prob_vectors(const std::array<uint8_t, 24>& points,
 		int hit_count = 0;
 		int cover_count = 0;
 		for (int a = 1; a <= 6; ++a) {
-			for (int b = 1; b <= 6; ++b) {
-				if (roll_hits_blot(points, opp_points, opp_bar, i, a, b)) hit_count++;
-				if (roll_covers_blot(points, opp_points, i, a, b)) cover_count++;
+			for (int b = a; b <= 6; ++b) {
+				hit_count += roll_hits_blot(points, opp_points, opp_bar, i, a, b);
+				cover_count += roll_covers_blot(points, opp_points, i, a, b);
 			}
 		}
 		threatened[i] = float(hit_count) / 36.0f;
