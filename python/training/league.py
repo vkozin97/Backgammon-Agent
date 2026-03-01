@@ -489,7 +489,7 @@ class LeagueController:
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
         self.reset_decision_stats()
-        opponents = [self.random, self.conservative_baseline]
+        opponents = [self.conservative_baseline]
         specs: list[_GameSpec] = []
 
         for i, a in enumerate(trainable_agents):
