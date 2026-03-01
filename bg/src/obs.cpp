@@ -5,13 +5,6 @@
 namespace bg {
 namespace {
 
-struct MiniState {
-	std::array<uint8_t, 24> points{};
-	std::array<uint8_t, 24> opp_points{};
-	uint8_t bar{0};
-	uint8_t opp_bar{0};
-};
-
 static int pip_count_mine(const State& s) {
 	int pip = 0;
 	for (int i = 0; i < 24; ++i) pip += int(s.points[i]) * (i + 1);
@@ -38,84 +31,74 @@ static int count_anchors(const std::array<uint8_t, 24>& a) {
 	return anchors;
 }
 
-static void collect_legal_steps(const MiniState& st, int die, std::array<std::pair<int, int>, 24>& out_steps, int& out_count) {
-	out_count = 0;
-	if (st.bar > 0) {
-		int to = 24 - die;
-		if (to >= 0 && to < 24 && st.opp_points[size_t(to)] < 2) {
-			out_steps[size_t(out_count++)] = {-1, to};
-		}
-		return;
+static bool roll_hits_blot(const std::array<uint8_t, 24>& points,
+					   const std::array<uint8_t, 24>& opp_points,
+					   uint8_t opp_bar,
+					   int blot_idx,
+					   int die_a,
+					   int die_b) {
+	int pos = blot_idx;
+	int bar_left = int(opp_bar);
+	int dice[4]{};
+	int dice_n = 0;
+	if (die_a == die_b) {
+		for (int k = 0; k < 4; ++k) dice[k] = die_a;
+		dice_n = 4;
+	} else {
+		dice[0] = die_a;
+		dice[1] = die_b;
+		dice_n = 2;
 	}
 
-	for (int from = 0; from < 24; ++from) {
-		if (st.points[size_t(from)] == 0) continue;
-		int to = from - die;
-		if (to >= 0 && to < 24 && st.opp_points[size_t(to)] < 2) {
-			out_steps[size_t(out_count++)] = {from, to};
+	for (int k = 0; k < dice_n; ++k) {
+		const int die = dice[k];
+		if (bar_left > 0) {
+			const int to = 24 - die;
+			if (to < 0 || to >= 24) continue;
+			if (points[size_t(to)] >= 2) return false;
+			bar_left--;
+			continue;
 		}
-	}
-}
 
-static bool dfs_can_hit(MiniState st, const int* dice, int dice_n, int k, int target_idx, bool already_hit) {
-	if (already_hit) return true;
-	if (k >= dice_n) return false;
-
-	std::array<std::pair<int, int>, 24> steps{};
-	int n_steps = 0;
-	collect_legal_steps(st, dice[k], steps, n_steps);
-	if (n_steps == 0) {
-		return dfs_can_hit(st, dice, dice_n, k + 1, target_idx, already_hit);
-	}
-
-	for (int i = 0; i < n_steps; ++i) {
-		MiniState nx = st;
-		auto [from, to] = steps[size_t(i)];
-		if (from == -1) nx.bar--;
-		else nx.points[size_t(from)]--;
-
-		bool landed_on_target = (to == target_idx && st.opp_points[size_t(target_idx)] == 1);
-		if (nx.opp_points[size_t(to)] == 1) {
-			nx.opp_points[size_t(to)] = 0;
-			nx.opp_bar++;
-		}
-		nx.points[size_t(to)]++;
-
-		if (dfs_can_hit(nx, dice, dice_n, k + 1, target_idx, already_hit || landed_on_target)) return true;
+		const int to = pos - die;
+		if (to < 0 || to >= 24) return false;
+		if (opp_points[size_t(to)] > 0) return true;
+		if (points[size_t(to)] > 0) return false;
+		pos = to;
 	}
 	return false;
 }
 
-static bool dfs_can_cover(MiniState st, const int* dice, int dice_n, int k, int target_idx) {
-	if (st.points[size_t(target_idx)] >= 2) return true;
-	if (k >= dice_n) return false;
-
-	std::array<std::pair<int, int>, 24> steps{};
-	int n_steps = 0;
-	collect_legal_steps(st, dice[k], steps, n_steps);
-	if (n_steps == 0) {
-		return dfs_can_cover(st, dice, dice_n, k + 1, target_idx);
+static bool roll_covers_blot(const std::array<uint8_t, 24>& points,
+					 const std::array<uint8_t, 24>& opp_points,
+					 int blot_idx,
+					 int die_a,
+					 int die_b) {
+	int pos = blot_idx;
+	int dice[4]{};
+	int dice_n = 0;
+	if (die_a == die_b) {
+		for (int k = 0; k < 4; ++k) dice[k] = die_a;
+		dice_n = 4;
+	} else {
+		dice[0] = die_a;
+		dice[1] = die_b;
+		dice_n = 2;
 	}
 
-	for (int i = 0; i < n_steps; ++i) {
-		MiniState nx = st;
-		auto [from, to] = steps[size_t(i)];
-		if (from == -1) nx.bar--;
-		else nx.points[size_t(from)]--;
-
-		if (nx.opp_points[size_t(to)] == 1) {
-			nx.opp_points[size_t(to)] = 0;
-			nx.opp_bar++;
-		}
-		nx.points[size_t(to)]++;
-		if (dfs_can_cover(nx, dice, dice_n, k + 1, target_idx)) return true;
+	for (int k = 0; k < dice_n; ++k) {
+		const int die = dice[k];
+		const int to = pos - die;
+		if (to < 0 || to >= 24) return false;
+		if (opp_points[size_t(to)] > 0) return false;
+		if (points[size_t(to)] > 0) return true;
+		pos = to;
 	}
 	return false;
 }
 
 static void compute_prob_vectors(const std::array<uint8_t, 24>& points,
                                  const std::array<uint8_t, 24>& opp_points,
-                                 uint8_t bar,
                                  uint8_t opp_bar,
                                  float* threatened,
                                  float* cover) {
@@ -124,39 +107,16 @@ static void compute_prob_vectors(const std::array<uint8_t, 24>& points,
 		cover[i] = 0.0f;
 		if (points[size_t(i)] != 1) continue;
 
-		float p_hit = 0.0f;
-		float p_cover = 0.0f;
+		int hit_count = 0;
+		int cover_count = 0;
 		for (int a = 1; a <= 6; ++a) {
 			for (int b = 1; b <= 6; ++b) {
-				MiniState st_hit{};
-				st_hit.points = opp_points;
-				st_hit.opp_points = points;
-				st_hit.bar = opp_bar;
-				st_hit.opp_bar = bar;
-
-				MiniState st_cover{};
-				st_cover.points = points;
-				st_cover.opp_points = opp_points;
-				st_cover.bar = bar;
-				st_cover.opp_bar = opp_bar;
-
-				int dice[4]{};
-				int dn = 0;
-				if (a == b) {
-					for (int k = 0; k < 4; ++k) dice[k] = a;
-					dn = 4;
-				} else {
-					dice[0] = a;
-					dice[1] = b;
-					dn = 2;
-				}
-
-				if (dfs_can_hit(st_hit, dice, dn, 0, i, false)) p_hit += 1.0f / 36.0f;
-				if (dfs_can_cover(st_cover, dice, dn, 0, i)) p_cover += 1.0f / 36.0f;
+				if (roll_hits_blot(points, opp_points, opp_bar, i, a, b)) hit_count++;
+				if (roll_covers_blot(points, opp_points, i, a, b)) cover_count++;
 			}
 		}
-		threatened[i] = p_hit;
-		cover[i] = p_cover;
+		threatened[i] = float(hit_count) / 36.0f;
+		cover[i] = float(cover_count) / 36.0f;
 	}
 }
 
@@ -199,7 +159,7 @@ void get_obs_extended(const State& s, const Dice& d, float* out) {
 		out[base_opp_anchors + i] = s.opp_points[i] >= 2 ? 1.0f : 0.0f;
 	}
 
-	compute_prob_vectors(s.points, s.opp_points, s.bar, s.opp_bar, out + base_hit_prob_mine, out + base_cover_prob_mine);
+	compute_prob_vectors(s.points, s.opp_points, s.opp_bar, out + base_hit_prob_mine, out + base_cover_prob_mine);
 
 	std::array<uint8_t, 24> rev_points{};
 	std::array<uint8_t, 24> rev_opp_points{};
@@ -209,7 +169,7 @@ void get_obs_extended(const State& s, const Dice& d, float* out) {
 	}
 	float hit_opp_rev[24]{};
 	float cover_opp_rev[24]{};
-	compute_prob_vectors(rev_points, rev_opp_points, s.opp_bar, s.bar, hit_opp_rev, cover_opp_rev);
+	compute_prob_vectors(rev_points, rev_opp_points, s.bar, hit_opp_rev, cover_opp_rev);
 	for (int i = 0; i < 24; ++i) {
 		out[base_hit_prob_opp + i] = hit_opp_rev[23 - i];
 		out[base_cover_prob_opp + i] = cover_opp_rev[23 - i];

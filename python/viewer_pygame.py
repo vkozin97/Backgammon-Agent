@@ -52,9 +52,9 @@ def map_move_to_display(mv8: np.ndarray, turn_white: bool):
     return mv
 
 
-W, H = 1980, 720
+W, H = 1224, 720
 FPS = 60
-PANEL_W = 1180
+PANEL_W = 420
 BOARD_W = W - PANEL_W
 FONT_NAME = None
 
