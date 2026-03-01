@@ -725,9 +725,22 @@ def main():
                     selected_hint_idx = max(0, selected_hint_idx - 1)
                 elif event.key == pygame.K_DOWN:
                     selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1)
-                elif event.key == pygame.K_RETURN and len(move_hints) > 0:
-                    _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
-                    start_macro_animation(chosen_mv, chosen_v)
+                elif event.key == pygame.K_RETURN:
+                    if is_opponent_turn and can_submit:
+                        if len(move_hints) > 0:
+                            _, chosen_mv, chosen_v = move_hints[0]
+                            value_suffix = f" | v={chosen_v:.4f}" if chosen_v is not None else ""
+                            info_lines.append(f"Agent({agent_id}) black: {move_to_str(chosen_mv, turn_white=False)}{value_suffix}")
+                            start_macro_animation(chosen_mv, chosen_v)
+                        else:
+                            info_lines.append(f"Agent({agent_id}) black: (pass)")
+                            env.commit_turn()
+                            turn_white = not turn_white
+                            start_turn()
+                            moves = refresh_moves()
+                    elif len(move_hints) > 0:
+                        _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
+                        start_macro_animation(chosen_mv, chosen_v)
             if macro_anim_steps:
                 continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
