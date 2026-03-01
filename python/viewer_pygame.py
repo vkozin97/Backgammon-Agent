@@ -7,6 +7,7 @@ import pygame
 import bg_env  # pybind11 module
 from training.agents import build_trainable_agents
 from training.config import ExperimentConfig
+from training.league import ConservativeBaselineAgent
 from training.observation import state_to_observation
 
 
@@ -102,11 +103,14 @@ agent_checkpoint_dir = "training_stats/checkpoints"
 
 def _agent_index_from_id(agent_id: str) -> int:
     if not agent_id.startswith("trainable_"):
-        raise ValueError(f"Unsupported agent_id={agent_id!r}. Expected trainable_N.")
+        raise ValueError(f"Unsupported trainable agent_id={agent_id!r}. Expected trainable_N.")
     return int(agent_id.split("_", 1)[1])
 
 
 def load_eval_agent(agent_id: str, agent_epoch: int, checkpoint_dir: str):
+    if agent_id == "conservative_baseline":
+        return ConservativeBaselineAgent()
+
     ckpt = Path(checkpoint_dir) / f"epoch_{agent_epoch:04d}"
     cfg_data = json.loads((ckpt / "config.json").read_text(encoding="utf-8"))
     cfg = ExperimentConfig.from_dict(cfg_data)
@@ -126,6 +130,15 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
             (i, np.asarray(mv, dtype=np.uint8), None)
             for i, mv in enumerate(sorted_moves_for_panel(moves, turn_white=turn_white))
         ]
+
+    if getattr(agent, "agent_id", "") == "conservative_baseline":
+        if len(moves) == 0:
+            return []
+        selected_move = np.asarray(agent.select(env), dtype=np.uint8)
+        result = [(i, np.asarray(mv, dtype=np.uint8), None) for i, mv in enumerate(moves)]
+        result.sort(key=lambda x: (not np.array_equal(x[1], selected_move), tuple(int(v) for v in x[1].tolist())))
+        return result
+
     sim = bg_env.Env(0)
     state0 = np.asarray(env.get_state_raw(), dtype=np.int16)
     result = []
@@ -634,7 +647,8 @@ def main():
             env.set_state_raw(turn_start_state)
             _, best_mv, best_v = move_hints[0]
             _, done = env.step_move(best_mv)
-            info_lines.append(f"Agent({agent_id}) black: {move_to_str(best_mv, turn_white=False)} | v={best_v:.4f}")
+            value_suffix = f" | v={best_v:.4f}" if best_v is not None else ""
+            info_lines.append(f"Agent({agent_id}) black: {move_to_str(best_mv, turn_white=False)}{value_suffix}")
             if done:
                 env.reset()
                 turn_white = is_white_turn_from_env()

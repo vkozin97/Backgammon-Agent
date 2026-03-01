@@ -111,13 +111,13 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
         assert winrates_dir.exists()
         assert loss_dir.exists()
         trainable_agents = build_trainable_agents(cfg, cfg.train.seed)
-        total_agents = len(trainable_agents) + 2
+        total_agents = len(trainable_agents) + 1
         opponents_per_agent = total_agents - 1
         assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
-        assert (replay_dir / "replay_size.png").exists()
+        assert not (replay_dir / "replay_size.png").exists()
         assert (decision_dir / "decision_temperature.png").exists()
         assert len(list(decision_dir.glob("selected_action_top_*.png"))) == 10
 
@@ -250,8 +250,9 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg_resume.league.replay_storage_dir = cfg.league.replay_storage_dir
 
     metrics = run_training(cfg_resume, start_epoch=1)
-    assert len(metrics) == 1
-    assert metrics[0]["epoch"] == 1
+    assert len(metrics) == 2
+    assert metrics[0]["epoch"] == 0
+    assert metrics[1]["epoch"] == 1
     assert (Path(cfg.checkpoint_dir) / "epoch_0001" / "agents.json").exists()
 
 

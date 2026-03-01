@@ -10,7 +10,7 @@ import torch
 from .agents import build_trainable_agents
 from .config import ExperimentConfig, save_config
 from .league import LeagueController
-from .replay import ReplayBuffer, build_recency_weights
+from .replay import ReplayBuffer
 
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -47,7 +47,6 @@ def load_checkpoint(cfg: ExperimentConfig, agents, epoch: int) -> None:
 
 def _clear_replay_storage(storage_dir: str) -> None:
     replay_dir = Path(storage_dir)
-    replay_dir.mkdir(parents=True, exist_ok=True)
     for p in replay_dir.glob("replay.sqlite3*"):
         if not p.is_file():
             continue
@@ -92,6 +91,23 @@ def _print_plot_timing(stage: str, started_at: float, total_started_at: float) -
     total_dt = max(time.perf_counter() - total_started_at, 0.0)
     print(f"[plot] {stage} took {stage_dt:.2f}s (total={total_dt:.2f}s)")
 
+
+def _load_metrics_history_from_checkpoints(checkpoint_dir: Path, end_epoch_exclusive: int) -> list[dict]:
+    if end_epoch_exclusive <= 0:
+        return []
+    loaded: list[dict] = []
+    for epoch in range(end_epoch_exclusive):
+        metrics_path = checkpoint_dir / f"epoch_{epoch:04d}" / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(metrics, dict):
+            loaded.append(metrics)
+    return loaded
+
 def _plot(
     metrics_history: list[dict],
     out_dir: Path,
@@ -105,7 +121,6 @@ def _plot(
     step_t0 = time.perf_counter()
     try:
         import matplotlib.pyplot as plt
-        from matplotlib import colors as mcolors
     except Exception:
         print("[plot] matplotlib is unavailable, skip plotting")
         return
@@ -114,14 +129,12 @@ def _plot(
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
-    replay_dir = out_dir / "replay"
     decision_dir = out_dir / "decision_temperature"
     step_t0 = time.perf_counter()
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
-    replay_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
     _print_plot_timing("prepare output directories", step_t0, plot_total_t0)
 
@@ -160,74 +173,7 @@ def _plot(
     _print_plot_timing("decision-temperature and top-k plots", step_t0, plot_total_t0)
 
     step_t0 = time.perf_counter()
-    replay_sizes = [int(m.get("replay_size", 0)) for m in metrics_history]
-    if replay_sizes and any(size > 0 for size in replay_sizes):
-        x_epoch = np.asarray(xs, dtype=np.float64)
-        y_size = np.asarray(replay_sizes, dtype=np.float64)
-        if x_epoch.size == 1:
-            x_left = float(x_epoch[0] - 0.5)
-            x_right = float(x_epoch[0] + 0.5)
-        else:
-            x_left = float(x_epoch[0])
-            x_right = float(x_epoch[-1])
-        x_dense = np.linspace(x_left, x_right, max(400, 50 * len(x_epoch)))
-        y_dense = np.interp(x_dense, x_epoch, y_size)
-        y_max = float(np.max(y_dense))
-        if y_max > 0.0:
-            ny = 256
-            y_grid = np.linspace(0.0, y_max, ny)
-            area_weights = np.full((ny, x_dense.size), np.nan, dtype=np.float64)
-            for i in range(x_dense.size):
-                cur_size = float(y_dense[i])
-                if cur_size <= 0.0:
-                    continue
-                n_states = max(int(round(cur_size)), 1)
-                uniform_prob = 1.0 / float(n_states)
-                recency_weights = build_recency_weights(n_states, recency_center_mass_ratio)
-                recency_probs = recency_weights / np.sum(recency_weights)
-
-                valid = y_grid <= cur_size
-                ratio = np.clip(y_grid[valid] / cur_size, 0.0, 1.0)
-                pos = np.clip(np.round(ratio * max(n_states - 1, 0)).astype(np.int64), 0, max(n_states - 1, 0))
-                recency_prob = recency_probs[pos]
-                mix_prob = alpha_recency * recency_prob + alpha_uniform * uniform_prob
-                area_weights[valid, i] = mix_prob
-
-            finite = np.isfinite(area_weights)
-            if np.any(finite):
-                min_w = float(np.nanmin(area_weights))
-                max_w = float(np.nanmax(area_weights))
-                if max_w > min_w:
-                    area_norm = (area_weights - min_w) / (max_w - min_w)
-                else:
-                    area_norm = np.zeros_like(area_weights)
-
-                alpha_mask = np.where(np.isfinite(area_norm), 0.95, 0.0)
-                area_norm = np.nan_to_num(area_norm, nan=0.0)
-                cmap = mcolors.LinearSegmentedColormap.from_list("white_to_orange", ["#ffffff", "#ff8c00"])
-
-                plt.figure(figsize=(18, 9))
-                plt.imshow(
-                    area_norm,
-                    extent=[x_left, x_right, 0.0, y_max],
-                    origin="lower",
-                    aspect="auto",
-                    cmap=cmap,
-                    alpha=alpha_mask,
-                    interpolation="bilinear",
-                )
-                plt.plot(x_epoch, y_size, color="#ff8c00", linewidth=2.0)
-                plt.title("Replay size")
-                plt.xlabel("epoch")
-                plt.ylabel("states in replay")
-                plt.ylim(0.0, y_max)
-                plt.tight_layout()
-                plt.savefig(replay_dir / "replay_size.png")
-                plt.close()
-    _print_plot_timing("replay-size plot", step_t0, plot_total_t0)
-
-    step_t0 = time.perf_counter()
-    fixed_opponents = {"random", "conservative_baseline"}
+    fixed_opponents = {"conservative_baseline"}
     for aid in agents:
         agent_t0 = time.perf_counter()
         latest_opponents = set(metrics_history[-1]["agents"][aid].get("winrate_vs_opponents", {}).keys())
@@ -403,9 +349,9 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
 
     if start_epoch > 0:
         load_checkpoint(cfg, agents, start_epoch - 1)
-    metrics_history: list[dict] = []
+    metrics_history = _load_metrics_history_from_checkpoints(Path(cfg.checkpoint_dir), start_epoch)
 
-    all_agent_ids = [x.agent_id for x in agents] + ["random", "conservative_baseline"]
+    all_agent_ids = [x.agent_id for x in agents] + ["conservative_baseline"]
 
     current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
 
@@ -431,15 +377,15 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         print(f"[2/6] Replay append took {replay_add_dt:.2f} seconds")
 
         winrates_t0 = time.time()
-        winrates_vs_random = []
+        winrates_vs_baseline = []
         for agent in agents:
-            pair_random = _games_for_pair(game_results, agent.agent_id, "random")
-            wr_random = sum(1 for g in pair_random if g.winner == agent.agent_id) / len(pair_random) if pair_random else 0.0
-            winrates_vs_random.append(round(wr_random * 100.0, 2))
+            pair_baseline = _games_for_pair(game_results, agent.agent_id, "conservative_baseline")
+            wr_baseline = sum(1 for g in pair_baseline if g.winner == agent.agent_id) / len(pair_baseline) if pair_baseline else 0.0
+            winrates_vs_baseline.append(round(wr_baseline * 100.0, 2))
         winrates_dt = max(time.time() - winrates_t0, 1e-6)
         print(f"[3/6] Winrate aggregation took {winrates_dt:.2f} seconds")
 
-        print(f"Winrates vs random: {winrates_vs_random}\n")
+        print(f"Winrates vs conservative baseline: {winrates_vs_baseline}\n")
         print("[4/6] Training started")
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
@@ -511,7 +457,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             if trainable_opponents:
                 per_agent[aid]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
 
-            per_agent[aid]["winrate_vs_random"] = per_agent[aid]["winrate_vs_opponents"].get("random", 0.0)
+            per_agent[aid]["winrate_vs_random"] = 0.0
             per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("conservative_baseline", 0.0)
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
