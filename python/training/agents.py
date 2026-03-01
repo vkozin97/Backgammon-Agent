@@ -153,9 +153,7 @@ class ValueAgent:
         else:
             self.device = torch.device("cpu")
 
-        if group == "C":
-            self.model: nn.Module = TorchConvHeadValueModel(model_cfg)
-        elif group == "D":
+        if group in {"C", "D"}:
             self.model = TorchDeepConvValueModel(model_cfg)
         else:
             self.model = TorchMLPValueModel(model_cfg)
@@ -279,7 +277,7 @@ class ValueAgent:
 
 def build_trainable_agents(cfg, seed: int = 0) -> list[ValueAgent]:
     agents: list[ValueAgent] = []
-    groups = ["A"] * 3 + ["B"] * 3 + ["C"] * 3 + ["D"] * 3
+    groups = ["A"] * 2 + ["B"] * 2 + ["C"] * 2 + ["D"] * 2
     for i, g in enumerate(groups):
         mcfg = (
             cfg.model_group_a

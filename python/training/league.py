@@ -217,6 +217,8 @@ class LeagueController:
 
     @staticmethod
     def state_vector(env) -> np.ndarray:
+        if bg_env is not None and hasattr(env, "get_obs_extended"):
+            return np.asarray(env.get_obs_extended(), dtype=np.float32)
         raw = np.asarray(env.get_state_raw(), dtype=np.float32)
         return state_to_observation(raw)
 
