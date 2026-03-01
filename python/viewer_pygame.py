@@ -102,8 +102,8 @@ OBS_POINTS = 24
 
 # Viewer hyperparameters
 agent_mode = "hint"  # "none" | "hint" | "play"
-agent_id = "trainable_0"
-agent_epoch = 44
+agent_id = "trainable_11"
+agent_epoch = 79
 agent_checkpoint_dir = "training_stats/checkpoints"
 
 

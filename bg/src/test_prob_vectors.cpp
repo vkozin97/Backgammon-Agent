@@ -50,8 +50,9 @@ static int roll_hits_blot(const std::array<uint8_t, 24>& points,
     }
     int dice_ab[2]{die_a, die_b};
     int dice_ba[2]{die_b, die_a};
-    return run_hit_order(points, opp_points, opp_bar, blot_idx, dice_ab, 2)
-        + run_hit_order(points, opp_points, opp_bar, blot_idx, dice_ba, 2);
+    if !run_hit_order(points, opp_points, opp_bar, blot_idx, dice_ab, 2)
+        return 2 * run_hit_order(points, opp_points, opp_bar, blot_idx, dice_ba, 2)
+    else return 0;
 }
 
 static int run_cover_order(const std::array<uint8_t, 24>& points,
@@ -86,26 +87,49 @@ static int roll_covers_blot(const std::array<uint8_t, 24>& points,
         + run_cover_order(points, opp_points, blot_idx, dice_ba, 2);
 }
 
+static void compute_prob_vectors(const std::array<uint8_t, 24>& points,
+    const std::array<uint8_t, 24>& opp_points,
+    uint8_t opp_bar,
+    float* threatened,
+    float* cover) {
+    for (int i = 0; i < 24; ++i) {
+        threatened[i] = 0.0f;
+        cover[i] = 0.0f;
+        if (points[size_t(i)] != 1) continue;
+
+        int hit_count = 0;
+        int cover_count = 0;
+        for (int a = 1; a <= 6; ++a) {
+            for (int b = a; b <= 6; ++b) {
+                hit_count += roll_hits_blot(points, opp_points, opp_bar, i, a, b);
+                cover_count += roll_covers_blot(points, opp_points, i, a, b);
+            }
+        }
+        threatened[i] = float(hit_count) / 36.0f;
+        cover[i] = float(cover_count) / 36.0f;
+    }
+}
+
 }  // namespace
 
 int main() {
-    std::array<uint8_t, 24> points{};
-    std::array<uint8_t, 24> opp_points{};
-    uint8_t opp_bar = 1;
-    int blot_idx = 10;
-    int die_a = 3;
-    int die_b = 5;
+    std::array<uint8_t, 24> points{0,0,0,0,1,4,0,2,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,2};
+    std::array<uint8_t, 24> opp_points{1,0,1,0,0,0,0,0,0,0,0,4,0,0,0,1,3,0,4,1,0,0,0,0};
+    uint8_t opp_bar = 0;
+    int blot_idx = 4;
 
-    points[10] = 1;
-    points[13] = 2;
-    points[18] = 1;
-    opp_points[15] = 1;
-    opp_points[20] = 1;
+    std::array<float> threatened;
+    std::array<float> cover;
+    compute_prob_vectors(points, opp_points, opp_bar, threatened, cover);
+    // const int hit_result = roll_hits_blot(points, opp_points, opp_bar, blot_idx, die_a, die_b);
+    // const int cover_result = roll_covers_blot(points, opp_points, blot_idx, die_a, die_b);
 
-    const int hit_result = roll_hits_blot(points, opp_points, opp_bar, blot_idx, die_a, die_b);
-    const int cover_result = roll_covers_blot(points, opp_points, blot_idx, die_a, die_b);
-
-    std::cout << "roll_hits_blot=" << hit_result << '\n';
-    std::cout << "roll_covers_blot=" << cover_result << '\n';
+    std::cout << "threatened=" << "\n";
+    for (int i = 0; i < 24; ++i)
+        cout << threatened[i] << " ";
+    std::cout << "\n" << "cover" << "\n";
+    for (int i = 0; i < 24; ++i)
+        cout << cover[i] << " ";
+    
     return 0;
 }
