@@ -562,6 +562,8 @@ def main():
         env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
         turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        if agent_mode == "play" and not turn_white:
+            info_lines.append(f"Opponent dice: {dice_values}")
 
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
@@ -636,27 +638,13 @@ def main():
         active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice)
         selected_die_idx = active_idx
         required_steps = max_micro_steps_in_moves(moves, turn_white)
-        can_submit = len(moves) == 0 or len(manual_steps) == required_steps
+        is_opponent_turn = agent_mode == "play" and not turn_white
+        can_submit = is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps
         move_hints = evaluate_moves(env, moves, agent, turn_white)
         if move_hints:
             selected_hint_idx = max(0, min(selected_hint_idx, len(move_hints) - 1))
         else:
             selected_hint_idx = 0
-
-        if agent_mode == "play" and not turn_white and len(move_hints) > 0:
-            env.set_state_raw(turn_start_state)
-            _, best_mv, best_v = move_hints[0]
-            _, done = env.step_move(best_mv)
-            value_suffix = f" | v={best_v:.4f}" if best_v is not None else ""
-            info_lines.append(f"Agent({agent_id}) black: {move_to_str(best_mv, turn_white=False)}{value_suffix}")
-            if done:
-                env.reset()
-                turn_white = is_white_turn_from_env()
-            else:
-                turn_white = not turn_white
-            start_turn()
-            moves = refresh_moves()
-            continue
 
         now = pygame.time.get_ticks() / 1000.0
         if piece_anim is not None:
@@ -754,6 +742,20 @@ def main():
                     continue
 
                 if ok_rect.collidepoint(mx, my) and can_submit:
+                    if is_opponent_turn:
+                        if len(move_hints) > 0:
+                            _, chosen_mv, chosen_v = move_hints[0]
+                            value_suffix = f" | v={chosen_v:.4f}" if chosen_v is not None else ""
+                            info_lines.append(f"Agent({agent_id}) black: {move_to_str(chosen_mv, turn_white=False)}{value_suffix}")
+                            start_macro_animation(chosen_mv, chosen_v)
+                        else:
+                            info_lines.append(f"Agent({agent_id}) black: (pass)")
+                            env.commit_turn()
+                            turn_white = not turn_white
+                            start_turn()
+                            moves = refresh_moves()
+                        continue
+
                     chosen_value = None
                     if move_hints and move_hints[0][2] is not None:
                         matched = matching_move_indices(moves, manual_steps, turn_white)
@@ -782,6 +784,9 @@ def main():
                 if clicked_die is not None:
                     if used_dice[clicked_die] < required_dice[clicked_die]:
                         selected_die_idx = clicked_die
+                    continue
+
+                if is_opponent_turn:
                     continue
 
                 has_bar_checker = mine_bar > 0
