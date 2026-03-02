@@ -417,6 +417,7 @@ class LeagueController:
             if len(active_idx) == 0:
                 break
 
+            t0= time.time()
             env.roll_dice()
             states = np.asarray(env.get_states_raw(), dtype=np.int16)
             legal_moves = list(env.legal_moves())
@@ -467,6 +468,9 @@ class LeagueController:
                     winners[i] = actor.agent_id if rewards[i] > 0 else opp.agent_id
                     winner_player_indices[i] = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
                     done[i] = True
+                    
+            dt = time.time() - t0
+            print(f"Ran step {turn} via {dt} sec")
             turn += 1
 
         return [
@@ -548,4 +552,5 @@ class LeagueController:
 
         results = self._play_all_games_batched(specs, epoch)
         dt = max(time.time() - t0, 1e-6)
+        
         return results, len(results) / dt
