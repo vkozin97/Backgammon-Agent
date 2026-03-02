@@ -101,8 +101,8 @@ OBS_BASE_COVER_OPP = 216
 OBS_POINTS = 24
 
 # Viewer hyperparameters
-agent_mode = "hint"  # "none" | "hint" | "play"
-agent_id = "trainable_11"
+agent_mode = "play"  # "none" | "hint" | "play"
+agent_id = "conservative_baseline"
 agent_epoch = 79
 agent_checkpoint_dir = "training_stats/checkpoints"
 
