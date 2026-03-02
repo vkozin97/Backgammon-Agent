@@ -38,10 +38,10 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     num_epochs: int = 400
-    updates_per_epoch_per_agent: int = 40
-    batch_size: int = 10_000
+    updates_per_epoch_per_agent: int = 80
+    batch_size: int = 20_000
     optimizer_type: str = "adam"
-    learning_rate: float = 1e-3
+    learning_rate: float = 5e-4
     lr_decay_factor: float = 0.96
     lr_decay_every_steps: int = 40
     weight_decay: float = 0.0
@@ -58,7 +58,7 @@ class TrainConfig:
     loss_type: str = "bce_with_logits"
     loss_weights: list[float] = field(default_factory=lambda: [1.0])
     target_expansion: str = "repeat"
-    plot_every_k_epochs: int = 20
+    plot_every_k_epochs: int = 10
     winrate_window_size: int = 10
 
 
@@ -74,7 +74,7 @@ class LeagueConfig:
     recency_center_mass_ratio: float = 0.9
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
-    batched_obs_threads: int = 0
+    batched_obs_threads: int = 1
     selfplay_temperature: float = 1.0
     temperature_decay: float = 0.9
     evaluation_games_per_pair: int = 1

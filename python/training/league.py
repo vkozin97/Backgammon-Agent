@@ -478,7 +478,7 @@ class LeagueController:
                     done[i] = True
                     
             dt = time.time() - t0
-            print(f"Ran step {turn} via {dt} sec")
+            # print(f"Ran step {turn} via {dt} sec")
             turn += 1
 
         return [
