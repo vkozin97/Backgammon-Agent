@@ -600,9 +600,11 @@ def main():
     macro_anim_turn_white = True
     macro_anim_value = None
     macro_anim_move = np.full((8,), 255, dtype=np.uint8)
+    macro_anim_auto_commit = True
+    macro_pending_submit = False
 
-    def start_macro_animation(chosen_mv: np.ndarray, chosen_value):
-        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim
+    def start_macro_animation(chosen_mv: np.ndarray, chosen_value, auto_commit: bool = True):
+        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim, macro_anim_auto_commit, macro_pending_submit
         mv = np.asarray(chosen_mv, dtype=np.uint8)
         steps = []
         for k in range(4):
@@ -616,6 +618,8 @@ def main():
         macro_anim_turn_white = turn_white
         macro_anim_value = chosen_value
         macro_anim_move = mv.copy()
+        macro_anim_auto_commit = bool(auto_commit)
+        macro_pending_submit = False
         env.set_state_raw(turn_start_state)
         if not macro_anim_steps:
             return
@@ -703,15 +707,18 @@ def main():
             else:
                 value_suffix = f" | 1-p={macro_anim_value:.4f}" if macro_anim_value is not None else ""
                 info_lines.append(f"Macro: {move_to_str(macro_anim_move, turn_white=macro_anim_turn_white)}{value_suffix}")
-                done = int(np.asarray(env.get_state_raw())[49]) >= 15
-                if done:
-                    env.reset()
-                    turn_white = is_white_turn_from_env()
+                if not macro_anim_auto_commit:
+                    macro_pending_submit = True
                 else:
-                    env.commit_turn()
-                    turn_white = not macro_anim_turn_white
-                start_turn()
-                moves = refresh_moves()
+                    done = int(np.asarray(env.get_state_raw())[49]) >= 15
+                    if done:
+                        env.reset()
+                        turn_white = is_white_turn_from_env()
+                    else:
+                        env.commit_turn()
+                        turn_white = not macro_anim_turn_white
+                    start_turn()
+                    moves = refresh_moves()
                 macro_anim_steps = []
 
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
@@ -770,7 +777,7 @@ def main():
                     selected_hint_idx = max(0, selected_hint_idx - 1)
                 elif event.key == pygame.K_DOWN:
                     selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1)
-                elif event.key == pygame.K_RETURN:
+                elif event.key == pygame.K_SPACE:
                     if is_opponent_turn and can_submit:
                         if len(move_hints) > 0:
                             _, chosen_mv, chosen_v = move_hints[0]
@@ -783,9 +790,25 @@ def main():
                             turn_white = not turn_white
                             start_turn()
                             moves = refresh_moves()
-                    elif len(move_hints) > 0:
+                    elif agent_mode in ("none", "hint") and len(move_hints) > 0:
                         _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
-                        start_macro_animation(chosen_mv, chosen_v)
+                        if macro_pending_submit and np.array_equal(np.asarray(chosen_mv, dtype=np.uint8), macro_anim_move):
+                            done = int(np.asarray(env.get_state_raw())[49]) >= 15
+                            reward = 1.0 if done else 0.0
+                            if not done:
+                                env.commit_turn()
+                            value_suffix = f" | 1-p={chosen_v:.4f}" if chosen_v is not None else ""
+                            info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done}{value_suffix}")
+                            if done:
+                                env.reset()
+                                turn_white = is_white_turn_from_env()
+                            else:
+                                turn_white = not turn_white
+                            start_turn()
+                            moves = refresh_moves()
+                            macro_pending_submit = False
+                        else:
+                            start_macro_animation(chosen_mv, chosen_v, auto_commit=False)
             if macro_anim_steps:
                 continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -812,6 +835,24 @@ def main():
                             turn_white = not turn_white
                             start_turn()
                             moves = refresh_moves()
+                        continue
+
+                    if macro_pending_submit:
+                        done = int(np.asarray(env.get_state_raw())[49]) >= 15
+                        reward = 1.0 if done else 0.0
+                        chosen_value = macro_anim_value
+                        if not done:
+                            env.commit_turn()
+                        value_suffix = f" | 1-p={chosen_value:.4f}" if chosen_value is not None else ""
+                        info_lines.append(f"Apply: {move_to_str(macro_anim_move, turn_white=turn_white)} | r={reward} done={done}{value_suffix}")
+                        if done:
+                            env.reset()
+                            turn_white = is_white_turn_from_env()
+                        else:
+                            turn_white = not turn_white
+                        start_turn()
+                        moves = refresh_moves()
+                        macro_pending_submit = False
                         continue
 
                     chosen_value = None
