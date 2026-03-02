@@ -420,6 +420,9 @@ class LeagueController:
             t0= time.time()
             env.roll_dice()
             states = np.asarray(env.get_states_raw(), dtype=np.int16)
+            obs_extended_batch = None
+            if hasattr(env, "get_obs_extended"):
+                obs_extended_batch = np.asarray(env.get_obs_extended(getattr(self.cfg, "batched_obs_threads", 0)), dtype=np.float32)
             legal_moves = list(env.legal_moves())
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
 
@@ -454,8 +457,13 @@ class LeagueController:
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
                 opp = spec.p2 if turn % 2 == 0 else spec.p1
                 actor_player_index = 0 if turn % 2 == 0 else 1
+                state_vector = (
+                    np.asarray(obs_extended_batch[i], dtype=np.float32).copy()
+                    if obs_extended_batch is not None
+                    else self.state_vector_from_raw(states[i])
+                )
                 histories[i].append({
-                    "state_vector": self.state_vector_from_raw(states[i]),
+                    "state_vector": state_vector,
                     "agent_id": actor.agent_id,
                     "opponent_id": opp.agent_id,
                     "game_id": spec.game_id,
@@ -470,7 +478,7 @@ class LeagueController:
                     done[i] = True
                     
             dt = time.time() - t0
-            print(f"Ran step {turn} via {dt} sec")
+            # print(f"Ran step {turn} via {dt} sec")
             turn += 1
 
         return [

@@ -46,6 +46,7 @@ set_target_properties(bg_env PROPERTIES
 add_library(batched_bg_env MODULE
   src/batched_bindings.cpp
   src/env.cpp
+  src/obs.cpp
 )
 target_include_directories(batched_bg_env PRIVATE src "${PYBIND11_INCLUDE}")
 target_link_libraries(batched_bg_env PRIVATE Python::Module)

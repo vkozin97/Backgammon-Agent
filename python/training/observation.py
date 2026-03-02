@@ -25,30 +25,6 @@ def _legal_steps(points: np.ndarray, opp_points: np.ndarray, bar: int, die: int)
     return steps
 
 
-def _apply_step(
-    points: np.ndarray,
-    opp_points: np.ndarray,
-    bar: int,
-    opp_bar: int,
-    step: tuple[int, int],
-) -> tuple[np.ndarray, np.ndarray, int, int, bool]:
-    from_idx, to_idx = step
-    p = points.copy()
-    o = opp_points.copy()
-    b = int(bar)
-    ob = int(opp_bar)
-    if from_idx == -1:
-        b -= 1
-    else:
-        p[from_idx] -= 1
-    hit = o[to_idx] == 1
-    if hit:
-        o[to_idx] = 0
-        ob += 1
-    p[to_idx] += 1
-    return p, o, b, ob, hit
-
-
 def _can_hit_with_sequence(
     points: np.ndarray,
     opp_points: np.ndarray,
@@ -66,10 +42,33 @@ def _can_hit_with_sequence(
         if not steps:
             return dfs(p, o, b, ob, k + 1, already_hit)
         for step in steps:
-            landed_on_target = step[1] == target_idx and o[target_idx] == 1
-            np_, no_, nb_, nob_, _ = _apply_step(p, o, b, ob, step)
-            if dfs(np_, no_, nb_, nob_, k + 1, already_hit or landed_on_target):
+            from_idx, to_idx = step
+            landed_on_target = to_idx == target_idx and o[target_idx] == 1
+
+            if from_idx == -1:
+                next_b = b - 1
+            else:
+                p[from_idx] -= 1
+                next_b = b
+
+            hit = o[to_idx] == 1
+            if hit:
+                o[to_idx] = 0
+            p[to_idx] += 1
+
+            if dfs(p, o, next_b, ob + int(hit), k + 1, already_hit or landed_on_target):
+                p[to_idx] -= 1
+                if hit:
+                    o[to_idx] = 1
+                if from_idx != -1:
+                    p[from_idx] += 1
                 return True
+
+            p[to_idx] -= 1
+            if hit:
+                o[to_idx] = 1
+            if from_idx != -1:
+                p[from_idx] += 1
         return False
 
     return dfs(points, opp_points, bar, opp_bar, 0, False)
@@ -85,9 +84,31 @@ def _can_cover_with_sequence(points: np.ndarray, opp_points: np.ndarray, bar: in
         if not steps:
             return dfs(p, o, b, k + 1)
         for step in steps:
-            np_, no_, nb_, _, _ = _apply_step(p, o, b, 0, step)
-            if dfs(np_, no_, nb_, k + 1):
+            from_idx, to_idx = step
+            if from_idx == -1:
+                next_b = b - 1
+            else:
+                p[from_idx] -= 1
+                next_b = b
+
+            hit = o[to_idx] == 1
+            if hit:
+                o[to_idx] = 0
+            p[to_idx] += 1
+
+            if dfs(p, o, next_b, k + 1):
+                p[to_idx] -= 1
+                if hit:
+                    o[to_idx] = 1
+                if from_idx != -1:
+                    p[from_idx] += 1
                 return True
+
+            p[to_idx] -= 1
+            if hit:
+                o[to_idx] = 1
+            if from_idx != -1:
+                p[from_idx] += 1
         return False
 
     return dfs(points, opp_points, bar, 0)
