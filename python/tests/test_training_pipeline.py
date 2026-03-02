@@ -160,6 +160,37 @@ def test_temperature_decay_progression(tmp_path: Path):
     assert abs(metrics[1]["decision_temperature"] - 0.9) < 1e-9
 
 
+
+
+def test_topk_focus_makes_sampling_more_greedy_as_temperature_decays():
+    from training.league import LeagueController
+
+    cfg = ExperimentConfig().league
+    cfg.selfplay_temperature = 1.0
+    cfg.selfplay_topk = 2
+    cfg.selfplay_topk_focus_power = 2.0
+    league = LeagueController(cfg, seed=7)
+
+    values = np.array([1.0, 0.8, 0.4, -0.2], dtype=np.float32)
+
+    league.set_decision_temperature(1.0)
+    hits_warm = 0
+    n = 4000
+    for _ in range(n):
+        idx = league._sample_action_index(values)
+        if idx in {0, 1}:
+            hits_warm += 1
+
+    league.set_decision_temperature(0.2)
+    hits_cool = 0
+    for _ in range(n):
+        idx = league._sample_action_index(values)
+        if idx in {0, 1}:
+            hits_cool += 1
+
+    assert hits_cool / n > hits_warm / n
+    assert hits_cool / n > 0.95
+
 def test_run_training_clears_replay_db_on_fresh_start(tmp_path: Path):
     replay_dir = tmp_path / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)

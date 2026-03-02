@@ -218,6 +218,9 @@ class LeagueController:
         self.random = RandomAgent()
         self.conservative_baseline = ConservativeBaselineAgent()
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
+        self.initial_decision_temperature = max(float(self.decision_temperature), 1e-8)
+        self.decision_topk = max(int(getattr(cfg, "selfplay_topk", 0)), 0)
+        self.decision_topk_focus_power = max(float(getattr(cfg, "selfplay_topk_focus_power", 2.0)), 0.0)
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
 
@@ -247,6 +250,26 @@ class LeagueController:
         logits = centered / temp
         exp_logits = np.exp(logits)
         probs = exp_logits / float(np.sum(exp_logits))
+
+        if 0 < self.decision_topk < len(values):
+            sorted_idx = np.argsort(-values, kind="mergesort")
+            top_idx = sorted_idx[: self.decision_topk]
+
+            progress = 1.0 - min(max(temp / self.initial_decision_temperature, 0.0), 1.0)
+            focus = 1.0 - (1.0 - progress) ** self.decision_topk_focus_power
+            if focus > 0.0:
+                top_mass = float(np.sum(probs[top_idx]))
+                rest_mass = 1.0 - top_mass
+                target_top_mass = top_mass + focus * (1.0 - top_mass)
+                adjusted = probs.copy()
+                if top_mass > 0.0:
+                    adjusted[top_idx] *= target_top_mass / top_mass
+                if rest_mass > 0.0:
+                    rest_mask = np.ones_like(probs, dtype=bool)
+                    rest_mask[top_idx] = False
+                    adjusted[rest_mask] *= (1.0 - target_top_mass) / rest_mass
+                probs = adjusted / float(np.sum(adjusted))
+
         idx = int(self.rng.choice(len(values), p=probs))
         return idx
 

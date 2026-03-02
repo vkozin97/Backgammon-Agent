@@ -77,6 +77,8 @@ class LeagueConfig:
     batched_obs_threads: int = 1
     selfplay_temperature: float = 1.0
     temperature_decay: float = 0.9
+    selfplay_topk: int = 0
+    selfplay_topk_focus_power: float = 2.0
     evaluation_games_per_pair: int = 1
     checkpoint_frequency_epochs: int = 1
     metrics_flush_frequency: int = 1
