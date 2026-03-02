@@ -158,6 +158,7 @@ class ConservativeBaselineAgent:
             return (
                 float(-dangerous_home_blots),
                 float(off),
+                float(hits),
                 float(-home_blots),
                 float(opp_home_blots),
                 float(-blots),
@@ -165,13 +166,13 @@ class ConservativeBaselineAgent:
                 float(moved_from_outside_home_pips),
                 float(-moved_from_home),
                 float(blot_distance_sum),
-                float(hits),
                 float(home_anchors),
                 float(total_anchors),
             )
 
         return (
             float(home_anchors),
+            float(hits),
             float(-home_blots),
             float(opp_home_blots),
             float(-blots),
@@ -179,7 +180,6 @@ class ConservativeBaselineAgent:
             float(moved_from_outside_home_pips),
             float(-moved_from_home),
             float(blot_distance_sum),
-            float(hits),
             float(total_anchors),
             float(off),
         )
