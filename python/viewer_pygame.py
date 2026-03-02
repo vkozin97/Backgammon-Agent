@@ -140,10 +140,18 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     if getattr(agent, "agent_id", "") == "conservative_baseline":
         if len(moves) == 0:
             return []
-        selected_move = np.asarray(agent.select(env), dtype=np.uint8)
-        result = [(i, np.asarray(mv, dtype=np.uint8), None) for i, mv in enumerate(moves)]
-        result.sort(key=lambda x: (not np.array_equal(x[1], selected_move), tuple(int(v) for v in x[1].tolist())))
-        return result
+        state0 = np.asarray(env.get_state_raw(), dtype=np.int16)
+        sim = bg_env.Env(0)
+        scored = []
+        for i, mv in enumerate(moves):
+            sim.set_state_raw(state0)
+            sim.step_move(np.asarray(mv, dtype=np.uint8))
+            post = np.asarray(sim.get_state_raw(), dtype=np.int16)
+            score = agent._score_move(state0, post)
+            scored.append((i, np.asarray(mv, dtype=np.uint8), score))
+
+        scored.sort(key=lambda x: (tuple(-v for v in x[2]), tuple(int(v) for v in x[1].tolist())))
+        return [(i, mv, None) for i, mv, _ in scored]
 
     sim = bg_env.Env(0)
     state0 = np.asarray(env.get_state_raw(), dtype=np.int16)
