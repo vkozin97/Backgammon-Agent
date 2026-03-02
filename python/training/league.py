@@ -98,48 +98,57 @@ class ConservativeBaselineAgent:
         return bool(np.sum(points[6:]) == 0)
 
     @staticmethod
-    def _is_threatened_during_bearoff(raw_state: np.ndarray) -> bool:
+    def _dangerous_home_blots(raw_state: np.ndarray) -> int:
         points = raw_state[:24]
         opp_points = raw_state[24:48]
         opp_bar = int(raw_state[50])
-        if opp_bar > 0:
-            return True
-
         home_blots = np.where(points[:6] == 1)[0]
-        return any(np.any(opp_points[:idx] > 0) for idx in home_blots)
+        if home_blots.size == 0:
+            return 0
+        if opp_bar > 0:
+            return int(home_blots.size)
+        dangerous = 0
+        for idx in home_blots:
+            if np.any(opp_points[:idx] > 0):
+                dangerous += 1
+        return dangerous
 
     def _score_move(self, before_state: np.ndarray, after_state: np.ndarray) -> tuple[float, ...]:
         before_points = before_state[:24]
         points = after_state[:24]
+        opp_bar_before = int(before_state[50])
+        opp_bar_after = int(after_state[50])
 
-        blots = int(np.sum(points == 1))
-        anchors = int(np.sum(points >= 2))
+        home_anchors = int(np.sum(points[:6] >= 2))
+        total_anchors = int(np.sum(points >= 2))
+
+        blot_idxs = np.where(points == 1)[0]
+        blots = int(blot_idxs.size)
+        blot_distance_sum = int(np.sum(blot_idxs))
+        hits = int(max(0, opp_bar_after - opp_bar_before))
         off = int(after_state[49])
 
-        built_anchor_idxs = np.where((before_points < 2) & (points >= 2))[0]
-        built_home_idxs = built_anchor_idxs[built_anchor_idxs < 6]
-        built_non_home = int(np.sum(built_anchor_idxs >= 6))
-
-        builds_home_non_nearest = bool(np.any(built_home_idxs > 0))
-        builds_home_nearest = bool(np.any(built_home_idxs == 0))
-
-        if builds_home_non_nearest:
-            anchor_build_priority = 3
-        elif built_non_home > 0:
-            anchor_build_priority = 2
-        elif builds_home_nearest:
-            anchor_build_priority = 1
-        else:
-            anchor_build_priority = 0
-
-        farthest_home_anchor = int(np.max(built_home_idxs)) if built_home_idxs.size > 0 else -1
-
         in_bearoff = self._all_in_home(before_points)
-        threatened = self._is_threatened_during_bearoff(after_state)
-        if in_bearoff and not threatened:
-            return (float(off), float(-blots), float(anchors), float(anchor_build_priority), float(farthest_home_anchor))
+        if in_bearoff:
+            dangerous_home_blots = self._dangerous_home_blots(after_state)
+            return (
+                float(-dangerous_home_blots),
+                float(off),
+                float(-blots),
+                float(blot_distance_sum),
+                float(hits),
+                float(home_anchors),
+                float(total_anchors),
+            )
 
-        return (float(-blots), float(anchors), float(anchor_build_priority), float(farthest_home_anchor), float(off))
+        return (
+            float(home_anchors),
+            float(-blots),
+            float(blot_distance_sum),
+            float(hits),
+            float(total_anchors),
+            float(off),
+        )
 
     def select(self, env) -> np.ndarray:
         moves = env.legal_moves()
