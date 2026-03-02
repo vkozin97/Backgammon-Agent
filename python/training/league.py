@@ -142,8 +142,13 @@ class ConservativeBaselineAgent:
         blot_idxs = np.where(points == 1)[0]
         blots = int(blot_idxs.size)
         blot_distance_sum = int(np.sum(blot_idxs))
+        home_blots = int(np.sum(blot_idxs < 6))
+        opp_home_blots = int(np.sum(blot_idxs >= 18))
         hits = int(max(0, opp_bar_after - opp_bar_before))
         off = int(after_state[49])
+
+        moved_from = np.where(before_points > points)[0]
+        moved_from_outside_home = int(np.sum(moved_from >= 6))
 
         in_bearoff = self._all_in_home(before_points)
         if in_bearoff:
@@ -151,8 +156,11 @@ class ConservativeBaselineAgent:
             return (
                 float(-dangerous_home_blots),
                 float(off),
+                float(-home_blots),
+                float(opp_home_blots),
                 float(-blots),
                 float(blot_distance_sum),
+                float(moved_from_outside_home),
                 float(hits),
                 float(home_anchors),
                 float(total_anchors),
@@ -160,8 +168,11 @@ class ConservativeBaselineAgent:
 
         return (
             float(home_anchors),
+            float(-home_blots),
+            float(opp_home_blots),
             float(-blots),
             float(blot_distance_sum),
+            float(moved_from_outside_home),
             float(hits),
             float(total_anchors),
             float(off),
