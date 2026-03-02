@@ -422,7 +422,7 @@ class LeagueController:
             states = np.asarray(env.get_states_raw(), dtype=np.int16)
             obs_extended_batch = None
             if hasattr(env, "get_obs_extended"):
-                obs_extended_batch = np.asarray(env.get_obs_extended(), dtype=np.float32)
+                obs_extended_batch = np.asarray(env.get_obs_extended(getattr(self.cfg, "batched_obs_threads", 0)), dtype=np.float32)
             legal_moves = list(env.legal_moves())
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
 

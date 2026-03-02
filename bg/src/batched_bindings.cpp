@@ -155,10 +155,10 @@ PYBIND11_MODULE(batched_bg_env, m) {
         .def(py::init<size_t, uint64_t>(), py::arg("n_envs"), py::arg("seed") = 0)
         .def("size", &BatchedBackgammonEnv::size)
         .def("reset", &BatchedBackgammonEnv::reset)
-        .def("roll_dice", &BatchedBackgammonEnv::roll_dice, py::call_guard<py::gil_scoped_release>())
-        .def("legal_moves", &BatchedBackgammonEnv::legal_moves, py::arg("unique_states") = false, py::call_guard<py::gil_scoped_release>())
-        .def("get_states_raw", &BatchedBackgammonEnv::get_states_raw, py::call_guard<py::gil_scoped_release>())
-        .def("set_states_raw", &BatchedBackgammonEnv::set_states_raw, py::call_guard<py::gil_scoped_release>())
-        .def("step_apply", &BatchedBackgammonEnv::step_apply, py::call_guard<py::gil_scoped_release>())
-        .def("get_obs_extended", &BatchedBackgammonEnv::get_obs_extended, py::arg("n_threads") = 0, py::call_guard<py::gil_scoped_release>());
+        .def("roll_dice", &BatchedBackgammonEnv::roll_dice)
+        .def("legal_moves", &BatchedBackgammonEnv::legal_moves, py::arg("unique_states") = false)
+        .def("get_states_raw", &BatchedBackgammonEnv::get_states_raw)
+        .def("set_states_raw", &BatchedBackgammonEnv::set_states_raw)
+        .def("step_apply", &BatchedBackgammonEnv::step_apply)
+        .def("get_obs_extended", &BatchedBackgammonEnv::get_obs_extended, py::arg("n_threads") = 0);
 }

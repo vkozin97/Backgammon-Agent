@@ -74,6 +74,7 @@ class LeagueConfig:
     recency_center_mass_ratio: float = 0.9
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
+    batched_obs_threads: int = 0
     selfplay_temperature: float = 1.0
     temperature_decay: float = 0.9
     evaluation_games_per_pair: int = 1
