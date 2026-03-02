@@ -3,6 +3,11 @@
 #include <pybind11/stl.h>
 
 #include "env.h"
+#include "obs.h"
+
+#include <algorithm>
+#include <thread>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -52,6 +57,45 @@ public:
         return out;
     }
 
+
+    py::array_t<float> get_obs_extended(size_t n_threads = 0) const {
+        py::array_t<float> arr({(py::ssize_t)envs_.size(), (py::ssize_t)bg::OBS_EXTENDED_DIM});
+        auto out = arr.mutable_unchecked<2>();
+
+        auto worker = [&](size_t begin, size_t end) {
+            float tmp[bg::OBS_EXTENDED_DIM];
+            for (size_t i = begin; i < end; ++i) {
+                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), tmp);
+                for (int j = 0; j < bg::OBS_EXTENDED_DIM; ++j) {
+                    out((py::ssize_t)i, j) = tmp[j];
+                }
+            }
+        };
+
+        const size_t n = envs_.size();
+        size_t workers = n_threads;
+        if (workers == 0) {
+            workers = std::max<size_t>(1, std::thread::hardware_concurrency());
+        }
+        if (workers <= 1 || n < 2) {
+            worker(0, n);
+            return arr;
+        }
+        workers = std::min(workers, n);
+
+        std::vector<std::thread> threads;
+        threads.reserve(workers);
+        const size_t chunk = (n + workers - 1) / workers;
+        for (size_t t = 0; t < workers; ++t) {
+            const size_t begin = t * chunk;
+            if (begin >= n) break;
+            const size_t end = std::min(n, begin + chunk);
+            threads.emplace_back(worker, begin, end);
+        }
+        for (auto& th : threads) th.join();
+
+        return arr;
+    }
     py::array_t<int16_t> get_states_raw() const {
         py::array_t<int16_t> arr({(py::ssize_t)envs_.size(), (py::ssize_t)53});
         auto out = arr.mutable_unchecked<2>();
@@ -111,9 +155,10 @@ PYBIND11_MODULE(batched_bg_env, m) {
         .def(py::init<size_t, uint64_t>(), py::arg("n_envs"), py::arg("seed") = 0)
         .def("size", &BatchedBackgammonEnv::size)
         .def("reset", &BatchedBackgammonEnv::reset)
-        .def("roll_dice", &BatchedBackgammonEnv::roll_dice)
-        .def("legal_moves", &BatchedBackgammonEnv::legal_moves, py::arg("unique_states") = false)
-        .def("get_states_raw", &BatchedBackgammonEnv::get_states_raw)
-        .def("set_states_raw", &BatchedBackgammonEnv::set_states_raw)
-        .def("step_apply", &BatchedBackgammonEnv::step_apply);
+        .def("roll_dice", &BatchedBackgammonEnv::roll_dice, py::call_guard<py::gil_scoped_release>())
+        .def("legal_moves", &BatchedBackgammonEnv::legal_moves, py::arg("unique_states") = false, py::call_guard<py::gil_scoped_release>())
+        .def("get_states_raw", &BatchedBackgammonEnv::get_states_raw, py::call_guard<py::gil_scoped_release>())
+        .def("set_states_raw", &BatchedBackgammonEnv::set_states_raw, py::call_guard<py::gil_scoped_release>())
+        .def("step_apply", &BatchedBackgammonEnv::step_apply, py::call_guard<py::gil_scoped_release>())
+        .def("get_obs_extended", &BatchedBackgammonEnv::get_obs_extended, py::arg("n_threads") = 0, py::call_guard<py::gil_scoped_release>());
 }
