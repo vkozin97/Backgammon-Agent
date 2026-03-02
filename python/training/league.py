@@ -98,6 +98,20 @@ class ConservativeBaselineAgent:
         return bool(np.sum(points[6:]) == 0)
 
     @staticmethod
+    def _to_mover_perspective(before_state: np.ndarray, after_state: np.ndarray) -> np.ndarray:
+        if int(after_state[52]) == int(before_state[52]) + 1:
+            converted = np.asarray(after_state, dtype=np.int16).copy()
+            converted[:24] = after_state[24:48][::-1]
+            converted[24:48] = after_state[:24][::-1]
+            converted[48] = after_state[50]
+            converted[49] = after_state[51]
+            converted[50] = after_state[48]
+            converted[51] = after_state[49]
+            converted[52] = before_state[52]
+            return converted
+        return after_state
+
+    @staticmethod
     def _dangerous_home_blots(raw_state: np.ndarray) -> int:
         points = raw_state[:24]
         opp_points = raw_state[24:48]
@@ -114,6 +128,9 @@ class ConservativeBaselineAgent:
         return dangerous
 
     def _score_move(self, before_state: np.ndarray, after_state: np.ndarray) -> tuple[float, ...]:
+        before_state = np.asarray(before_state, dtype=np.int16)
+        after_state = self._to_mover_perspective(before_state, np.asarray(after_state, dtype=np.int16))
+
         before_points = before_state[:24]
         points = after_state[:24]
         opp_bar_before = int(before_state[50])
