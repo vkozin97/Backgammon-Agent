@@ -94,10 +94,16 @@ DICE_SIZE = 42
 DICE_GAP = 12
 LEGAL_MOVES_UNIQUE = True
 
+OBS_BASE_HIT_SELF = 144
+OBS_BASE_COVER_SELF = 168
+OBS_BASE_HIT_OPP = 192
+OBS_BASE_COVER_OPP = 216
+OBS_POINTS = 24
+
 # Viewer hyperparameters
-agent_mode = "hint"  # "none" | "hint" | "play"
-agent_id = "trainable_0"
-agent_epoch = 44
+agent_mode = "play"  # "none" | "hint" | "play"
+agent_id = "conservative_baseline"
+agent_epoch = 79
 agent_checkpoint_dir = "training_stats/checkpoints"
 
 
@@ -482,7 +488,15 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     return point_rects, bar_rect, dice_rects, undo_rect, ok_rect
 
 
-def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx):
+def _global_indexed_prob_row(vec: np.ndarray) -> list[int]:
+    return [int(vec[24 - g] * 36.0) for g in range(24, 0, -1)]
+
+
+def _format_prob_row(label: str, values: list[int]) -> str:
+    return f"{label:>2} " + " ".join(f"{v:>2d}" for v in values)
+
+
+def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -495,7 +509,12 @@ def draw_panel(surface, font, small_font, moves, info_lines, manual_steps, turn_
     y += 24
     draw_text(surface, small_font, f"Manual: {' | '.join(f'{a}->{b}' for a,b in manual_steps) or '(empty)'}", x, y, ACCENT)
 
-    y += 30
+    y += 28
+    for line in prob_table_lines:
+        draw_text(surface, tiny_font, line, x, y, (45, 45, 45))
+        y += 16
+
+    y += 10
     max_lines = (H - y - 150) // 18
     if move_hints:
         panel_moves = [mv for _, mv, _ in move_hints]
@@ -525,6 +544,7 @@ def main():
     pygame.display.set_caption("Backgammon Viewer (manual dice UI)")
     font = pygame.font.Font(FONT_NAME, 22)
     small = pygame.font.Font(FONT_NAME, 16)
+    tiny = pygame.font.Font(FONT_NAME, 13)
     clock = pygame.time.Clock()
 
     env = bg_env.Env(123)
@@ -698,7 +718,32 @@ def main():
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit, piece_anim, shake_anim
         )
-        draw_panel(screen, font, small, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx)
+        obs_extended = np.asarray(env.get_obs_extended(), dtype=np.float32)
+        sh = _global_indexed_prob_row(obs_extended[OBS_BASE_HIT_SELF:OBS_BASE_HIT_SELF + OBS_POINTS])
+        sc = _global_indexed_prob_row(obs_extended[OBS_BASE_COVER_SELF:OBS_BASE_COVER_SELF + OBS_POINTS])
+        oh = _global_indexed_prob_row(obs_extended[OBS_BASE_HIT_OPP:OBS_BASE_HIT_OPP + OBS_POINTS])
+        oc = _global_indexed_prob_row(obs_extended[OBS_BASE_COVER_OPP:OBS_BASE_COVER_OPP + OBS_POINTS])
+        header = "   " + " ".join(f"{g:>2d}" for g in range(24, 0, -1))
+        prob_table_lines = [
+            header,
+            _format_prob_row("SH", sh),
+            _format_prob_row("SC", sc),
+            _format_prob_row("OH", oh),
+            _format_prob_row("OC", oc),
+        ]
+        draw_panel(
+            screen,
+            font,
+            small,
+            tiny,
+            moves,
+            info_lines,
+            manual_steps,
+            turn_white,
+            move_hints,
+            selected_hint_idx,
+            prob_table_lines,
+        )
         pygame.display.flip()
 
         for event in pygame.event.get():

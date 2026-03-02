@@ -22,3 +22,6 @@ __pycache__/
 # Training stats artifacts
 python/training_stats/
 python/training_stats*
+
+# Project for debugging probability_vectors
+test_prob_vecs/
