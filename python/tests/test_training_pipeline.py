@@ -160,6 +160,35 @@ def test_temperature_decay_progression(tmp_path: Path):
     assert abs(metrics[1]["decision_temperature"] - 0.9) < 1e-9
 
 
+
+
+def test_sampling_concentrates_on_best_value_when_temperature_goes_to_zero():
+    from training.league import LeagueController
+
+    cfg = ExperimentConfig().league
+    cfg.selfplay_temperature = 1.0
+    league = LeagueController(cfg, seed=7)
+
+    values = np.array([1.0, 0.8, 0.4, -0.2], dtype=np.float32)
+
+    league.set_decision_temperature(1.0)
+    top1_warm = 0
+    n = 4000
+    for _ in range(n):
+        idx = league._sample_action_index(values)
+        if idx == 0:
+            top1_warm += 1
+
+    league.set_decision_temperature(1e-4)
+    top1_cool = 0
+    for _ in range(n):
+        idx = league._sample_action_index(values)
+        if idx == 0:
+            top1_cool += 1
+
+    assert top1_cool / n > top1_warm / n
+    assert top1_cool / n > 0.99
+
 def test_run_training_clears_replay_db_on_fresh_start(tmp_path: Path):
     replay_dir = tmp_path / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)

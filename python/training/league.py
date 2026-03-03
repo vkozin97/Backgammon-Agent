@@ -240,14 +240,21 @@ class LeagueController:
 
     def _sample_action_index(self, values: np.ndarray) -> int:
         temp = float(self.decision_temperature)
-        if temp <= 0.0:
-            return int(np.argmax(values))
+        vals = np.asarray(values, dtype=np.float64)
+        if vals.size == 0:
+            return 0
+        if temp <= 0.0 or not np.all(np.isfinite(vals)):
+            return int(np.argmax(vals))
 
-        centered = values - float(np.max(values))
-        logits = centered / temp
+        inv_temp = 1.0 / max(temp, 1e-8)
+        logits = (vals - float(np.max(vals))) * inv_temp
         exp_logits = np.exp(logits)
-        probs = exp_logits / float(np.sum(exp_logits))
-        idx = int(self.rng.choice(len(values), p=probs))
+        probs_sum = float(np.sum(exp_logits))
+        if not np.isfinite(probs_sum) or probs_sum <= 0.0:
+            return int(np.argmax(vals))
+
+        probs = exp_logits / probs_sum
+        idx = int(self.rng.choice(len(vals), p=probs))
         return idx
 
     def _record_topk_hit(self, values: np.ndarray, selected_idx: int) -> None:
