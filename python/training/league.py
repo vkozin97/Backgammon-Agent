@@ -218,9 +218,6 @@ class LeagueController:
         self.random = RandomAgent()
         self.conservative_baseline = ConservativeBaselineAgent()
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
-        self.initial_decision_temperature = max(float(self.decision_temperature), 1e-8)
-        self.decision_topk = max(int(getattr(cfg, "selfplay_topk", 0)), 0)
-        self.decision_topk_focus_power = max(float(getattr(cfg, "selfplay_topk_focus_power", 2.0)), 0.0)
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
 
@@ -246,29 +243,21 @@ class LeagueController:
         if temp <= 0.0:
             return int(np.argmax(values))
 
-        centered = values - float(np.max(values))
-        logits = centered / temp
-        exp_logits = np.exp(logits)
-        probs = exp_logits / float(np.sum(exp_logits))
-
-        if 0 < self.decision_topk < len(values):
-            sorted_idx = np.argsort(-values, kind="mergesort")
-            top_idx = sorted_idx[: self.decision_topk]
-
-            progress = 1.0 - min(max(temp / self.initial_decision_temperature, 0.0), 1.0)
-            focus = 1.0 - (1.0 - progress) ** self.decision_topk_focus_power
-            if focus > 0.0:
-                top_mass = float(np.sum(probs[top_idx]))
-                rest_mass = 1.0 - top_mass
-                target_top_mass = top_mass + focus * (1.0 - top_mass)
-                adjusted = probs.copy()
-                if top_mass > 0.0:
-                    adjusted[top_idx] *= target_top_mass / top_mass
-                if rest_mass > 0.0:
-                    rest_mask = np.ones_like(probs, dtype=bool)
-                    rest_mask[top_idx] = False
-                    adjusted[rest_mask] *= (1.0 - target_top_mass) / rest_mass
-                probs = adjusted / float(np.sum(adjusted))
+        vals = np.asarray(values, dtype=np.float64)
+        shifted = vals - float(np.min(vals))
+        base = shifted + 1e-8
+        base_sum = float(np.sum(base))
+        if not np.isfinite(base_sum) or base_sum <= 0.0:
+            probs = np.full((len(vals),), 1.0 / float(len(vals)), dtype=np.float64)
+        else:
+            base = base / base_sum
+            gamma = 1.0 / max(temp, 1e-8)
+            sharpened = np.power(base, gamma)
+            sharpened_sum = float(np.sum(sharpened))
+            if not np.isfinite(sharpened_sum) or sharpened_sum <= 0.0:
+                probs = np.full((len(vals),), 1.0 / float(len(vals)), dtype=np.float64)
+            else:
+                probs = sharpened / sharpened_sum
 
         idx = int(self.rng.choice(len(values), p=probs))
         return idx
