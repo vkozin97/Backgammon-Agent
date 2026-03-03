@@ -179,7 +179,7 @@ def test_sampling_concentrates_on_best_value_when_temperature_goes_to_zero():
         if idx == 0:
             top1_warm += 1
 
-    league.set_decision_temperature(0.01)
+    league.set_decision_temperature(1e-4)
     top1_cool = 0
     for _ in range(n):
         idx = league._sample_action_index(values)

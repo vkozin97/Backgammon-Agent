@@ -240,26 +240,21 @@ class LeagueController:
 
     def _sample_action_index(self, values: np.ndarray) -> int:
         temp = float(self.decision_temperature)
-        if temp <= 0.0:
-            return int(np.argmax(values))
-
         vals = np.asarray(values, dtype=np.float64)
-        shifted = vals - float(np.min(vals))
-        base = shifted + 1e-8
-        base_sum = float(np.sum(base))
-        if not np.isfinite(base_sum) or base_sum <= 0.0:
-            probs = np.full((len(vals),), 1.0 / float(len(vals)), dtype=np.float64)
-        else:
-            base = base / base_sum
-            gamma = 1.0 / max(temp, 1e-8)
-            sharpened = np.power(base, gamma)
-            sharpened_sum = float(np.sum(sharpened))
-            if not np.isfinite(sharpened_sum) or sharpened_sum <= 0.0:
-                probs = np.full((len(vals),), 1.0 / float(len(vals)), dtype=np.float64)
-            else:
-                probs = sharpened / sharpened_sum
+        if vals.size == 0:
+            return 0
+        if temp <= 0.0 or not np.all(np.isfinite(vals)):
+            return int(np.argmax(vals))
 
-        idx = int(self.rng.choice(len(values), p=probs))
+        inv_temp = 1.0 / max(temp, 1e-8)
+        logits = (vals - float(np.max(vals))) * inv_temp
+        exp_logits = np.exp(logits)
+        probs_sum = float(np.sum(exp_logits))
+        if not np.isfinite(probs_sum) or probs_sum <= 0.0:
+            return int(np.argmax(vals))
+
+        probs = exp_logits / probs_sum
+        idx = int(self.rng.choice(len(vals), p=probs))
         return idx
 
     def _record_topk_hit(self, values: np.ndarray, selected_idx: int) -> None:
