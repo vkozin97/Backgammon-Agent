@@ -135,6 +135,7 @@ def _plot_sampling_probability_overlay(plt_module, xs: list[int], sampling_probs
     )
     ax_prob.set_ylabel("sample probability")
     ax_prob.set_ylim(bottom=0.0)
+    ax.plot([], [], linestyle="--", linewidth=1.2, color="black", alpha=0.7, label="sample probability")
 
 
 
