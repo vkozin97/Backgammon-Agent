@@ -29,8 +29,8 @@ static int run_selftest() {
 
         float oc[bg::OBS_COMPACT_DIM];
         float oe[bg::OBS_EXTENDED_DIM];
-        bg::get_obs_compact(env.state(), env.current_dice(), oc);
-        bg::get_obs_extended(env.state(), env.current_dice(), oe);
+        bg::get_obs_compact(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), oc);
+        bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), oe);
 
         if (!is_finite_array(oc, bg::OBS_COMPACT_DIM) || !is_finite_array(oe, bg::OBS_EXTENDED_DIM)) {
             std::cerr << "[FAIL] non-finite obs at t=" << t << "\n";
@@ -38,19 +38,18 @@ static int run_selftest() {
         }
 
         std::vector<bg::Move> moves;
-        env.legal_moves(moves);
+        auto [double_possible, _mcount] = env.legal_moves(moves);
+        (void)double_possible;
         if (moves.empty()) {
-            // для заглушки редко, но допустим
-            continue;
+        auto [_reward, _dave_after, _accepted, done] = env.step_apply(0, m, 1);
         }
 
-        // псевдо-рандом: выбираем ход по индексу
-        const auto& m = moves[t % moves.size()];
+    bg::get_obs_compact(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), obs_c);
+    bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), obs_e);
 
-        bool done = false;
-        env.step_apply(m, done);
-
-        if (!env.validate_invariants()) {
+    auto [double_possible, _mcount2] = env.legal_moves(moves);
+        auto [r, _dave_after, accepted, done] = env.step_apply(double_possible, moves[0], 1);
+        std::cout << "Applied first move. reward=" << r << " done=" << int(done) << " accepted=" << int(accepted) << "\n";
             std::cerr << "[FAIL] invariants after step at t=" << t << "\n";
             std::cerr << bg::to_ascii(env.state(), env.current_dice()) << "\n";
             return 1;

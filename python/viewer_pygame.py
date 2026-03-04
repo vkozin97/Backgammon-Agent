@@ -17,7 +17,8 @@ def decode_raw(raw: np.ndarray):
     mine = raw[0:24].astype(int)
     opp = raw[24:48].astype(int)
     mine_bar, mine_off, opp_bar, opp_off, ply = map(int, raw[48:53])
-    return mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply
+    white_score, black_score, dave_value, n_games, white_to_move = map(int, raw[53:58])
+    return mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply, white_score, black_score, dave_value, n_games, white_to_move
 
 
 def transform_point_for_display(pt: int, turn_white: bool) -> int:
@@ -101,7 +102,7 @@ OBS_BASE_COVER_OPP = 216
 OBS_POINTS = 24
 
 # Viewer hyperparameters
-agent_mode = "hint"  # "none" | "hint" | "play"
+agent_mode = "none"  # "none" | "hint" | "play"
 agent_id = "trainable_2"
 agent_epoch = 248
 agent_checkpoint_dir = "training_stats/checkpoints"
@@ -145,7 +146,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
         scored = []
         for i, mv in enumerate(moves):
             sim.set_state_raw(state0)
-            sim.step_move(np.asarray(mv, dtype=np.uint8))
+            sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
             post = np.asarray(sim.get_state_raw(), dtype=np.int16)
             score = agent._score_move(state0, post)
             scored.append((i, np.asarray(mv, dtype=np.uint8), score))
@@ -158,7 +159,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     result = []
     for i, mv in enumerate(moves):
         sim.set_state_raw(state0)
-        _, done = sim.step_move(np.asarray(mv, dtype=np.uint8))
+        _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
         if done:
             value = 1.0
         else:
@@ -232,7 +233,7 @@ def draw_checker(surface, x, y, is_white: bool):
 
 
 def checker_position_for_state(state, disp_point, is_white):
-    mine, opp, mine_bar, mine_off, opp_bar, opp_off, _ = decode_raw(state)
+    mine, opp, mine_bar, mine_off, opp_bar, opp_off, _, *_ = decode_raw(state)
     stack = mine if is_white else opp
     if disp_point == "BAR":
         count = int(mine_bar if is_white else opp_bar)
@@ -563,20 +564,20 @@ def main():
         agent = load_eval_agent(agent_id, agent_epoch, agent_checkpoint_dir)
 
     def is_white_turn_from_env() -> bool:
-        ply = int(np.asarray(env.get_state_raw(), dtype=np.int16)[52])
-        return (ply % 2) == 0
+        return int(np.asarray(env.get_state_raw(), dtype=np.int16)[57]) == 1
 
     turn_white = is_white_turn_from_env()
     info_lines = ["Started. Click points (or bar) to move checkers."]
 
     def refresh_moves():
-        mv = np.asarray(env.legal_moves(LEGAL_MOVES_UNIQUE), dtype=np.uint8)
+        double_possible, arr = env.legal_moves(LEGAL_MOVES_UNIQUE)
+        mv = np.asarray(arr, dtype=np.uint8)
         if mv.ndim == 1:
             mv = mv.reshape(0, 8)
-        return mv
+        return int(double_possible), mv
 
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
             dice_values = [d[0], d[1]]
@@ -590,7 +591,7 @@ def main():
         env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
         turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
-        moves = refresh_moves()
+        double_possible, moves = refresh_moves()
         turn_move_hints = evaluate_moves(env, moves, agent, turn_white)
         selected_hint_idx = 0
         macro_pending_submit = False
@@ -617,6 +618,7 @@ def main():
     selected_hint_idx = 0
     turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
     moves = np.empty((0, 8), dtype=np.uint8)
+    double_possible = 0
     turn_move_hints = []
     start_turn()
     info_lines.append(f"First turn: {'white' if turn_white else 'black'}")

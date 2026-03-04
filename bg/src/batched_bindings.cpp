@@ -43,7 +43,7 @@ public:
         py::list out;
         for (const auto& env : envs_) {
             std::vector<bg::Move> moves;
-            env.legal_moves(moves, unique_states);
+            auto [double_possible, _] = env.legal_moves(moves, unique_states);
             py::array_t<uint8_t> arr({(py::ssize_t)moves.size(), (py::ssize_t)8});
             auto a = arr.mutable_unchecked<2>();
             for (py::ssize_t r = 0; r < (py::ssize_t)moves.size(); ++r) {
@@ -52,7 +52,7 @@ public:
                     a(r, 2 * k + 1) = moves[r].to[k];
                 }
             }
-            out.append(std::move(arr));
+            out.append(py::make_tuple(double_possible, std::move(arr)));
         }
         return out;
     }
@@ -65,7 +65,7 @@ public:
         auto worker = [&](size_t begin, size_t end) {
             float tmp[bg::OBS_EXTENDED_DIM];
             for (size_t i = begin; i < end; ++i) {
-                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), tmp);
+                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), envs_[i].mine_score(), envs_[i].opp_score(), envs_[i].dave_value(), tmp);
                 for (int j = 0; j < bg::OBS_EXTENDED_DIM; ++j) {
                     out((py::ssize_t)i, j) = tmp[j];
                 }
@@ -97,24 +97,24 @@ public:
         return arr;
     }
     py::array_t<int16_t> get_states_raw() const {
-        py::array_t<int16_t> arr({(py::ssize_t)envs_.size(), (py::ssize_t)53});
+        py::array_t<int16_t> arr({(py::ssize_t)envs_.size(), (py::ssize_t)58});
         auto out = arr.mutable_unchecked<2>();
-        int16_t tmp[53];
+        int16_t tmp[58];
         for (py::ssize_t i = 0; i < (py::ssize_t)envs_.size(); ++i) {
             envs_[i].get_state_raw(tmp);
-            for (int j = 0; j < 53; ++j) out(i, j) = tmp[j];
+            for (int j = 0; j < 58; ++j) out(i, j) = tmp[j];
         }
         return arr;
     }
 
     void set_states_raw(py::array_t<int16_t, py::array::c_style | py::array::forcecast> states) {
-        if (states.ndim() != 2 || states.shape(0) != (py::ssize_t)envs_.size() || states.shape(1) != 53) {
-            throw std::runtime_error("set_states_raw: expected int16 array with shape (N, 53)");
+        if (states.ndim() != 2 || states.shape(0) != (py::ssize_t)envs_.size() || states.shape(1) != 58) {
+            throw std::runtime_error("set_states_raw: expected int16 array with shape (N, 58)");
         }
         auto a = states.unchecked<2>();
-        int16_t tmp[53];
+        int16_t tmp[58];
         for (py::ssize_t i = 0; i < (py::ssize_t)envs_.size(); ++i) {
-            for (int j = 0; j < 53; ++j) tmp[j] = a(i, j);
+            for (int j = 0; j < 58; ++j) tmp[j] = a(i, j);
             envs_[i].set_state_raw(tmp);
         }
     }
@@ -135,9 +135,9 @@ public:
                 m.from[k] = mv(i, 2 * k);
                 m.to[k] = mv(i, 2 * k + 1);
             }
-            bool is_done = false;
-            r(i) = envs_[i].step_apply(m, is_done);
-            d(i) = is_done ? 1 : 0;
+            auto [reward, _dave_after, _accepted, done_code] = envs_[i].step_apply(0, m, 1);
+            r(i) = reward;
+            d(i) = done_code;
         }
         return py::make_tuple(rewards, done);
     }

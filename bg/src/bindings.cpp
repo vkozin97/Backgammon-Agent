@@ -16,7 +16,7 @@ PYBIND11_MODULE(bg_env, m) {
         .def_readwrite("to", &bg::Move::to);
 
     py::class_<bg::BackgammonEnv>(m, "Env")
-        .def(py::init<uint64_t>(), py::arg("seed") = 0)
+        .def(py::init<uint64_t, int>(), py::arg("seed") = 0, py::arg("n_games") = 5)
         .def("reset", [](bg::BackgammonEnv& self) { self.reset_standard(); })
         .def("roll_dice", [](bg::BackgammonEnv& self) {
             auto d = self.roll_dice();
@@ -28,38 +28,34 @@ PYBIND11_MODULE(bg_env, m) {
         })
         .def("set_dice", [](bg::BackgammonEnv& self,
                             py::array_t<uint8_t, py::array::c_style | py::array::forcecast> dice) {
-            if (dice.ndim() != 1 || dice.shape(0) != 2) {
-                throw std::runtime_error("set_dice: expected uint8 array with shape (2,)");
-            }
+            if (dice.ndim() != 1 || dice.shape(0) != 2) throw std::runtime_error("set_dice: expected (2,)");
             auto d = dice.unchecked<1>();
             uint8_t tmp[2]{d(0), d(1)};
             self.set_dice_raw(tmp);
         })
         .def("get_state_raw", [](bg::BackgammonEnv& self) {
-            py::array_t<int16_t> arr({53});
+            py::array_t<int16_t> arr({58});
             auto buf = arr.mutable_unchecked<1>();
-            int16_t tmp[53];
+            int16_t tmp[58];
             self.get_state_raw(tmp);
-            for (int i = 0; i < 53; ++i) buf(i) = tmp[i];
+            for (int i = 0; i < 58; ++i) buf(i) = tmp[i];
             return arr;
         })
         .def("set_state_raw", [](bg::BackgammonEnv& self,
                                  py::array_t<int16_t, py::array::c_style | py::array::forcecast> st) {
-            if (st.ndim() != 1 || st.shape(0) != 53) {
-                throw std::runtime_error("set_state_raw: expected int16 array with shape (53,)");
-            }
+            if (st.ndim() != 1 || st.shape(0) != 58) throw std::runtime_error("set_state_raw: expected (58,)");
             auto a = st.unchecked<1>();
-            int16_t tmp[53];
-            for (int i = 0; i < 53; ++i) tmp[i] = a(i);
+            int16_t tmp[58];
+            for (int i = 0; i < 58; ++i) tmp[i] = a(i);
             self.set_state_raw(tmp);
         })
         .def("apply_micro_step", [](bg::BackgammonEnv& self, uint8_t from, uint8_t to, uint8_t die) {
             bool valid = self.apply_micro_step(from, to, die);
-            py::array_t<int16_t> arr({53});
+            py::array_t<int16_t> arr({58});
             auto buf = arr.mutable_unchecked<1>();
-            int16_t tmp[53];
+            int16_t tmp[58];
             self.get_state_raw(tmp);
-            for (int i = 0; i < 53; ++i) buf(i) = tmp[i];
+            for (int i = 0; i < 58; ++i) buf(i) = tmp[i];
             return py::make_tuple(valid, arr);
         }, py::arg("from"), py::arg("to"), py::arg("die") = 0)
         .def("commit_turn", [](bg::BackgammonEnv& self) { self.commit_turn(); })
@@ -67,7 +63,7 @@ PYBIND11_MODULE(bg_env, m) {
             py::array_t<float> arr({bg::OBS_COMPACT_DIM});
             auto buf = arr.mutable_unchecked<1>();
             float tmp[bg::OBS_COMPACT_DIM];
-            bg::get_obs_compact(self.state(), self.current_dice(), tmp);
+            bg::get_obs_compact(self.state(), self.current_dice(), self.mine_score(), self.opp_score(), self.dave_value(), tmp);
             for (int i = 0; i < bg::OBS_COMPACT_DIM; ++i) buf(i) = tmp[i];
             return arr;
         })
@@ -75,14 +71,13 @@ PYBIND11_MODULE(bg_env, m) {
             py::array_t<float> arr({bg::OBS_EXTENDED_DIM});
             auto buf = arr.mutable_unchecked<1>();
             float tmp[bg::OBS_EXTENDED_DIM];
-            bg::get_obs_extended(self.state(), self.current_dice(), tmp);
+            bg::get_obs_extended(self.state(), self.current_dice(), self.mine_score(), self.opp_score(), self.dave_value(), tmp);
             for (int i = 0; i < bg::OBS_EXTENDED_DIM; ++i) buf(i) = tmp[i];
             return arr;
         })
         .def("legal_moves", [](bg::BackgammonEnv& self, bool unique_states) {
             std::vector<bg::Move> moves;
-            self.legal_moves(moves, unique_states);
-
+            auto [double_possible, _] = self.legal_moves(moves, unique_states);
             py::array_t<uint8_t> arr({(py::ssize_t)moves.size(), (py::ssize_t)8});
             auto a = arr.mutable_unchecked<2>();
             for (py::ssize_t i = 0; i < (py::ssize_t)moves.size(); ++i) {
@@ -91,33 +86,22 @@ PYBIND11_MODULE(bg_env, m) {
                     a(i, 2 * k + 1) = moves[i].to[k];
                 }
             }
-            return arr;
+            return py::make_tuple(double_possible, arr);
         }, py::arg("unique_states") = false)
-        .def("step_index", [](bg::BackgammonEnv& self, int idx) {
+        .def("step_index", [](bg::BackgammonEnv& self, int idx, uint8_t apply_double, uint8_t accept_double) {
             std::vector<bg::Move> moves;
             self.legal_moves(moves);
-            if (idx < 0 || idx >= (int)moves.size()) {
-                throw std::runtime_error("step_index: idx out of range");
-            }
-            bool done = false;
-            float reward = self.step_apply(moves[idx], done);
-            return py::make_tuple(reward, done);
-        })
+            if (idx < 0 || idx >= (int)moves.size()) throw std::runtime_error("step_index: idx out of range");
+            return self.step_apply(apply_double, moves[idx], accept_double);
+        }, py::arg("idx"), py::arg("apply_double") = 0, py::arg("accept_double") = 1)
         .def("step_move", [](bg::BackgammonEnv& self,
-                             py::array_t<uint8_t, py::array::c_style | py::array::forcecast> mv) {
-            if (mv.ndim() != 1 || mv.shape(0) != 8) {
-                throw std::runtime_error("step_move: expected uint8 array with shape (8,)");
-            }
+                             py::array_t<uint8_t, py::array::c_style | py::array::forcecast> mv,
+                             uint8_t apply_double,
+                             uint8_t accept_double) {
+            if (mv.ndim() != 1 || mv.shape(0) != 8) throw std::runtime_error("step_move: expected (8,)");
             auto a = mv.unchecked<1>();
-
             bg::Move m;
-            for (int k = 0; k < 4; ++k) {
-                m.from[k] = a(2 * k);
-                m.to[k] = a(2 * k + 1);
-            }
-
-            bool done = false;
-            float reward = self.step_apply(m, done);
-            return py::make_tuple(reward, done);
-        });
+            for (int k = 0; k < 4; ++k) { m.from[k] = a(2 * k); m.to[k] = a(2 * k + 1); }
+            return self.step_apply(apply_double, m, accept_double);
+        }, py::arg("mv"), py::arg("apply_double") = 0, py::arg("accept_double") = 1);
 }

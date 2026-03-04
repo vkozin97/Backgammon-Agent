@@ -163,7 +163,7 @@ static void compute_prob_vectors(const std::array<uint8_t, 24>& points,
 
 } // namespace
 
-void get_obs_compact(const State& s, const Dice& d, float* out) {
+void get_obs_compact(const State& s, const Dice& d, int mine_score, int opp_score, int dave_value, float* out) {
 	for (int i = 0; i < 24; ++i) out[i] = float(s.points[i]);
 	for (int i = 0; i < 24; ++i) out[24 + i] = float(s.opp_points[i]);
 
@@ -175,9 +175,12 @@ void get_obs_compact(const State& s, const Dice& d, float* out) {
 	out[52] = float(d.a);
 	out[53] = float(d.b);
 	out[54] = float(s.ply) / 1000.0f;
+	out[55] = float(mine_score);
+	out[56] = float(opp_score);
+	out[57] = float(dave_value);
 }
 
-void get_obs_extended(const State& s, const Dice& d, float* out) {
+void get_obs_extended(const State& s, const Dice& d, int mine_score, int opp_score, int dave_value, float* out) {
 	(void)d;
 	const int base_points = 0;
 	const int base_opp_points = 24;
@@ -241,6 +244,9 @@ void get_obs_extended(const State& s, const Dice& d, float* out) {
 	out[base_scalars + 11] = blot_pips_opp;
 	out[base_scalars + 12] = anchor_pips_mine;
 	out[base_scalars + 13] = anchor_pips_opp;
+	out[base_scalars + 14] = float(mine_score);
+	out[base_scalars + 15] = float(opp_score);
+	out[base_scalars + 16] = float(dave_value);
 }
 
 } // namespace bg
