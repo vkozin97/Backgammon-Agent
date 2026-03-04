@@ -9,6 +9,9 @@ import numpy as np
 from .replay import build_recency_weights
 
 
+SAMPLING_PROBABILITY_TICKS = 1000
+
+
 def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     if not values:
         return []
@@ -42,6 +45,7 @@ def _sampling_probability_series(
     alpha_recency: float,
     alpha_uniform: float,
     recency_center_mass_ratio: float,
+    ticks: int = SAMPLING_PROBABILITY_TICKS,
 ) -> list[float]:
     if not xs:
         return []
@@ -54,7 +58,8 @@ def _sampling_probability_series(
 
     probs: list[float] = []
     for norm_pos, replay_size in zip(normalized_positions, replay_sizes):
-        size = max(int(replay_size), 1)
+        full_size = max(int(replay_size), 1)
+        size = min(full_size, max(int(ticks), 1))
         uniform_prob = 1.0 / float(size)
 
         recency_weights = build_recency_weights(size, recency_center_mass_ratio)
