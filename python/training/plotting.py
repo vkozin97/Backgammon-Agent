@@ -87,11 +87,53 @@ def _plot_sampling_probability_overlay(plt_module, xs: list[int], sampling_probs
         linewidth=1.2,
         color="black",
         alpha=0.7,
-        label="sample probability",
+        label="_nolegend_",
     )
     ax_prob.set_ylabel("sample probability")
     ax_prob.set_ylim(bottom=0.0)
-    ax.plot([], [], linestyle="--", linewidth=1.2, color="black", alpha=0.7, label="sample probability")
+    plt_module.sca(ax)
+
+
+
+def _apply_percent_y_grid(ax) -> None:
+    ax.set_ylim(0.0, 100.0)
+    ax.set_yticks(np.arange(0.0, 101.0, 10.0))
+    ax.set_yticks(np.arange(0.0, 101.0, 5.0), minor=True)
+    ax.grid(axis="y", which="major", linestyle="-", linewidth=0.7, alpha=0.35)
+    ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.5, alpha=0.25)
+
+
+
+def _apply_loss_y_grid(ax) -> None:
+    ax.set_ylim(0.0, 1.0)
+    ax.set_yticks(np.arange(0.0, 1.01, 0.1))
+    ax.set_yticks(np.arange(0.0, 1.01, 0.05), minor=True)
+    ax.grid(axis="y", which="major", linestyle="-", linewidth=0.7, alpha=0.35)
+    ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.5, alpha=0.25)
+
+
+
+def _format_sci_short(value: float) -> str:
+    mantissa, exponent = f"{value:.1e}".split("e")
+    return f"{mantissa}e{int(exponent):+d}"
+
+
+
+def _annotate_last_value(ax, xs: list[int], ys: list[float]) -> None:
+    if not xs or not ys:
+        return
+    x_last = xs[-1]
+    y_last = ys[-1]
+    if not np.isfinite(y_last):
+        return
+    ax.annotate(
+        _format_sci_short(float(y_last)),
+        xy=(x_last, y_last),
+        xytext=(8, 0),
+        textcoords="offset points",
+        fontsize=9,
+        va="center",
+    )
 
 
 
@@ -217,7 +259,8 @@ def plot_metrics_history(
             plt.title(f"{aid} winrates (focus: {focus_opp})")
             plt.xlabel("epoch")
             plt.ylabel("winrate (%)")
-            plt.ylim(0.0, 100.0)
+            ax = plt.gca()
+            _apply_percent_y_grid(ax)
             _plot_sampling_probability_overlay(plt, xs, sampling_probs)
             plt.legend(fontsize=6, ncol=2)
             plt.tight_layout()
@@ -232,7 +275,8 @@ def plot_metrics_history(
             plt.title(f"{aid} winrates windowed (focus: {focus_opp}, w={max(int(winrate_window_size), 1)})")
             plt.xlabel("epoch")
             plt.ylabel("windowed winrate (%)")
-            plt.ylim(0.0, 100.0)
+            ax = plt.gca()
+            _apply_percent_y_grid(ax)
             _plot_sampling_probability_overlay(plt, xs, sampling_probs)
             plt.legend(fontsize=6, ncol=2)
             plt.tight_layout()
@@ -263,6 +307,7 @@ def plot_metrics_history(
             plt.title(f"{aid} train loss")
             plt.xlabel("learning step")
             plt.ylabel("loss")
+            _apply_loss_y_grid(plt.gca())
             plt.tight_layout()
             plt.savefig(loss_dir / f"{aid}_loss.png")
             plt.close()
@@ -293,6 +338,7 @@ def plot_metrics_history(
             plt.title(f"{aid} learning rate")
             plt.xlabel("learning step")
             plt.ylabel("lr")
+            _annotate_last_value(plt.gca(), lr_xs, lr_steps)
             plt.tight_layout()
             plt.savefig(lr_dir / f"{aid}_lr.png")
             plt.close()
@@ -307,6 +353,7 @@ def plot_metrics_history(
             plt.title(f"{aid} learning rate windowed (w={lr_window})")
             plt.xlabel("learning step")
             plt.ylabel("windowed lr")
+            _annotate_last_value(plt.gca(), lr_xs, lr_steps_windowed)
             plt.tight_layout()
             plt.savefig(lr_dir / f"{aid}_lr_windowed.png")
             plt.close()
@@ -330,7 +377,8 @@ def plot_metrics_history(
         plt.title("Agents overall average winrate vs all opponents")
         plt.xlabel("epoch")
         plt.ylabel("winrate (%)")
-        plt.ylim(0.0, 100.0)
+        ax = plt.gca()
+        _apply_percent_y_grid(ax)
         _plot_sampling_probability_overlay(plt, xs, sampling_probs)
         plt.legend(fontsize=7, ncol=3)
         plt.tight_layout()
@@ -343,7 +391,8 @@ def plot_metrics_history(
         plt.title(f"Agents overall average winrate windowed (w={max(int(winrate_window_size), 1)})")
         plt.xlabel("epoch")
         plt.ylabel("windowed winrate (%)")
-        plt.ylim(0.0, 100.0)
+        ax = plt.gca()
+        _apply_percent_y_grid(ax)
         _plot_sampling_probability_overlay(plt, xs, sampling_probs)
         plt.legend(fontsize=7, ncol=3)
         plt.tight_layout()
