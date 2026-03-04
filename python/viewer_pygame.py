@@ -690,7 +690,7 @@ def main():
     while running:
         clock.tick(FPS)
         raw = np.asarray(env.get_state_raw(), dtype=np.int16)
-        base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply = decode_raw(raw)
+        base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, *_ = decode_raw(raw)
 
         if turn_white:
             white_base, black_base = base_mine.copy(), base_opp.copy()
