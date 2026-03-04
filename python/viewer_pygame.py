@@ -403,7 +403,8 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
                dice_values, used_dice, required_dice, active_die_idx, can_submit,
                dave_value, n_games, white_score, black_score,
                cube_owner_visual, cube_clickable, cube_offer_pending,
-               show_roll_button, piece_anim=None, shake_anim=None, cube_shake_anim=None):
+               cube_offer_to_white, show_roll_button,
+               piece_anim=None, shake_anim=None, cube_shake_anim=None, cube_move_anim=None):
     surface.fill(APP_BG)
     pygame.draw.rect(surface, FRAME, (0, 0, BOARD_W, H))
     inner = pygame.Rect(8, HEADER_H, BOARD_W - 16, H - HEADER_H - 8)
@@ -486,10 +487,14 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     cube_y_top = TOP + 24
     cube_y_bottom = BOTTOM - CUBE_SIZE - 24
     if cube_owner_visual is None:
-        cube_y = cube_y_center
+        base_cube_y = cube_y_center
     else:
-        cube_y = cube_y_bottom if cube_owner_visual else cube_y_top
-    cube_rect = pygame.Rect(cube_x, cube_y, CUBE_SIZE, CUBE_SIZE)
+        base_cube_y = cube_y_bottom if cube_owner_visual else cube_y_top
+    cube_rect = pygame.Rect(cube_x, base_cube_y, CUBE_SIZE, CUBE_SIZE)
+    if cube_move_anim is not None:
+        t = min(1.0, max(0.0, cube_move_anim["t"]))
+        cy = int(round(lerp(cube_move_anim["start"][1], cube_move_anim["end"][1], t)))
+        cube_rect = pygame.Rect(cube_x, cy - CUBE_SIZE // 2, CUBE_SIZE, CUBE_SIZE)
     draw_doubling_cube(surface, font, cube_rect, dave_value, cube_clickable)
 
     if cube_shake_anim is not None:
@@ -512,7 +517,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     if cube_offer_pending:
         btn_w, btn_h = 160, 46
-        rx, ry = dice_anchor(not turn_white)
+        rx, ry = dice_anchor(cube_offer_to_white)
         accept_rect = pygame.Rect(rx, ry - (btn_h + 8), btn_w, btn_h)
         reject_rect = pygame.Rect(rx, ry + 8, btn_w, btn_h)
         draw_button(surface, font, accept_rect, "Принять", True, fill=(156, 211, 133))
@@ -695,6 +700,14 @@ def main():
                 return i
         return remaining[0]
 
+    def cube_center_for_owner(owner_white):
+        cube_x = PLAY_W + OFF_GAP + OFF_W + 18 + CUBE_SIZE // 2
+        if owner_white is None:
+            cube_y = MID_Y
+        else:
+            cube_y = BOTTOM - CUBE_SIZE // 2 - 24 if owner_white else TOP + CUBE_SIZE // 2 + 24
+        return cube_x, cube_y
+
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
     selected_hint_idx = 0
@@ -706,7 +719,10 @@ def main():
     cube_owner_visual = None
     cube_offer_pending = False
     cube_offer_from_white = None
+    cube_offer_to_white = False
+    dave_value_override = None
     cube_shake_anim = None
+    cube_move_anim = None
     turn_move_hints = []
     start_turn()
     info_lines.append(f"First turn: {'white' if turn_white else 'black'}")
@@ -779,10 +795,7 @@ def main():
         clock.tick(FPS)
         raw = np.asarray(env.get_state_raw(), dtype=np.int16)
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
-        if cube_owner_visual is None:
-            dave_value_ui = dave_value
-        else:
-            dave_value_ui = dave_value
+        dave_value_ui = int(dave_value_override if dave_value_override is not None else dave_value)
 
         if turn_white:
             white_base, black_base = base_mine.copy(), base_opp.copy()
@@ -828,6 +841,12 @@ def main():
                 cube_shake_anim = None
             else:
                 cube_shake_anim["t"] = t
+        if cube_move_anim is not None:
+            t = (now - cube_move_anim["start_time"]) / 0.25
+            if t >= 1.0:
+                cube_move_anim = None
+            else:
+                cube_move_anim["t"] = t
 
         if piece_anim is None and macro_anim_steps:
             if macro_anim_idx < len(macro_anim_steps):
@@ -878,7 +897,7 @@ def main():
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit,
             dave_value_ui, n_games, white_score, black_score,
             cube_owner_visual, cube_clickable, cube_offer_pending,
-            show_roll_button, piece_anim, shake_anim, cube_shake_anim
+            cube_offer_to_white, show_roll_button, piece_anim, shake_anim, cube_shake_anim, cube_move_anim
         )
         obs_extended = np.asarray(env.get_obs_extended(), dtype=np.float32)
         sh = _global_indexed_prob_row(obs_extended[OBS_BASE_HIT_SELF:OBS_BASE_HIT_SELF + OBS_POINTS])
@@ -922,6 +941,9 @@ def main():
                     cube_owner_visual = None
                     cube_offer_pending = False
                     cube_offer_from_white = None
+                    cube_offer_to_white = False
+                    dave_value_override = None
+                    cube_move_anim = None
                     start_turn()
                     info_lines.append(f"Reset env. First turn: {'white' if turn_white else 'black'}")
                 elif event.key == pygame.K_r:
@@ -982,7 +1004,10 @@ def main():
                     cube_offer_pending = False
                     cube_owner_visual = cube_offer_from_white
                     cube_offer_from_white = None
+                    cube_offer_to_white = False
                     cube_deactivated_for_turn = True
+                    dave_value_override = max(1, int(dave_value_ui)) * 2
+                    cube_move_anim = None
                     info_lines.append("Double accepted.")
                     continue
 
@@ -990,10 +1015,9 @@ def main():
                     state_before = np.asarray(env.get_state_raw(), dtype=np.int16)
                     white_score_before = int(state_before[53])
                     black_score_before = int(state_before[54])
-                    dave_before = max(1, int(state_before[55]))
                     n_games_before = max(1, int(state_before[56]))
                     offer_by_white = bool(cube_offer_from_white)
-                    reward_points = dave_before
+                    reward_points = max(1, int(dave_value_ui))
                     white_score_after = white_score_before + (reward_points if offer_by_white else 0)
                     black_score_after = black_score_before + (reward_points if (not offer_by_white) else 0)
                     info_lines.append(f"Double declined. Score: {white_score_after}-{black_score_after}")
@@ -1010,6 +1034,9 @@ def main():
                     cube_owner_visual = None
                     cube_offer_pending = False
                     cube_offer_from_white = None
+                    cube_offer_to_white = False
+                    dave_value_override = None
+                    cube_move_anim = None
                     if white_score_after >= n_games_before or black_score_after >= n_games_before:
                         info_lines.append("Match finished. Scores reset for a new match.")
                         env.reset()
@@ -1026,7 +1053,15 @@ def main():
                     if cube_clickable:
                         cube_offer_pending = True
                         cube_offer_from_white = turn_white
-                        turn_white = not turn_white
+                        cube_offer_to_white = not turn_white
+                        start_pos = cube_center_for_owner(cube_owner_visual)
+                        end_pos = cube_center_for_owner(cube_offer_to_white)
+                        cube_move_anim = {
+                            "start": start_pos,
+                            "end": end_pos,
+                            "start_time": pygame.time.get_ticks() / 1000.0,
+                            "t": 0.0,
+                        }
                         dice_rolled = False
                         dice_values, used_dice, required_dice = [], [], []
                         moves = np.empty((0, 8), dtype=np.uint8)
