@@ -346,7 +346,7 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
     if (pending_double_by_ >= 0) {
         if (accept_double) {
             dave_value_ *= 2;
-            cube_owner_ = pending_double_by_;
+            cube_owner_ = current_player_white_ ? 0 : 1;
             double_accepted = 1;
             pending_double_by_ = -1;
         } else {

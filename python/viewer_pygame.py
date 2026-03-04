@@ -815,7 +815,10 @@ def main():
         is_opponent_turn = agent_mode == "play" and not turn_white
         can_submit = dice_rolled and (is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps)
         show_roll_button = (not dice_rolled) and (not cube_offer_pending)
-        cube_clickable = (not dice_rolled) and (not cube_deactivated_for_turn) and bool(double_possible) and (not cube_offer_pending) and (not is_opponent_turn)
+        cube_double_possible = bool(double_possible)
+        if cube_owner_visual is not None:
+            cube_double_possible = (cube_owner_visual == turn_white)
+        cube_clickable = (not dice_rolled) and (not cube_deactivated_for_turn) and cube_double_possible and (not cube_offer_pending) and (not is_opponent_turn)
         move_hints = turn_move_hints
         if move_hints:
             selected_hint_idx = max(0, min(selected_hint_idx, len(move_hints) - 1))
@@ -1002,7 +1005,7 @@ def main():
 
                 if cube_offer_pending and accept_rect is not None and accept_rect.collidepoint(mx, my):
                     cube_offer_pending = False
-                    cube_owner_visual = cube_offer_from_white
+                    cube_owner_visual = cube_offer_to_white
                     cube_offer_from_white = None
                     cube_offer_to_white = False
                     cube_deactivated_for_turn = True
@@ -1056,6 +1059,7 @@ def main():
                         cube_offer_to_white = not turn_white
                         start_pos = cube_center_for_owner(cube_owner_visual)
                         end_pos = cube_center_for_owner(cube_offer_to_white)
+                        cube_owner_visual = cube_offer_to_white
                         cube_move_anim = {
                             "start": start_pos,
                             "end": end_pos,
