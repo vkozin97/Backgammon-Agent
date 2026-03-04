@@ -53,7 +53,7 @@ def map_move_to_display(mv8: np.ndarray, turn_white: bool):
     return mv
 
 
-W, H = 1224, 720
+W, H = 1320, 720
 FPS = 60
 PANEL_W = 420
 BOARD_W = W - PANEL_W
@@ -81,11 +81,12 @@ GAP = 0
 BAR_W = 52
 OFF_W = BAR_W
 OFF_GAP = 0
+CUBE_LANE_W = 110
 HEADER_H = 90
 TOP = HEADER_H + 30
 BOTTOM = H - 40
 MID_Y = (TOP + BOTTOM) // 2
-PLAY_W = BOARD_W - OFF_W - OFF_GAP
+PLAY_W = BOARD_W - OFF_W - OFF_GAP - CUBE_LANE_W
 POINT_W = (PLAY_W - 2 * MARGIN - BAR_W - GAP * 2) // 12
 POINT_H = (BOTTOM - TOP - GAP) // 2
 CHECKER_R = min(POINT_W // 2 - 2, 18)
@@ -502,22 +503,21 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
 
     accept_rect = None
     reject_rect = None
-    if cube_offer_pending:
-        btn_w, btn_h = 110, 34
-        if turn_white:
-            by = BOTTOM - (btn_h * 2 + 8)
-        else:
-            by = TOP + 8
-        accept_rect = pygame.Rect(cube_x + CUBE_SIZE + 10, by, btn_w, btn_h)
-        reject_rect = pygame.Rect(cube_x + CUBE_SIZE + 10, by + btn_h + 8, btn_w, btn_h)
-        draw_button(surface, font, accept_rect, "Принять", True, fill=(156, 211, 133))
-        draw_button(surface, font, reject_rect, "Отклонить", True, fill=(219, 146, 125))
 
     def dice_anchor(white_side):
         x0 = int(BOARD_W * (0.66 if white_side else 0.18))
         return x0, MID_Y - DICE_SIZE // 2
 
     dx, dy = dice_anchor(turn_white)
+
+    if cube_offer_pending:
+        btn_w, btn_h = 160, 46
+        rx, ry = dice_anchor(not turn_white)
+        accept_rect = pygame.Rect(rx, ry - (btn_h + 8), btn_w, btn_h)
+        reject_rect = pygame.Rect(rx, ry + 8, btn_w, btn_h)
+        draw_button(surface, font, accept_rect, "Принять", True, fill=(156, 211, 133))
+        draw_button(surface, font, reject_rect, "Отклонить", True, fill=(219, 146, 125))
+
     dice_rects = []
     if not show_roll_button:
         for i, val in enumerate(dice_values):
@@ -530,13 +530,14 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     roll_rect = None
     if show_roll_button:
         roll_rect = pygame.Rect(dx, dy - 2, 160, 46)
-        draw_button(surface, font, roll_rect, "Бросок кубов", True, fill=(243, 219, 119))
+        draw_button(surface, font, roll_rect, "Бросить кубы", True, fill=(243, 219, 119))
 
-    undo_rect = pygame.Rect(dx - 44, dy + 6, 30, 30)
+    undo_rect = pygame.Rect(dx - 72, dy + 6, 30, 30)
     pygame.draw.rect(surface, (110, 110, 130), undo_rect, border_radius=6)
     draw_undo_icon(surface, undo_rect)
 
-    ok_rect = pygame.Rect(dx + len(dice_values) * (DICE_SIZE + DICE_GAP) + 8, dy + 6, 30, 30)
+    ok_x = (roll_rect.right + 10) if roll_rect is not None else (dx + len(dice_values) * (DICE_SIZE + DICE_GAP) + 8)
+    ok_rect = pygame.Rect(ok_x, dy + 6, 30, 30)
     pygame.draw.rect(surface, SUCCESS if can_submit else (80, 80, 80), ok_rect, border_radius=6)
     draw_check_icon(surface, ok_rect, can_submit)
 
@@ -986,12 +987,33 @@ def main():
                     continue
 
                 if cube_offer_pending and reject_rect is not None and reject_rect.collidepoint(mx, my):
-                    info_lines.append("Double declined. Starting new game.")
+                    state_before = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    white_score_before = int(state_before[53])
+                    black_score_before = int(state_before[54])
+                    dave_before = max(1, int(state_before[55]))
+                    n_games_before = max(1, int(state_before[56]))
+                    offer_by_white = bool(cube_offer_from_white)
+                    reward_points = dave_before
+                    white_score_after = white_score_before + (reward_points if offer_by_white else 0)
+                    black_score_after = black_score_before + (reward_points if (not offer_by_white) else 0)
+                    info_lines.append(f"Double declined. Score: {white_score_after}-{black_score_after}")
+
                     env.reset()
+                    next_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    next_state[53] = white_score_after
+                    next_state[54] = black_score_after
+                    next_state[55] = 1
+                    next_state[56] = n_games_before
+                    env.set_state_raw(next_state)
+
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None
                     cube_offer_pending = False
                     cube_offer_from_white = None
+                    if white_score_after >= n_games_before or black_score_after >= n_games_before:
+                        info_lines.append("Match finished. Scores reset for a new match.")
+                        env.reset()
+                        turn_white = is_white_turn_from_env()
                     start_turn()
                     continue
 
