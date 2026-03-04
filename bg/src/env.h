@@ -27,7 +27,7 @@ namespace bg {
 		void set_state_raw(const int16_t* in /*len=58*/);
 		// TODO: ïîëíîöåííûé step ñ ïðîâåðêîé âàëèäíîñòè.
 		// Ñåé÷àñ ïðèìåíÿåò Move "êàê åñòü" ìèíèìàëüíî áåçîïàñíî.
-		std::tuple<float, int, uint8_t, uint8_t> step_apply(uint8_t apply_double, const Move& m, uint8_t accept_double);
+		std::tuple<float, int, uint8_t, uint8_t> step_apply(uint8_t apply_double, const Move& actions, uint8_t accept_double);
 
 		// Èíâàðèàíòû/ñàíèòè-÷åêè (ïîëåçíî äëÿ òåñòîâ)
 		bool validate_invariants() const;
@@ -62,6 +62,7 @@ namespace bg {
 		bool second_player_white_{false};
 		int cube_owner_{-1};
 		int previous_game_loser_{-1};
+		int pending_double_by_{-1};
 
 		void start_new_game(bool first_game);
 		uint8_t double_possible_for_current() const;
