@@ -10,7 +10,7 @@ import torch
 from .agents import build_trainable_agents
 from .config import ExperimentConfig, save_config
 from .league import LeagueController
-from .replay import ReplayBuffer
+from .replay import ReplayBuffer, build_recency_weights
 
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -85,6 +85,58 @@ def _uniform_windowed(values: list[float], window_size: int) -> list[float]:
     return out
 
 
+def _sampling_probability_series(
+    xs: list[int],
+    replay_sizes: list[int],
+    alpha_recency: float,
+    alpha_uniform: float,
+    recency_center_mass_ratio: float,
+) -> list[float]:
+    if not xs:
+        return []
+
+    point_count = len(xs)
+    if point_count == 1:
+        normalized_positions = [0.0]
+    else:
+        normalized_positions = [i / float(point_count - 1) for i in range(point_count)]
+
+    probs: list[float] = []
+    for norm_pos, replay_size in zip(normalized_positions, replay_sizes):
+        size = max(int(replay_size), 1)
+        uniform_prob = 1.0 / float(size)
+
+        recency_weights = build_recency_weights(size, recency_center_mass_ratio)
+        recency_sum = float(np.sum(recency_weights))
+        if recency_sum <= 0.0:
+            recency_prob = uniform_prob
+        else:
+            recency_index = int(round(norm_pos * float(size - 1)))
+            recency_index = min(max(recency_index, 0), size - 1)
+            recency_prob = float(recency_weights[recency_index] / recency_sum)
+
+        probs.append(float(alpha_uniform * uniform_prob + alpha_recency * recency_prob))
+    return probs
+
+
+def _plot_sampling_probability_overlay(plt_module, xs: list[int], sampling_probs: list[float]) -> None:
+    if not xs or not sampling_probs:
+        return
+    ax = plt_module.gca()
+    ax_prob = ax.twinx()
+    ax_prob.plot(
+        xs,
+        sampling_probs,
+        linestyle="--",
+        linewidth=1.2,
+        color="black",
+        alpha=0.7,
+        label="sample probability",
+    )
+    ax_prob.set_ylabel("sample probability")
+    ax_prob.set_ylim(bottom=0.0)
+
+
 
 def _print_plot_timing(stage: str, started_at: float, total_started_at: float) -> None:
     stage_dt = max(time.perf_counter() - started_at, 0.0)
@@ -142,6 +194,14 @@ def _plot(
 
 
     xs = [m["epoch"] for m in metrics_history]
+    replay_sizes = [int(m.get("replay_size", 0)) for m in metrics_history]
+    sampling_probs = _sampling_probability_series(
+        xs,
+        replay_sizes,
+        alpha_recency,
+        alpha_uniform,
+        recency_center_mass_ratio,
+    )
 
     step_t0 = time.perf_counter()
     temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
@@ -201,6 +261,7 @@ def _plot(
             plt.xlabel("epoch")
             plt.ylabel("winrate (%)")
             plt.ylim(0.0, 100.0)
+            _plot_sampling_probability_overlay(plt, xs, sampling_probs)
             plt.legend(fontsize=6, ncol=2)
             plt.tight_layout()
             plt.savefig(winrates_dir / f"{aid}_winrates_focus_{focus_opp}.png")
@@ -215,6 +276,7 @@ def _plot(
             plt.xlabel("epoch")
             plt.ylabel("windowed winrate (%)")
             plt.ylim(0.0, 100.0)
+            _plot_sampling_probability_overlay(plt, xs, sampling_probs)
             plt.legend(fontsize=6, ncol=2)
             plt.tight_layout()
             plt.savefig(winrates_windowed_dir / f"{aid}_winrates_windowed_focus_{focus_opp}.png")
@@ -312,6 +374,7 @@ def _plot(
         plt.xlabel("epoch")
         plt.ylabel("winrate (%)")
         plt.ylim(0.0, 100.0)
+        _plot_sampling_probability_overlay(plt, xs, sampling_probs)
         plt.legend(fontsize=7, ncol=3)
         plt.tight_layout()
         plt.savefig(winrates_dir / "overall_avg_winrates.png")
@@ -324,6 +387,7 @@ def _plot(
         plt.xlabel("epoch")
         plt.ylabel("windowed winrate (%)")
         plt.ylim(0.0, 100.0)
+        _plot_sampling_probability_overlay(plt, xs, sampling_probs)
         plt.legend(fontsize=7, ncol=3)
         plt.tight_layout()
         plt.savefig(winrates_windowed_dir / "overall_avg_winrates_windowed.png")
