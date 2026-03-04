@@ -404,6 +404,8 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     dave_value_ = std::max(1, int(in[55]));
     n_games_ = std::max(1, int(in[56]));
     current_player_white_ = in[57] != 0;
+    crawford_active_ = !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
+    if (crawford_active_) crawford_used_ = true;
 }
 
 bool BackgammonEnv::validate_invariants() const {

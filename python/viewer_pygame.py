@@ -815,10 +815,7 @@ def main():
         is_opponent_turn = agent_mode == "play" and not turn_white
         can_submit = dice_rolled and (is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps)
         show_roll_button = (not dice_rolled) and (not cube_offer_pending)
-        cube_double_possible = bool(double_possible)
-        if cube_owner_visual is not None:
-            cube_double_possible = (cube_owner_visual == turn_white)
-        cube_clickable = (not dice_rolled) and (not cube_deactivated_for_turn) and cube_double_possible and (not cube_offer_pending) and (not is_opponent_turn)
+        cube_clickable = (not dice_rolled) and (not cube_deactivated_for_turn) and bool(double_possible) and (not cube_offer_pending) and (not is_opponent_turn)
         move_hints = turn_move_hints
         if move_hints:
             selected_hint_idx = max(0, min(selected_hint_idx, len(move_hints) - 1))
