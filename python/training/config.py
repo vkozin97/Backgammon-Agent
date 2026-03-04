@@ -38,10 +38,10 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     num_epochs: int = 400
-    updates_per_epoch_per_agent: int = 80
-    batch_size: int = 20_000
+    updates_per_epoch_per_agent: int = 40
+    batch_size: int = 10_000
     optimizer_type: str = "adam"
-    learning_rate: float = 5e-4
+    learning_rate: float = 1.4579959882299264e-06
     lr_decay_factor: float = 0.96
     lr_decay_every_steps: int = 40
     weight_decay: float = 0.0
