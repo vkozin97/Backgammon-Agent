@@ -28,6 +28,8 @@ namespace bg {
 		// TODO: ïîëíîöåííûé step ñ ïðîâåðêîé âàëèäíîñòè.
 		// Ñåé÷àñ ïðèìåíÿåò Move "êàê åñòü" ìèíèìàëüíî áåçîïàñíî.
 		std::tuple<float, int, uint8_t, uint8_t> step_apply(uint8_t apply_double, const Move& actions, uint8_t accept_double);
+		bool request_double();
+		std::tuple<int, uint8_t, uint8_t> resolve_pending_double(uint8_t accept_double);
 
 		// Èíâàðèàíòû/ñàíèòè-÷åêè (ïîëåçíî äëÿ òåñòîâ)
 		bool validate_invariants() const;

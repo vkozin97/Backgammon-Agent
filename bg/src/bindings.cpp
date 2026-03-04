@@ -103,5 +103,7 @@ PYBIND11_MODULE(bg_env, m) {
             bg::Move m;
             for (int k = 0; k < 4; ++k) { m.from[k] = a(2 * k); m.to[k] = a(2 * k + 1); }
             return self.step_apply(apply_double, m, accept_double);
-        }, py::arg("mv"), py::arg("apply_double") = 0, py::arg("accept_double") = 1);
+        }, py::arg("mv"), py::arg("apply_double") = 0, py::arg("accept_double") = 1)
+        .def("request_double", &bg::BackgammonEnv::request_double)
+        .def("resolve_pending_double", &bg::BackgammonEnv::resolve_pending_double, py::arg("accept_double"));
 }

@@ -376,6 +376,26 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
     return {0.0f, dave_value_, double_accepted, 0};
 }
 
+bool BackgammonEnv::request_double() {
+    if (!double_possible_for_current()) return false;
+    pending_double_by_ = current_player_white_ ? 0 : 1;
+    return true;
+}
+
+std::tuple<int, uint8_t, uint8_t> BackgammonEnv::resolve_pending_double(uint8_t accept_double) {
+    if (pending_double_by_ < 0) return {dave_value_, 0, 0};
+    if (accept_double) {
+        dave_value_ *= 2;
+        cube_owner_ = current_player_white_ ? 0 : 1;
+        pending_double_by_ = -1;
+        return {dave_value_, 1, 0};
+    }
+    const int winner_color = pending_double_by_;
+    pending_double_by_ = -1;
+    const uint8_t done = finish_game_and_maybe_match(winner_color, 1);
+    return {dave_value_, 0, done};
+}
+
 bool BackgammonEnv::apply_micro_step(uint8_t from, uint8_t to, uint8_t die) {
     uint8_t from_internal = 255;
     uint8_t to_internal = 255;

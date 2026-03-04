@@ -667,11 +667,15 @@ def main():
             info_lines.append(f"Opponent dice: {dice_values}")
 
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn, cube_owner_visual, dave_value_override
         manual_steps = []
         history = []
         selected_die_idx = 0
         turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        current_dave = int(turn_start_state[55])
+        if current_dave <= 1:
+            cube_owner_visual = None
+            dave_value_override = None
         double_possible, _ = refresh_moves()
         is_opponent_turn_local = agent_mode == "play" and not turn_white
         if double_possible and not is_opponent_turn_local:
@@ -1001,35 +1005,25 @@ def main():
                 mx, my = event.pos
 
                 if cube_offer_pending and accept_rect is not None and accept_rect.collidepoint(mx, my):
+                    dave_after, accepted, done_code = env.resolve_pending_double(1)
+                    if not accepted:
+                        info_lines.append("No pending double to accept.")
+                        cube_offer_pending = False
+                        continue
                     cube_offer_pending = False
                     cube_owner_visual = cube_offer_to_white
                     cube_offer_from_white = None
                     cube_offer_to_white = False
                     cube_deactivated_for_turn = True
-                    dave_value_override = max(1, int(dave_value_ui)) * 2
+                    dave_value_override = int(dave_after)
                     cube_move_anim = None
                     info_lines.append("Double accepted.")
+                    if done_code == 0:
+                        roll_current_dice()
                     continue
 
                 if cube_offer_pending and reject_rect is not None and reject_rect.collidepoint(mx, my):
-                    state_before = np.asarray(env.get_state_raw(), dtype=np.int16)
-                    white_score_before = int(state_before[53])
-                    black_score_before = int(state_before[54])
-                    n_games_before = max(1, int(state_before[56]))
-                    offer_by_white = bool(cube_offer_from_white)
-                    reward_points = max(1, int(dave_value_ui))
-                    white_score_after = white_score_before + (reward_points if offer_by_white else 0)
-                    black_score_after = black_score_before + (reward_points if (not offer_by_white) else 0)
-                    info_lines.append(f"Double declined. Score: {white_score_after}-{black_score_after}")
-
-                    env.reset()
-                    next_state = np.asarray(env.get_state_raw(), dtype=np.int16)
-                    next_state[53] = white_score_after
-                    next_state[54] = black_score_after
-                    next_state[55] = 1
-                    next_state[56] = n_games_before
-                    env.set_state_raw(next_state)
-
+                    _dave_after, _accepted, done_code = env.resolve_pending_double(0)
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None
                     cube_offer_pending = False
@@ -1037,10 +1031,9 @@ def main():
                     cube_offer_to_white = False
                     dave_value_override = None
                     cube_move_anim = None
-                    if white_score_after >= n_games_before or black_score_after >= n_games_before:
-                        info_lines.append("Match finished. Scores reset for a new match.")
-                        env.reset()
-                        turn_white = is_white_turn_from_env()
+                    info_lines.append("Double declined.")
+                    if done_code == 2:
+                        info_lines.append("Match finished.")
                     start_turn()
                     continue
 
@@ -1051,6 +1044,9 @@ def main():
 
                 if cube_rect.collidepoint(mx, my):
                     if cube_clickable:
+                        if not env.request_double():
+                            cube_shake_anim = {"start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                            continue
                         cube_offer_pending = True
                         cube_offer_from_white = turn_white
                         cube_offer_to_white = not turn_white
