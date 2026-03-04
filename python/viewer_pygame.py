@@ -576,7 +576,7 @@ def main():
         return mv
 
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
             dice_values = [d[0], d[1]]
@@ -590,15 +590,35 @@ def main():
         env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
         turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        moves = refresh_moves()
+        turn_move_hints = evaluate_moves(env, moves, agent, turn_white)
+        selected_hint_idx = 0
+        macro_pending_submit = False
         if agent_mode == "play" and not turn_white:
             info_lines.append(f"Opponent dice: {dice_values}")
+
+    def infer_die_index_for_step(env_from: int, env_to: int, used_counts: list[int]) -> int:
+        remaining = [i for i in range(len(dice_values)) if used_counts[i] < required_dice[i]]
+        if not remaining:
+            return -1
+        if env_from == 30:
+            need = int(env_to)
+        elif env_to == 25:
+            need = int(abs(25 - env_from))
+        else:
+            need = int(abs(env_to - env_from))
+        for i in remaining:
+            if dice_values[i] == need:
+                return i
+        return remaining[0]
 
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
     selected_hint_idx = 0
     turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+    moves = np.empty((0, 8), dtype=np.uint8)
+    turn_move_hints = []
     start_turn()
-    moves = refresh_moves()
     info_lines.append(f"First turn: {'white' if turn_white else 'black'}")
 
     piece_anim = None
@@ -610,9 +630,12 @@ def main():
     macro_anim_move = np.full((8,), 255, dtype=np.uint8)
     macro_anim_auto_commit = True
     macro_pending_submit = False
+    macro_anim_history = []
+    macro_anim_manual_steps = []
+    macro_anim_used_dice = []
 
     def start_macro_animation(chosen_mv: np.ndarray, chosen_value, auto_commit: bool = True):
-        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim, macro_anim_auto_commit, macro_pending_submit
+        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim, macro_anim_auto_commit, macro_pending_submit, manual_steps, history, used_dice, macro_anim_history, macro_anim_manual_steps, macro_anim_used_dice
         mv = np.asarray(chosen_mv, dtype=np.uint8)
         steps = []
         for k in range(4):
@@ -628,6 +651,13 @@ def main():
         macro_anim_move = mv.copy()
         macro_anim_auto_commit = bool(auto_commit)
         macro_pending_submit = False
+        macro_anim_history = []
+        macro_anim_manual_steps = []
+        macro_anim_used_dice = [0] * len(dice_values)
+        if not auto_commit:
+            manual_steps = []
+            history = []
+            used_dice = [0] * len(dice_values)
         env.set_state_raw(turn_start_state)
         if not macro_anim_steps:
             return
@@ -641,6 +671,11 @@ def main():
         post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
         from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
         to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
+        die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
+        if die_idx >= 0:
+            macro_anim_used_dice[die_idx] += 1
+        macro_anim_manual_steps.append((from_disp, to_disp))
+        macro_anim_history.append((prev_state.copy(), from_disp, to_disp, die_idx))
         piece_anim = {
             "start": checker_position_for_state(prev_state, from_disp, macro_anim_turn_white),
             "end": checker_position_for_state(post_state, to_disp, macro_anim_turn_white),
@@ -672,7 +707,7 @@ def main():
         required_steps = max_micro_steps_in_moves(moves, turn_white)
         is_opponent_turn = agent_mode == "play" and not turn_white
         can_submit = is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps
-        move_hints = evaluate_moves(env, moves, agent, turn_white)
+        move_hints = turn_move_hints
         if move_hints:
             selected_hint_idx = max(0, min(selected_hint_idx, len(move_hints) - 1))
         else:
@@ -704,6 +739,11 @@ def main():
                     post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
                     from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
                     to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
+                    die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
+                    if die_idx >= 0:
+                        macro_anim_used_dice[die_idx] += 1
+                    macro_anim_manual_steps.append((from_disp, to_disp))
+                    macro_anim_history.append((prev_state.copy(), from_disp, to_disp, die_idx))
                     piece_anim = {
                         "start": checker_position_for_state(prev_state, from_disp, macro_anim_turn_white),
                         "end": checker_position_for_state(post_state, to_disp, macro_anim_turn_white),
@@ -717,6 +757,9 @@ def main():
                 info_lines.append(f"Macro: {move_to_str(macro_anim_move, turn_white=macro_anim_turn_white)}{value_suffix}")
                 if not macro_anim_auto_commit:
                     macro_pending_submit = True
+                    manual_steps = list(macro_anim_manual_steps)
+                    history = list(macro_anim_history)
+                    used_dice = list(macro_anim_used_dice)
                 else:
                     done = int(np.asarray(env.get_state_raw())[49]) >= 15
                     if done:
@@ -726,7 +769,6 @@ def main():
                         env.commit_turn()
                         turn_white = not macro_anim_turn_white
                     start_turn()
-                    moves = refresh_moves()
                 macro_anim_steps = []
 
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
@@ -773,11 +815,9 @@ def main():
                     env.reset()
                     turn_white = is_white_turn_from_env()
                     start_turn()
-                    moves = refresh_moves()
                     info_lines.append(f"Reset env. First turn: {'white' if turn_white else 'black'}")
                 elif event.key == pygame.K_r:
                     start_turn()
-                    moves = refresh_moves()
                     info_lines.append(f"Reroll: {dice_values}")
                 elif pygame.K_0 <= event.key <= pygame.K_9:
                     selected_hint_idx = min(event.key - pygame.K_0, max(0, len(move_hints) - 1))
@@ -797,10 +837,15 @@ def main():
                             env.commit_turn()
                             turn_white = not turn_white
                             start_turn()
-                            moves = refresh_moves()
-                    elif agent_mode in ("none", "hint") and len(move_hints) > 0:
-                        _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
-                        if macro_pending_submit and np.array_equal(np.asarray(chosen_mv, dtype=np.uint8), macro_anim_move):
+                    elif agent_mode in ("none", "hint"):
+                        if can_submit:
+                            if macro_pending_submit:
+                                chosen_mv = np.asarray(macro_anim_move, dtype=np.uint8)
+                                chosen_v = macro_anim_value
+                            elif len(move_hints) > 0:
+                                _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
+                            else:
+                                chosen_mv, chosen_v = np.full((8,), 255, dtype=np.uint8), None
                             done = int(np.asarray(env.get_state_raw())[49]) >= 15
                             reward = 1.0 if done else 0.0
                             if not done:
@@ -813,9 +858,9 @@ def main():
                             else:
                                 turn_white = not turn_white
                             start_turn()
-                            moves = refresh_moves()
                             macro_pending_submit = False
-                        else:
+                        elif len(history) == 0 and len(move_hints) > 0:
+                            _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
                             start_macro_animation(chosen_mv, chosen_v, auto_commit=False)
             if macro_anim_steps:
                 continue
@@ -825,9 +870,11 @@ def main():
                     prev_state, fr, to, die_idx = history.pop()
                     env.set_state_raw(prev_state)
                     manual_steps.pop()
-                    used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
-                    selected_die_idx = die_idx
+                    if 0 <= die_idx < len(used_dice):
+                        used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
+                        selected_die_idx = die_idx
                     info_lines.append(f"Undo {fr}->{to}")
+                    macro_pending_submit = False
                     continue
 
                 if ok_rect.collidepoint(mx, my) and can_submit:
@@ -842,7 +889,6 @@ def main():
                             env.commit_turn()
                             turn_white = not turn_white
                             start_turn()
-                            moves = refresh_moves()
                         continue
 
                     if macro_pending_submit:
@@ -859,7 +905,6 @@ def main():
                         else:
                             turn_white = not turn_white
                         start_turn()
-                        moves = refresh_moves()
                         macro_pending_submit = False
                         continue
 
@@ -884,7 +929,6 @@ def main():
                     else:
                         turn_white = not turn_white
                     start_turn()
-                    moves = refresh_moves()
                     continue
 
                 clicked_die = next((i for i, rect in enumerate(dice_rects) if rect.collidepoint(mx, my)), None)
@@ -950,6 +994,7 @@ def main():
                     used_dice[used_idx] += 1
                     selected_die_idx = active_idx
                     history.append((prev_state, from_disp, to_disp, used_idx))
+                    macro_pending_submit = False
                     continue
 
                 own = view_mine if turn_white else view_opp
@@ -1001,6 +1046,7 @@ def main():
                 used_dice[used_idx] += 1
                 selected_die_idx = active_idx
                 history.append((prev_state, from_disp, to_disp, used_idx))
+                macro_pending_submit = False
 
 
     pygame.quit()
