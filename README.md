@@ -16,7 +16,9 @@
 - `agents.py` — 12 обучаемых агентов (группы A/B/C/D) с обязательным dropout;
 - `league.py` — лига матчей каждый-с-каждым и против `RandomAgent`;
 - `replay.py` — единый replay-buffer с recency+uniform sampling (80/20);
-- `pipeline.py` — цикл эпох: генерация партий, обучение, метрики, checkpoint, plotting.
+- `pipeline.py` — цикл эпох: генерация партий, обучение, метрики, checkpoint.
+- `plotting.py` — отрисовка графиков по сохранённым метрикам.
+- `render_plots.py` — CLI-скрипт для перерисовки графиков из checkpoint-ов без запуска новых эпох.
 
 ## Запуск обучения
 
@@ -34,6 +36,12 @@ python python/train_value_only.py
 - 1 график `train loss`.
 
 Итого: число графиков winrate на агента равно числу соперников, плюс 1 график `train loss`.
+
+## Перерисовка графиков без обучения
+
+```bash
+PYTHONPATH=python python python/render_plots.py --experiment-dir training_stats
+```
 
 ## Тесты
 
