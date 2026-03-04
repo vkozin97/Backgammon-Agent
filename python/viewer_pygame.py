@@ -94,6 +94,7 @@ TRI_MARGIN = 10
 DICE_SIZE = 42
 DICE_GAP = 12
 LEGAL_MOVES_UNIQUE = True
+CUBE_SIZE = 52
 
 OBS_BASE_HIT_SELF = 144
 OBS_BASE_COVER_SELF = 168
@@ -381,8 +382,27 @@ def draw_check_icon(surface, rect: pygame.Rect, enabled: bool):
     pygame.draw.lines(surface, color, False, [p1, p2, p3], 4)
 
 
+def draw_button(surface, font, rect: pygame.Rect, label: str, enabled: bool = True, fill=None):
+    base = fill if fill is not None else (SUCCESS if enabled else (125, 125, 125))
+    pygame.draw.rect(surface, base, rect, border_radius=8)
+    pygame.draw.rect(surface, (40, 40, 40), rect, 2, border_radius=8)
+    txt = font.render(label, True, (20, 20, 20) if enabled else (70, 70, 70))
+    surface.blit(txt, (rect.centerx - txt.get_width() // 2, rect.centery - txt.get_height() // 2))
+
+
+def draw_doubling_cube(surface, font, rect: pygame.Rect, value: int, clickable: bool):
+    fill = (240, 223, 182) if clickable else (218, 204, 176)
+    pygame.draw.rect(surface, fill, rect, border_radius=8)
+    pygame.draw.rect(surface, FRAME, rect, 2, border_radius=8)
+    txt = font.render(str(int(value)), True, TEXT)
+    surface.blit(txt, (rect.centerx - txt.get_width() // 2, rect.centery - txt.get_height() // 2))
+
+
 def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, ply, turn_white,
-               dice_values, used_dice, required_dice, active_die_idx, can_submit, piece_anim=None, shake_anim=None):
+               dice_values, used_dice, required_dice, active_die_idx, can_submit,
+               dave_value, n_games, white_score, black_score,
+               cube_owner_visual, cube_clickable, cube_offer_pending,
+               show_roll_button, piece_anim=None, shake_anim=None, cube_shake_anim=None):
     surface.fill(APP_BG)
     pygame.draw.rect(surface, FRAME, (0, 0, BOARD_W, H))
     inner = pygame.Rect(8, HEADER_H, BOARD_W - 16, H - HEADER_H - 8)
@@ -391,6 +411,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     pygame.draw.line(surface, DIV, (0, HEADER_H), (BOARD_W, HEADER_H), 2)
 
     draw_text(surface, font, f"turn={ply}", 16, 10)
+    draw_text(surface, font, f"match to {n_games} | white: {white_score}  black: {black_score}", 150, 10)
 
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
@@ -459,18 +480,57 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     draw_off_stack(off_bottom_rect, int(mine_off), is_white=True, from_center_down=True)
     draw_off_stack(off_top_rect, int(opp_off), is_white=False, from_center_down=False)
 
+    cube_x = off_x0 + OFF_W + 18
+    cube_y_center = MID_Y - CUBE_SIZE // 2
+    cube_y_top = TOP + 24
+    cube_y_bottom = BOTTOM - CUBE_SIZE - 24
+    if cube_owner_visual is None:
+        cube_y = cube_y_center
+    else:
+        cube_y = cube_y_bottom if cube_owner_visual else cube_y_top
+    cube_rect = pygame.Rect(cube_x, cube_y, CUBE_SIZE, CUBE_SIZE)
+    draw_doubling_cube(surface, font, cube_rect, dave_value, cube_clickable)
+
+    if cube_shake_anim is not None:
+        t = min(1.0, max(0.0, cube_shake_anim["t"]))
+        amp = 8 * (1.0 - t)
+        sx = int(round(cube_rect.centerx + np.sin(t * np.pi * 4) * amp))
+        sy = cube_rect.centery
+        shake_rect = pygame.Rect(0, 0, cube_rect.width, cube_rect.height)
+        shake_rect.center = (sx, sy)
+        draw_doubling_cube(surface, font, shake_rect, dave_value, False)
+
+    accept_rect = None
+    reject_rect = None
+    if cube_offer_pending:
+        btn_w, btn_h = 110, 34
+        if turn_white:
+            by = BOTTOM - (btn_h * 2 + 8)
+        else:
+            by = TOP + 8
+        accept_rect = pygame.Rect(cube_x + CUBE_SIZE + 10, by, btn_w, btn_h)
+        reject_rect = pygame.Rect(cube_x + CUBE_SIZE + 10, by + btn_h + 8, btn_w, btn_h)
+        draw_button(surface, font, accept_rect, "Принять", True, fill=(156, 211, 133))
+        draw_button(surface, font, reject_rect, "Отклонить", True, fill=(219, 146, 125))
+
     def dice_anchor(white_side):
         x0 = int(BOARD_W * (0.66 if white_side else 0.18))
         return x0, MID_Y - DICE_SIZE // 2
 
     dx, dy = dice_anchor(turn_white)
     dice_rects = []
-    for i, val in enumerate(dice_values):
-        size = DICE_SIZE + (10 if i == active_die_idx else 0)
-        rect = pygame.Rect(dx + i * (DICE_SIZE + DICE_GAP), dy + (DICE_SIZE - size) // 2, size, size)
-        exhausted = used_dice[i] >= required_dice[i]
-        draw_die(surface, rect, val, active=(i == active_die_idx), used=exhausted, black_turn=not turn_white)
-        dice_rects.append(rect)
+    if not show_roll_button:
+        for i, val in enumerate(dice_values):
+            size = DICE_SIZE + (10 if i == active_die_idx else 0)
+            rect = pygame.Rect(dx + i * (DICE_SIZE + DICE_GAP), dy + (DICE_SIZE - size) // 2, size, size)
+            exhausted = used_dice[i] >= required_dice[i]
+            draw_die(surface, rect, val, active=(i == active_die_idx), used=exhausted, black_turn=not turn_white)
+            dice_rects.append(rect)
+
+    roll_rect = None
+    if show_roll_button:
+        roll_rect = pygame.Rect(dx, dy - 2, 160, 46)
+        draw_button(surface, font, roll_rect, "Бросок кубов", True, fill=(243, 219, 119))
 
     undo_rect = pygame.Rect(dx - 44, dy + 6, 30, 30)
     pygame.draw.rect(surface, (110, 110, 130), undo_rect, border_radius=6)
@@ -494,7 +554,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
         draw_checker(surface, x, y, is_white=shake_anim["is_white"])
 
     pygame.draw.line(surface, DIV, (BOARD_W, 0), (BOARD_W, H), 2)
-    return point_rects, bar_rect, dice_rects, undo_rect, ok_rect
+    return point_rects, bar_rect, dice_rects, undo_rect, ok_rect, cube_rect, roll_rect, accept_rect, reject_rect
 
 
 def _global_indexed_prob_row(vec: np.ndarray) -> list[int]:
@@ -576,8 +636,8 @@ def main():
             mv = mv.reshape(0, 8)
         return int(double_possible), mv
 
-    def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible
+    def roll_current_dice():
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, dice_rolled, cube_deactivated_for_turn
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
             dice_values = [d[0], d[1]]
@@ -591,12 +651,33 @@ def main():
         env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
         turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
-        double_possible, moves = refresh_moves()
+        _, moves = refresh_moves()
         turn_move_hints = evaluate_moves(env, moves, agent, turn_white)
         selected_hint_idx = 0
         macro_pending_submit = False
+        dice_rolled = True
+        cube_deactivated_for_turn = True
         if agent_mode == "play" and not turn_white:
             info_lines.append(f"Opponent dice: {dice_values}")
+
+    def start_turn():
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn
+        manual_steps = []
+        history = []
+        selected_die_idx = 0
+        turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        double_possible, _ = refresh_moves()
+        is_opponent_turn_local = agent_mode == "play" and not turn_white
+        if double_possible and not is_opponent_turn_local:
+            dice_values, used_dice, required_dice = [], [], []
+            moves = np.empty((0, 8), dtype=np.uint8)
+            turn_move_hints = []
+            selected_hint_idx = 0
+            macro_pending_submit = False
+            dice_rolled = False
+            cube_deactivated_for_turn = False
+        else:
+            roll_current_dice()
 
     def infer_die_index_for_step(env_from: int, env_to: int, used_counts: list[int]) -> int:
         remaining = [i for i in range(len(dice_values)) if used_counts[i] < required_dice[i]]
@@ -619,6 +700,12 @@ def main():
     turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
     moves = np.empty((0, 8), dtype=np.uint8)
     double_possible = 0
+    dice_rolled = True
+    cube_deactivated_for_turn = False
+    cube_owner_visual = None
+    cube_offer_pending = False
+    cube_offer_from_white = None
+    cube_shake_anim = None
     turn_move_hints = []
     start_turn()
     info_lines.append(f"First turn: {'white' if turn_white else 'black'}")
@@ -690,7 +777,11 @@ def main():
     while running:
         clock.tick(FPS)
         raw = np.asarray(env.get_state_raw(), dtype=np.int16)
-        base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, *_ = decode_raw(raw)
+        base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
+        if cube_owner_visual is None:
+            dave_value_ui = dave_value
+        else:
+            dave_value_ui = dave_value
 
         if turn_white:
             white_base, black_base = base_mine.copy(), base_opp.copy()
@@ -704,11 +795,13 @@ def main():
         view_mine, view_opp = white_base.copy(), black_base.copy()
         view_mine_off, view_opp_off = white_off, black_off
 
-        active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice)
+        active_idx = resolve_active_die_idx(selected_die_idx, used_dice, required_dice) if dice_rolled else -1
         selected_die_idx = active_idx
-        required_steps = max_micro_steps_in_moves(moves, turn_white)
+        required_steps = max_micro_steps_in_moves(moves, turn_white) if dice_rolled else 0
         is_opponent_turn = agent_mode == "play" and not turn_white
-        can_submit = is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps
+        can_submit = dice_rolled and (is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps)
+        show_roll_button = (not dice_rolled) and (not cube_offer_pending)
+        cube_clickable = (not dice_rolled) and (not cube_deactivated_for_turn) and bool(double_possible) and (not cube_offer_pending) and (not is_opponent_turn)
         move_hints = turn_move_hints
         if move_hints:
             selected_hint_idx = max(0, min(selected_hint_idx, len(move_hints) - 1))
@@ -728,6 +821,12 @@ def main():
                 shake_anim = None
             else:
                 shake_anim["t"] = t
+        if cube_shake_anim is not None:
+            t = (now - cube_shake_anim["start_time"]) / 0.2
+            if t >= 1.0:
+                cube_shake_anim = None
+            else:
+                cube_shake_anim["t"] = t
 
         if piece_anim is None and macro_anim_steps:
             if macro_anim_idx < len(macro_anim_steps):
@@ -773,9 +872,12 @@ def main():
                     start_turn()
                 macro_anim_steps = []
 
-        point_rects, bar_rect, dice_rects, undo_rect, ok_rect = draw_board(
+        point_rects, bar_rect, dice_rects, undo_rect, ok_rect, cube_rect, roll_rect, accept_rect, reject_rect = draw_board(
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
-            ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit, piece_anim, shake_anim
+            ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit,
+            dave_value_ui, n_games, white_score, black_score,
+            cube_owner_visual, cube_clickable, cube_offer_pending,
+            show_roll_button, piece_anim, shake_anim, cube_shake_anim
         )
         obs_extended = np.asarray(env.get_obs_extended(), dtype=np.float32)
         sh = _global_indexed_prob_row(obs_extended[OBS_BASE_HIT_SELF:OBS_BASE_HIT_SELF + OBS_POINTS])
@@ -816,10 +918,16 @@ def main():
                 elif event.key == pygame.K_n:
                     env.reset()
                     turn_white = is_white_turn_from_env()
+                    cube_owner_visual = None
+                    cube_offer_pending = False
+                    cube_offer_from_white = None
                     start_turn()
                     info_lines.append(f"Reset env. First turn: {'white' if turn_white else 'black'}")
                 elif event.key == pygame.K_r:
-                    start_turn()
+                    if show_roll_button:
+                        roll_current_dice()
+                    else:
+                        start_turn()
                     info_lines.append(f"Reroll: {dice_values}")
                 elif pygame.K_0 <= event.key <= pygame.K_9:
                     selected_hint_idx = min(event.key - pygame.K_0, max(0, len(move_hints) - 1))
@@ -868,6 +976,46 @@ def main():
                 continue
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+
+                if cube_offer_pending and accept_rect is not None and accept_rect.collidepoint(mx, my):
+                    cube_offer_pending = False
+                    cube_owner_visual = cube_offer_from_white
+                    cube_offer_from_white = None
+                    cube_deactivated_for_turn = True
+                    info_lines.append("Double accepted.")
+                    continue
+
+                if cube_offer_pending and reject_rect is not None and reject_rect.collidepoint(mx, my):
+                    info_lines.append("Double declined. Starting new game.")
+                    env.reset()
+                    turn_white = is_white_turn_from_env()
+                    cube_owner_visual = None
+                    cube_offer_pending = False
+                    cube_offer_from_white = None
+                    start_turn()
+                    continue
+
+                if roll_rect is not None and roll_rect.collidepoint(mx, my):
+                    roll_current_dice()
+                    info_lines.append(f"Roll: {dice_values}")
+                    continue
+
+                if cube_rect.collidepoint(mx, my):
+                    if cube_clickable:
+                        cube_offer_pending = True
+                        cube_offer_from_white = turn_white
+                        turn_white = not turn_white
+                        dice_rolled = False
+                        dice_values, used_dice, required_dice = [], [], []
+                        moves = np.empty((0, 8), dtype=np.uint8)
+                        info_lines.append("Double offered. Opponent must accept or reject.")
+                    else:
+                        cube_shake_anim = {"start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
+                    continue
+
+                if not dice_rolled:
+                    continue
+
                 if undo_rect.collidepoint(mx, my) and history:
                     prev_state, fr, to, die_idx = history.pop()
                     env.set_state_raw(prev_state)
