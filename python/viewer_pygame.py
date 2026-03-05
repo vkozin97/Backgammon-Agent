@@ -134,6 +134,18 @@ def load_eval_agent(agent_id: str, agent_epoch: int, checkpoint_dir: str):
 
 
 def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
+    def snapshot(e):
+        if hasattr(e, "get_state_full"):
+            return np.asarray(e.get_state_full(), dtype=np.int16)
+        return np.asarray(e.get_state_raw(), dtype=np.int16)
+
+    def restore(e, state):
+        a = np.asarray(state, dtype=np.int16)
+        if a.shape[0] >= 66 and hasattr(e, "set_state_full"):
+            e.set_state_full(a[:66])
+        else:
+            e.set_state_raw(a[:58])
+
     if agent is None:
         return [
             (i, np.asarray(mv, dtype=np.uint8), None)
@@ -143,11 +155,11 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     if getattr(agent, "agent_id", "") == "conservative_baseline":
         if len(moves) == 0:
             return []
-        state0 = np.asarray(env.get_state_raw(), dtype=np.int16)
+        state0 = snapshot(env)
         sim = bg_env.Env(0)
         scored = []
         for i, mv in enumerate(moves):
-            sim.set_state_raw(state0)
+            restore(sim, state0)
             sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
             post = np.asarray(sim.get_state_raw(), dtype=np.int16)
             score = agent._score_move(state0, post)
@@ -157,11 +169,11 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
         return [(i, mv, None) for i, mv, _ in scored]
 
     sim = bg_env.Env(0)
-    state0 = np.asarray(env.get_state_raw(), dtype=np.int16)
+    state0 = snapshot(env)
     result = []
     for i, mv in enumerate(moves):
-        sim.set_state_raw(state0)
-        _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
+        restore(sim, state0)
+        _, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
         if done:
             value = 1.0
         else:
@@ -630,7 +642,20 @@ def main():
         agent = load_eval_agent(agent_id, agent_epoch, agent_checkpoint_dir)
 
     def is_white_turn_from_env() -> bool:
-        return int(np.asarray(env.get_state_raw(), dtype=np.int16)[57]) == 1
+        return int(get_env_state()[57]) == 1
+
+    def get_env_state() -> np.ndarray:
+        if hasattr(env, "get_state_full"):
+            return np.asarray(env.get_state_full(), dtype=np.int16)
+        return np.asarray(env.get_state_raw(), dtype=np.int16)
+
+    def set_env_state(state: np.ndarray):
+        a = np.asarray(state, dtype=np.int16)
+        if a.shape[0] >= 66 and hasattr(env, "set_state_full"):
+            env.set_state_full(a[:66])
+        else:
+            env.set_state_raw(a[:58])
+
 
     turn_white = is_white_turn_from_env()
     info_lines = ["Started. Click points (or bar) to move checkers."]
@@ -656,7 +681,7 @@ def main():
         history = []
         env.set_dice(np.asarray(d, dtype=np.uint8))
         selected_die_idx = 0
-        turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        turn_start_state = get_env_state()
         _, moves = refresh_moves()
         turn_move_hints = evaluate_moves(env, moves, agent, turn_white)
         selected_hint_idx = 0
@@ -671,7 +696,7 @@ def main():
         manual_steps = []
         history = []
         selected_die_idx = 0
-        turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        turn_start_state = get_env_state()
         current_dave = int(turn_start_state[55])
         if current_dave <= 1:
             cube_owner_visual = None
@@ -712,10 +737,22 @@ def main():
             cube_y = BOTTOM - CUBE_SIZE // 2 - 24 if owner_white else TOP + CUBE_SIZE // 2 + 24
         return cube_x, cube_y
 
+    def apply_committed_move(chosen_mv: np.ndarray, value_hint=None):
+        nonlocal turn_white, macro_pending_submit
+        set_env_state(turn_start_state)
+        reward, _dave_after, _accepted, done_code = env.step_move(np.asarray(chosen_mv, dtype=np.uint8), apply_double=0, accept_double=1)
+        value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
+        info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done_code}{value_suffix}")
+        if done_code == 2:
+            env.reset()
+        turn_white = is_white_turn_from_env()
+        start_turn()
+        macro_pending_submit = False
+
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
     selected_hint_idx = 0
-    turn_start_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+    turn_start_state = get_env_state()
     moves = np.empty((0, 8), dtype=np.uint8)
     double_possible = 0
     dice_rolled = True
@@ -768,17 +805,17 @@ def main():
             manual_steps = []
             history = []
             used_dice = [0] * len(dice_values)
-        env.set_state_raw(turn_start_state)
+        set_env_state(turn_start_state)
         if not macro_anim_steps:
             return
-        prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        prev_state = get_env_state()
         env_from, env_to = macro_anim_steps[macro_anim_idx]
         ok, _ = env.apply_micro_step(int(env_from), int(env_to))
         if not ok:
             macro_anim_steps = []
             info_lines.append("Failed to animate selected macro-step.")
             return
-        post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+        post_state = get_env_state()
         from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
         to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
         die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
@@ -797,7 +834,7 @@ def main():
     running = True
     while running:
         clock.tick(FPS)
-        raw = np.asarray(env.get_state_raw(), dtype=np.int16)
+        raw = get_env_state()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
         dave_value_ui = int(dave_value_override if dave_value_override is not None else dave_value)
 
@@ -854,14 +891,14 @@ def main():
 
         if piece_anim is None and macro_anim_steps:
             if macro_anim_idx < len(macro_anim_steps):
-                prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                prev_state = get_env_state()
                 env_from, env_to = macro_anim_steps[macro_anim_idx]
                 ok, _ = env.apply_micro_step(int(env_from), int(env_to))
                 if not ok:
                     info_lines.append("Failed to animate selected macro-step.")
                     macro_anim_steps = []
                 else:
-                    post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    post_state = get_env_state()
                     from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
                     to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
                     die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
@@ -886,14 +923,7 @@ def main():
                     history = list(macro_anim_history)
                     used_dice = list(macro_anim_used_dice)
                 else:
-                    done = int(np.asarray(env.get_state_raw())[49]) >= 15
-                    if done:
-                        env.reset()
-                        turn_white = is_white_turn_from_env()
-                    else:
-                        env.commit_turn()
-                        turn_white = not macro_anim_turn_white
-                    start_turn()
+                    apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value)
                 macro_anim_steps = []
 
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect, cube_rect, roll_rect, accept_rect, reject_rect = draw_board(
@@ -983,19 +1013,7 @@ def main():
                                 _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
                             else:
                                 chosen_mv, chosen_v = np.full((8,), 255, dtype=np.uint8), None
-                            done = int(np.asarray(env.get_state_raw())[49]) >= 15
-                            reward = 1.0 if done else 0.0
-                            if not done:
-                                env.commit_turn()
-                            value_suffix = f" | 1-p={chosen_v:.4f}" if chosen_v is not None else ""
-                            info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done}{value_suffix}")
-                            if done:
-                                env.reset()
-                                turn_white = is_white_turn_from_env()
-                            else:
-                                turn_white = not turn_white
-                            start_turn()
-                            macro_pending_submit = False
+                            apply_committed_move(np.asarray(chosen_mv, dtype=np.uint8), chosen_v)
                         elif len(history) == 0 and len(move_hints) > 0:
                             _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
                             start_macro_animation(chosen_mv, chosen_v, auto_commit=False)
@@ -1072,7 +1090,7 @@ def main():
 
                 if undo_rect.collidepoint(mx, my) and history:
                     prev_state, fr, to, die_idx = history.pop()
-                    env.set_state_raw(prev_state)
+                    set_env_state(prev_state)
                     manual_steps.pop()
                     if 0 <= die_idx < len(used_dice):
                         used_dice[die_idx] = max(0, used_dice[die_idx] - 1)
@@ -1096,43 +1114,22 @@ def main():
                         continue
 
                     if macro_pending_submit:
-                        done = int(np.asarray(env.get_state_raw())[49]) >= 15
-                        reward = 1.0 if done else 0.0
-                        chosen_value = macro_anim_value
-                        if not done:
-                            env.commit_turn()
-                        value_suffix = f" | 1-p={chosen_value:.4f}" if chosen_value is not None else ""
-                        info_lines.append(f"Apply: {move_to_str(macro_anim_move, turn_white=turn_white)} | r={reward} done={done}{value_suffix}")
-                        if done:
-                            env.reset()
-                            turn_white = is_white_turn_from_env()
-                        else:
-                            turn_white = not turn_white
-                        start_turn()
-                        macro_pending_submit = False
+                        apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value)
                         continue
 
                     chosen_value = None
-                    if move_hints and move_hints[0][2] is not None:
-                        matched = matching_move_indices(moves, manual_steps, turn_white)
-                        if matched:
+                    chosen_mv = np.full((8,), 255, dtype=np.uint8)
+                    matched = matching_move_indices(moves, manual_steps, turn_white)
+                    if matched:
+                        idx = matched[0]
+                        chosen_mv = np.asarray(moves[idx], dtype=np.uint8)
+                        if move_hints and move_hints[0][2] is not None:
                             matched_set = set(matched)
                             for move_i, _, value in move_hints:
                                 if move_i in matched_set:
                                     chosen_value = value
                                     break
-                    done = int(np.asarray(env.get_state_raw())[49]) >= 15
-                    reward = 1.0 if done else 0.0
-                    if not done:
-                        env.commit_turn()
-                    value_suffix = f" | 1-p={chosen_value:.4f}" if chosen_value is not None else ""
-                    info_lines.append(f"Apply: {' | '.join(f'{a}->{b}' for a,b in manual_steps)} | r={reward} done={done}{value_suffix}")
-                    if done:
-                        env.reset()
-                        turn_white = is_white_turn_from_env()
-                    else:
-                        turn_white = not turn_white
-                    start_turn()
+                    apply_committed_move(chosen_mv, chosen_value)
                     continue
 
                 clicked_die = next((i for i, rect in enumerate(dice_rects) if rect.collidepoint(mx, my)), None)
@@ -1173,7 +1170,7 @@ def main():
                             shake_anim = {"pos": checker_position_for_state(raw, "BAR", turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                             continue
 
-                    prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    prev_state = get_env_state()
                     used_idx = None
                     env_from, env_to = 30, -1
                     for die_idx in die_candidates:
@@ -1183,7 +1180,7 @@ def main():
                             used_idx = die_idx
                             env_to = attempt_to
                             break
-                        env.set_state_raw(prev_state)
+                        set_env_state(prev_state)
 
                     if used_idx is None:
                         info_lines.append("Invalid bar entry.")
@@ -1192,7 +1189,7 @@ def main():
 
                     from_disp = "BAR"
                     to_disp = transform_point_for_display(env_to, turn_white)
-                    post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                    post_state = get_env_state()
                     piece_anim = {"start": checker_position_for_state(prev_state, from_disp, turn_white), "end": checker_position_for_state(post_state, to_disp, turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                     manual_steps.append((from_disp, to_disp))
                     used_dice[used_idx] += 1
@@ -1226,7 +1223,7 @@ def main():
                     if i not in candidate_die_indices and used_dice[i] < required_dice[i]
                 )
 
-                prev_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                prev_state = get_env_state()
                 used_idx = None
                 for die_idx in candidate_die_indices:
                     attempt_to = 25 if off_attempt else (env_from + dice_values[die_idx])
@@ -1235,7 +1232,7 @@ def main():
                         used_idx = die_idx
                         env_to = attempt_to
                         break
-                    env.set_state_raw(prev_state)
+                    set_env_state(prev_state)
 
                 if used_idx is None:
                     info_lines.append("Invalid micro-step.")
@@ -1244,7 +1241,7 @@ def main():
 
                 from_disp = transform_point_for_display(env_from, turn_white)
                 to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, turn_white)
-                post_state = np.asarray(env.get_state_raw(), dtype=np.int16)
+                post_state = get_env_state()
                 piece_anim = {"start": checker_position_for_state(prev_state, from_disp, turn_white), "end": checker_position_for_state(post_state, to_disp, turn_white), "is_white": turn_white, "start_time": pygame.time.get_ticks() / 1000.0, "t": 0.0}
                 manual_steps.append((from_disp, to_disp))
                 used_dice[used_idx] += 1

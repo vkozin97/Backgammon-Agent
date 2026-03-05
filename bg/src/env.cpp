@@ -428,6 +428,18 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     if (crawford_active_) crawford_used_ = true;
 }
 
+void BackgammonEnv::set_state_full(const int16_t* in) {
+    set_state_raw(in);
+    crawford_used_ = in[58] != 0;
+    crawford_active_ = in[59] != 0;
+    first_turn_in_game_ = in[60] != 0;
+    current_player_white_ = in[61] != 0;
+    second_player_white_ = in[62] != 0;
+    cube_owner_ = int(in[63]);
+    previous_game_loser_ = int(in[64]);
+    pending_double_by_ = int(in[65]);
+}
+
 bool BackgammonEnv::validate_invariants() const {
     auto sum_arr = [](const std::array<uint8_t, 24>& a) -> int { int s = 0; for (auto v : a) s += v; return s; };
     int mine = sum_arr(s_.points) + s_.bar + s_.off;
@@ -448,6 +460,18 @@ void BackgammonEnv::get_state_raw(int16_t* out) const {
     out[55] = int16_t(dave_value_);
     out[56] = int16_t(n_games_);
     out[57] = int16_t(current_player_white_ ? 1 : 0);
+}
+
+void BackgammonEnv::get_state_full(int16_t* out) const {
+    get_state_raw(out);
+    out[58] = int16_t(crawford_used_ ? 1 : 0);
+    out[59] = int16_t(crawford_active_ ? 1 : 0);
+    out[60] = int16_t(first_turn_in_game_ ? 1 : 0);
+    out[61] = int16_t(current_player_white_ ? 1 : 0);
+    out[62] = int16_t(second_player_white_ ? 1 : 0);
+    out[63] = int16_t(cube_owner_);
+    out[64] = int16_t(previous_game_loser_);
+    out[65] = int16_t(pending_double_by_);
 }
 
 void BackgammonEnv::get_dice_raw(uint8_t* out) const {
