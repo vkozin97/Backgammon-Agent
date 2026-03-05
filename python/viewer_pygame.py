@@ -691,16 +691,22 @@ def main():
         if agent_mode == "play" and not turn_white:
             info_lines.append(f"Opponent dice: {dice_values}")
 
+    def sync_cube_visual_from_env(state: np.ndarray | None = None):
+        nonlocal cube_owner_visual
+        st = get_env_state() if state is None else np.asarray(state, dtype=np.int16)
+        if st.shape[0] >= 64:
+            owner = int(st[63])
+            cube_owner_visual = None if owner < 0 else bool(owner == 0)
+        else:
+            cube_owner_visual = None
+
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn, cube_owner_visual, dave_value_override
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn
         manual_steps = []
         history = []
         selected_die_idx = 0
         turn_start_state = get_env_state()
-        current_dave = int(turn_start_state[55])
-        if current_dave <= 1:
-            cube_owner_visual = None
-            dave_value_override = None
+        sync_cube_visual_from_env(turn_start_state)
         double_possible, _ = refresh_moves()
         is_opponent_turn_local = agent_mode == "play" and not turn_white
         if double_possible and not is_opponent_turn_local:
@@ -765,7 +771,6 @@ def main():
     cube_offer_pending = False
     cube_offer_from_white = None
     cube_offer_to_white = False
-    dave_value_override = None
     cube_shake_anim = None
     cube_move_anim = None
     turn_move_hints = []
@@ -840,7 +845,7 @@ def main():
         clock.tick(FPS)
         raw = get_env_state()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
-        dave_value_ui = int(dave_value_override if dave_value_override is not None else dave_value)
+        dave_value_ui = int(dave_value)
 
         if turn_white:
             white_base, black_base = base_mine.copy(), base_opp.copy()
@@ -980,7 +985,6 @@ def main():
                     cube_offer_pending = False
                     cube_offer_from_white = None
                     cube_offer_to_white = False
-                    dave_value_override = None
                     cube_move_anim = None
                     start_turn()
                     info_lines.append(f"Reset env. First turn: {'white' if turn_white else 'black'}")
@@ -1037,7 +1041,7 @@ def main():
                     cube_offer_from_white = None
                     cube_offer_to_white = False
                     cube_deactivated_for_turn = True
-                    dave_value_override = int(dave_after)
+                    sync_cube_visual_from_env()
                     cube_move_anim = None
                     info_lines.append("Double accepted.")
                     if done_code == 0:
@@ -1051,7 +1055,6 @@ def main():
                     cube_offer_pending = False
                     cube_offer_from_white = None
                     cube_offer_to_white = False
-                    dave_value_override = None
                     cube_move_anim = None
                     info_lines.append("Double declined.")
                     if done_code == 2:
