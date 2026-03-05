@@ -737,10 +737,14 @@ def main():
             cube_y = BOTTOM - CUBE_SIZE // 2 - 24 if owner_white else TOP + CUBE_SIZE // 2 + 24
         return cube_x, cube_y
 
-    def apply_committed_move(chosen_mv: np.ndarray, value_hint=None):
+    def apply_committed_move(chosen_mv: np.ndarray, value_hint=None, use_current_state: bool = False):
         nonlocal turn_white, macro_pending_submit
-        set_env_state(turn_start_state)
-        reward, _dave_after, _accepted, done_code = env.step_move(np.asarray(chosen_mv, dtype=np.uint8), apply_double=0, accept_double=1)
+        mv = np.asarray(chosen_mv, dtype=np.uint8)
+        if use_current_state:
+            mv = np.full((8,), 255, dtype=np.uint8)
+        else:
+            set_env_state(turn_start_state)
+        reward, _dave_after, _accepted, done_code = env.step_move(mv, apply_double=0, accept_double=1)
         value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
         info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done_code}{value_suffix}")
         if done_code == 2:
@@ -923,7 +927,7 @@ def main():
                     history = list(macro_anim_history)
                     used_dice = list(macro_anim_used_dice)
                 else:
-                    apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value)
+                    apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value, use_current_state=True)
                 macro_anim_steps = []
 
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect, cube_rect, roll_rect, accept_rect, reject_rect = draw_board(
@@ -1013,7 +1017,7 @@ def main():
                                 _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
                             else:
                                 chosen_mv, chosen_v = np.full((8,), 255, dtype=np.uint8), None
-                            apply_committed_move(np.asarray(chosen_mv, dtype=np.uint8), chosen_v)
+                            apply_committed_move(np.asarray(chosen_mv, dtype=np.uint8), chosen_v, use_current_state=(len(history) > 0))
                         elif len(history) == 0 and len(move_hints) > 0:
                             _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
                             start_macro_animation(chosen_mv, chosen_v, auto_commit=False)
@@ -1114,7 +1118,7 @@ def main():
                         continue
 
                     if macro_pending_submit:
-                        apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value)
+                        apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value, use_current_state=True)
                         continue
 
                     chosen_value = None
@@ -1129,7 +1133,7 @@ def main():
                                 if move_i in matched_set:
                                     chosen_value = value
                                     break
-                    apply_committed_move(chosen_mv, chosen_value)
+                    apply_committed_move(chosen_mv, chosen_value, use_current_state=True)
                     continue
 
                 clicked_die = next((i for i, rect in enumerate(dice_rects) if rect.collidepoint(mx, my)), None)
