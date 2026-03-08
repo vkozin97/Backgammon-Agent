@@ -111,6 +111,7 @@ void BackgammonEnv::start_new_game(bool first_game) {
     first_turn_in_game_ = true;
     dave_value_ = 1;
     cube_owner_ = -1;
+    pending_double_by_ = -1;
     crawford_active_ = !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
     if (crawford_active_) crawford_used_ = true;
 
@@ -339,32 +340,60 @@ uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_
     return 1;
 }
 
-std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply_double, const Move& m, uint8_t accept_double) {
-    uint8_t dave_accepted = 0;
-    if (apply_double && double_possible_for_current()) {
+std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply_double, const Move& actions, uint8_t accept_double) {
+    uint8_t double_accepted = 0;
+
+    if (pending_double_by_ >= 0) {
         if (accept_double) {
             dave_value_ *= 2;
-            cube_owner_ = current_player_white_ ? 1 : 0;
-            dave_accepted = 1;
+            cube_owner_ = 1 - pending_double_by_;
+            double_accepted = 1;
+            pending_double_by_ = -1;
         } else {
-            const uint8_t done = finish_game_and_maybe_match(current_player_white_ ? 0 : 1, 1);
-            return {1.0f, dave_value_, dave_accepted, done};
+            const int winner_color = pending_double_by_;
+            pending_double_by_ = -1;
+            const uint8_t done = finish_game_and_maybe_match(winner_color, 1);
+            return {1.0f, dave_value_, 0, done};
         }
     }
 
+    if (apply_double && double_possible_for_current()) {
+        pending_double_by_ = current_player_white_ ? 0 : 1;
+    }
+
     for (int k = 0; k < 4; ++k) {
-        if (m.from[k] == 255 || m.to[k] == 255) continue;
-        if (!apply_micro_step(m.from[k], m.to[k], 0)) break;
+        if (actions.from[k] == 255 || actions.to[k] == 255) continue;
+        if (!apply_micro_step(actions.from[k], actions.to[k], 0)) break;
     }
 
     if (s_.off >= 15) {
-        int reward = classify_win_reward();
-        uint8_t done = finish_game_and_maybe_match(current_player_white_ ? 0 : 1, reward);
-        return {static_cast<float>(reward), dave_value_, dave_accepted, done};
+        const int reward = classify_win_reward();
+        const uint8_t done = finish_game_and_maybe_match(current_player_white_ ? 0 : 1, reward);
+        return {static_cast<float>(reward), dave_value_, double_accepted, done};
     }
 
     commit_turn();
-    return {0.0f, dave_value_, dave_accepted, 0};
+    return {0.0f, dave_value_, double_accepted, 0};
+}
+
+bool BackgammonEnv::request_double() {
+    if (!double_possible_for_current()) return false;
+    pending_double_by_ = current_player_white_ ? 0 : 1;
+    return true;
+}
+
+std::tuple<int, uint8_t, uint8_t> BackgammonEnv::resolve_pending_double(uint8_t accept_double) {
+    if (pending_double_by_ < 0) return {dave_value_, 0, 0};
+    if (accept_double) {
+        dave_value_ *= 2;
+        cube_owner_ = 1 - pending_double_by_;
+        pending_double_by_ = -1;
+        return {dave_value_, 1, 0};
+    }
+    const int winner_color = pending_double_by_;
+    pending_double_by_ = -1;
+    const uint8_t done = finish_game_and_maybe_match(winner_color, 1);
+    return {dave_value_, 0, done};
 }
 
 bool BackgammonEnv::apply_micro_step(uint8_t from, uint8_t to, uint8_t die) {
@@ -382,6 +411,7 @@ void BackgammonEnv::commit_turn() {
 }
 
 void BackgammonEnv::set_state_raw(const int16_t* in) {
+    pending_double_by_ = -1;
     for (int i = 0; i < 24; ++i) s_.points[i] = static_cast<uint8_t>(std::clamp<int>(in[i], 0, 15));
     for (int i = 0; i < 24; ++i) s_.opp_points[i] = static_cast<uint8_t>(std::clamp<int>(in[24 + i], 0, 15));
     s_.bar = static_cast<uint8_t>(std::clamp<int>(in[48], 0, 15));
@@ -394,6 +424,20 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     dave_value_ = std::max(1, int(in[55]));
     n_games_ = std::max(1, int(in[56]));
     current_player_white_ = in[57] != 0;
+    crawford_active_ = !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
+    if (crawford_active_) crawford_used_ = true;
+}
+
+void BackgammonEnv::set_state_full(const int16_t* in) {
+    set_state_raw(in);
+    crawford_used_ = in[58] != 0;
+    crawford_active_ = in[59] != 0;
+    first_turn_in_game_ = in[60] != 0;
+    current_player_white_ = in[61] != 0;
+    second_player_white_ = in[62] != 0;
+    cube_owner_ = int(in[63]);
+    previous_game_loser_ = int(in[64]);
+    pending_double_by_ = int(in[65]);
 }
 
 bool BackgammonEnv::validate_invariants() const {
@@ -416,6 +460,18 @@ void BackgammonEnv::get_state_raw(int16_t* out) const {
     out[55] = int16_t(dave_value_);
     out[56] = int16_t(n_games_);
     out[57] = int16_t(current_player_white_ ? 1 : 0);
+}
+
+void BackgammonEnv::get_state_full(int16_t* out) const {
+    get_state_raw(out);
+    out[58] = int16_t(crawford_used_ ? 1 : 0);
+    out[59] = int16_t(crawford_active_ ? 1 : 0);
+    out[60] = int16_t(first_turn_in_game_ ? 1 : 0);
+    out[61] = int16_t(current_player_white_ ? 1 : 0);
+    out[62] = int16_t(second_player_white_ ? 1 : 0);
+    out[63] = int16_t(cube_owner_);
+    out[64] = int16_t(previous_game_loser_);
+    out[65] = int16_t(pending_double_by_);
 }
 
 void BackgammonEnv::get_dice_raw(uint8_t* out) const {
