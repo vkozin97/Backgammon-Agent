@@ -352,6 +352,14 @@ def pass_move() -> np.ndarray:
     return np.full((8,), 255, dtype=np.uint8)
 
 
+def _unwrap_legal_moves_entry(entry) -> np.ndarray:
+    """Normalize legal_moves entry from env/batched_env to ndarray[(N,8), uint8]."""
+    moves = entry[1] if isinstance(entry, tuple) else entry
+    arr = np.asarray(moves, dtype=np.uint8)
+    if arr.ndim != 2 or arr.shape[1] != 8:
+        raise RuntimeError(f"Unexpected legal_moves format: shape={arr.shape}, type={type(entry)}")
+    return arr
+
 class LeagueController:
     def __init__(self, cfg, seed: int = 0):
         self.cfg = cfg
@@ -668,7 +676,8 @@ class LeagueController:
             obs_extended_batch = None
             if hasattr(env, "get_obs_extended"):
                 obs_extended_batch = np.asarray(env.get_obs_extended(getattr(self.cfg, "batched_obs_threads", 0)), dtype=np.float32)
-            legal_moves = list(env.legal_moves())
+            legal_moves_raw = list(env.legal_moves())
+            legal_moves = [_unwrap_legal_moves_entry(x) for x in legal_moves_raw]
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
             apply_doubles = np.zeros((n_games,), dtype=np.uint8)
             accept_doubles = np.zeros((n_games,), dtype=np.uint8)
