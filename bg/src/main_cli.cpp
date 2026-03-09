@@ -1,10 +1,11 @@
 #include "env.h"
 #include "obs.h"
 #include "ascii.h"
-#include <iostream>
-#include <vector>
-#include <string>
+
 #include <cmath>
+#include <iostream>
+#include <string>
+#include <vector>
 
 static bool is_finite_array(const float* a, int n) {
     for (int i = 0; i < n; ++i) {
@@ -17,7 +18,7 @@ static int run_selftest() {
     bg::BackgammonEnv env(123);
     env.reset_standard();
 
-    int total_steps = 10000;
+    constexpr int total_steps = 10000;
     for (int t = 0; t < total_steps; ++t) {
         env.roll_dice();
 
@@ -27,28 +28,28 @@ static int run_selftest() {
             return 1;
         }
 
-        float oc[bg::OBS_COMPACT_DIM];
-        float oe[bg::OBS_EXTENDED_DIM];
-        bg::get_obs_compact(env.state(), env.current_dice(), oc);
-        bg::get_obs_extended(env.state(), env.current_dice(), oe);
+        float obs_compact[bg::OBS_COMPACT_DIM];
+        float obs_extended[bg::OBS_EXTENDED_DIM];
+        bg::get_obs_compact(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), obs_compact);
+        bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), env.n_games(), env.cube_available_mine(), env.cube_available_opp(), obs_extended);
 
-        if (!is_finite_array(oc, bg::OBS_COMPACT_DIM) || !is_finite_array(oe, bg::OBS_EXTENDED_DIM)) {
-            std::cerr << "[FAIL] non-finite obs at t=" << t << "\n";
+        if (!is_finite_array(obs_compact, bg::OBS_COMPACT_DIM) || !is_finite_array(obs_extended, bg::OBS_EXTENDED_DIM)) {
+            std::cerr << "[FAIL] non-finite observation at t=" << t << "\n";
             return 1;
         }
 
         std::vector<bg::Move> moves;
-        env.legal_moves(moves);
-        if (moves.empty()) {
-            // для заглушки редко, но допустим
-            continue;
+        auto [double_possible, move_count] = env.legal_moves(moves);
+        (void)move_count;
+
+        bg::Move move{};
+        if (!moves.empty()) {
+            move = moves.front();
         }
 
-        // псевдо-рандом: выбираем ход по индексу
-        const auto& m = moves[t % moves.size()];
-
-        bool done = false;
-        env.step_apply(m, done);
+        auto [reward, _dave_after, accepted, done] = env.step_apply(double_possible, move, 1);
+        (void)accepted;
+        (void)reward;
 
         if (!env.validate_invariants()) {
             std::cerr << "[FAIL] invariants after step at t=" << t << "\n";
@@ -78,7 +79,7 @@ int main(int argc, char** argv) {
 
     // Compact obs
     float obs_c[bg::OBS_COMPACT_DIM];
-    bg::get_obs_compact(env.state(), env.current_dice(), obs_c);
+    bg::get_obs_compact(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), obs_c);
     std::cout << "OBS_COMPACT_DIM=" << bg::OBS_COMPACT_DIM << "\n";
     std::cout << "obs_compact[0..10]: ";
     for (int i = 0; i < 11; ++i) std::cout << obs_c[i] << " ";
@@ -86,21 +87,26 @@ int main(int argc, char** argv) {
 
     // Extended obs
     float obs_e[bg::OBS_EXTENDED_DIM];
-    bg::get_obs_extended(env.state(), env.current_dice(), obs_e);
+    bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), env.n_games(), env.cube_available_mine(), env.cube_available_opp(), obs_e);
     std::cout << "OBS_EXTENDED_DIM=" << bg::OBS_EXTENDED_DIM << "\n";
-    std::cout << "extended metrics (last 6): ";
-    for (int i = bg::OBS_COMPACT_DIM; i < bg::OBS_EXTENDED_DIM; ++i) std::cout << obs_e[i] << " ";
+    std::cout << "extended metrics (last " << bg::OBS_EXTENDED_SCALARS_DIM << "): ";
+    for (int i = bg::OBS_EXTENDED_DIM - bg::OBS_EXTENDED_SCALARS_DIM; i < bg::OBS_EXTENDED_DIM; ++i) {
+        std::cout << obs_e[i] << " ";
+    }
     std::cout << "\n";
 
-    // Legal moves (stub)
+    // Legal moves
     std::vector<bg::Move> moves;
-    env.legal_moves(moves);
-    std::cout << "legal_moves (stub) count=" << moves.size() << "\n";
+    auto [double_possible, move_count] = env.legal_moves(moves);
+    std::cout << "double_possible=" << static_cast<int>(double_possible) << " legal_moves count=" << move_count << "\n";
+
     if (!moves.empty()) {
-        bool done = false;
-        float r = env.step_apply(moves[0], done);
-        std::cout << "Applied first move. reward=" << r << " done=" << done << "\n";
+        auto [reward, _dave_after, accepted, done] = env.step_apply(double_possible, moves.front(), 1);
+        std::cout << "Applied first move. reward=" << reward
+                  << " done=" << static_cast<int>(done)
+                  << " accepted=" << static_cast<int>(accepted) << "\n";
         std::cout << bg::to_ascii(env.state(), env.current_dice()) << "\n";
     }
+
     return 0;
 }
