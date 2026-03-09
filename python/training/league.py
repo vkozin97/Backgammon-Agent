@@ -169,6 +169,18 @@ def _decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: 
     p_reject = _reject_double_match_win_prob(obs_now)
     return int(p_accept >= p_reject)
 
+def _fit_obs_dim(obs_np: np.ndarray, expected_dim: int) -> np.ndarray:
+    x = np.asarray(obs_np, dtype=np.float32)
+    if x.ndim == 1:
+        x = x.reshape(1, -1)
+    cur = int(x.shape[1])
+    if cur == expected_dim:
+        return x
+    if cur > expected_dim:
+        return x[:, :expected_dim]
+    pad = np.zeros((x.shape[0], expected_dim - cur), dtype=np.float32)
+    return np.concatenate([x, pad], axis=1)
+
 class _FallbackEnv:
     def __init__(self, seed: int = 0):
         self.rng = np.random.default_rng(seed)
@@ -464,7 +476,9 @@ class LeagueController:
                 unique_agents.append(ag)
             model_idx[i] = agent_to_idx[ag.agent_id]
 
-        x_t = torch.as_tensor(obs_np.astype(np.float32), dtype=torch.float32, device=device)
+        model_in_dim = int(getattr(first_agent.model.cfg, "input_dim", obs_np.shape[1]))
+        obs_fit = _fit_obs_dim(obs_np, model_in_dim)
+        x_t = torch.as_tensor(obs_fit.astype(np.float32), dtype=torch.float32, device=device)
 
         # Fast path: one model in group -> ordinary single forward.
         if len(unique_agents) == 1:
@@ -615,15 +629,11 @@ class LeagueController:
             return [self.play_game(spec.p1, spec.p2, spec.game_id, epoch) for spec in game_specs]
 
         n_games = len(game_specs)
-        try:
-            env = batched_bg_env.Env(
-                n_matches=n_games,
-                n_games=int(getattr(self.cfg, "games_in_match", 11)),
-                seed=self.seed + epoch * 100_000,
-            )
-        except TypeError:
-            # Backward-compatible constructor in older batched_bg_env builds.
-            env = batched_bg_env.Env(n_envs=n_games, seed=self.seed + epoch * 100_000)
+        env = batched_bg_env.Env(
+            n_matches=n_games,
+            n_games=int(getattr(self.cfg, "games_in_match", 11)),
+            seed=self.seed + epoch * 100_000,
+        )
         env.reset()
 
         histories = [[] for _ in range(n_games)]
