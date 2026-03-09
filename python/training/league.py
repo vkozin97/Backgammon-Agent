@@ -370,6 +370,7 @@ class LeagueController:
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
+        self._baseline_eval_agent: ValueAgent | None = None
         self._obs_probe_env = None
         if bg_env is not None:
             try:
@@ -466,6 +467,66 @@ class LeagueController:
                 best_score = score
                 best_idx = idx
         return moves[best_idx]
+
+    def _decide_doubles_for_fixed_actions(
+        self,
+        states: np.ndarray,
+        actions: np.ndarray,
+        evaluator: ValueAgent,
+        obs_batch: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        n = int(len(actions))
+        apply_doubles = np.zeros((n,), dtype=np.uint8)
+        accept_doubles = np.zeros((n,), dtype=np.uint8)
+        if n == 0:
+            return apply_doubles, accept_doubles
+
+        base_obs: list[np.ndarray] = []
+        for i in range(n):
+            if obs_batch is not None:
+                base_obs.append(np.asarray(obs_batch[i], dtype=np.float32))
+            else:
+                base_obs.append(self.state_vector_from_raw(states[i]))
+
+        eval_agents = [evaluator for _ in range(n)]
+        probs_now = self._predict_probs_single_cuda_call(eval_agents, np.stack(base_obs).astype(np.float32))
+        obs_double_batch = np.stack([_set_obs_double_state(x) for x in base_obs]).astype(np.float32)
+        probs_double = self._predict_probs_single_cuda_call(eval_agents, obs_double_batch)
+        for i in range(n):
+            apply_doubles[i] = _decide_apply_double(probs_now[i], probs_double[i], base_obs[i])
+
+        accept_eval_obs: list[np.ndarray] = []
+        accept_eval_owner: list[int] = []
+        sim2 = bg_env.Env(int(self.seed) + 19) if bg_env is not None else _FallbackEnv(int(self.seed) + 19)
+        for i in range(n):
+            mv = np.asarray(actions[i], dtype=np.uint8)
+            if int(mv[0]) == 255:
+                continue
+            sim2.set_state_raw(states[i])
+            try:
+                sim2.step_move(mv, apply_double=int(apply_doubles[i]), accept_double=1)
+            except TypeError:
+                sim2.step_move(mv)
+            post_obs = self.state_vector(sim2)
+            _, _, _, _, opp_double_avail = _extract_obs_controls(post_obs)
+            if opp_double_avail <= 0:
+                continue
+            accept_eval_obs.append(_set_obs_opponent_double_offer(post_obs))
+            accept_eval_owner.append(i)
+
+        if accept_eval_obs:
+            probs_accept = self._predict_probs_single_cuda_call([evaluator for _ in range(len(accept_eval_obs))], np.stack(accept_eval_obs).astype(np.float32))
+            for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs):
+                obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
+                if obs_pre.size >= 5:
+                    obs_pre[-5] = obs_pre[-5] / 2.0
+                if obs_pre.size >= 4:
+                    obs_pre[-4] = 0.0
+                if obs_pre.size >= 3:
+                    obs_pre[-3] = 1.0
+                accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
+
+        return apply_doubles, accept_doubles
 
     def _predict_probs_single_cuda_call(self, agents_for_samples: list[ValueAgent], obs_np: np.ndarray) -> np.ndarray:
         """Predict probabilities for mixed-agent samples with one CUDA call per architecture group."""
@@ -683,6 +744,7 @@ class LeagueController:
             accept_doubles = np.zeros((n_games,), dtype=np.uint8)
 
             by_group: dict[str, list[int]] = {"A": [], "C": [], "D": []}
+            baseline_idxs: list[int] = []
             for i in active_idx:
                 spec = game_specs[int(i)]
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
@@ -690,6 +752,7 @@ class LeagueController:
                     by_group[actor.group].append(int(i))
                 elif actor.agent_id == self.conservative_baseline.agent_id:
                     actions[i] = self._score_conservative_baseline(states[i], legal_moves[i])
+                    baseline_idxs.append(int(i))
                 else:
                     actions[i] = self._score_random(legal_moves[i])
 
@@ -706,6 +769,15 @@ class LeagueController:
                 actions[np.asarray(idxs, dtype=np.int64)] = local_actions
                 apply_doubles[np.asarray(idxs, dtype=np.int64)] = local_apply
                 accept_doubles[np.asarray(idxs, dtype=np.int64)] = local_accept
+
+            if baseline_idxs and self._baseline_eval_agent is not None:
+                b_idx = np.asarray(baseline_idxs, dtype=np.int64)
+                b_states = states[b_idx]
+                b_actions = actions[b_idx]
+                b_obs = np.asarray(obs_extended_batch[b_idx], dtype=np.float32) if obs_extended_batch is not None else None
+                b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
+                apply_doubles[b_idx] = b_apply
+                accept_doubles[b_idx] = b_accept
 
             try:
                 step_ret = env.step_apply(actions, apply_doubles, accept_doubles)
@@ -803,8 +875,18 @@ class LeagueController:
                 lm = env.legal_moves()
                 local_moves = lm[1] if isinstance(lm, tuple) else lm
                 move = self._score_conservative_baseline(np.asarray(env.get_state_raw(), dtype=np.int16), local_moves)
-                apply_double = 0
-                accept_double = 0
+                if self._baseline_eval_agent is not None:
+                    b_apply, b_accept = self._decide_doubles_for_fixed_actions(
+                        np.asarray([env.get_state_raw()], dtype=np.int16),
+                        np.asarray([move], dtype=np.uint8),
+                        self._baseline_eval_agent,
+                        np.asarray([state], dtype=np.float32),
+                    )
+                    apply_double = int(b_apply[0])
+                    accept_double = int(b_accept[0])
+                else:
+                    apply_double = 0
+                    accept_double = 0
             else:
                 lm = env.legal_moves()
                 local_moves = lm[1] if isinstance(lm, tuple) else lm
@@ -849,6 +931,10 @@ class LeagueController:
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
         self.reset_decision_stats()
+        if trainable_agents:
+            self._baseline_eval_agent = trainable_agents[int(self.rng.integers(0, len(trainable_agents)))]
+        else:
+            self._baseline_eval_agent = None
         opponents = [self.conservative_baseline]
         specs: list[_GameSpec] = []
 
