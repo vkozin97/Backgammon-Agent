@@ -75,7 +75,7 @@ def get_match_win_probs(n: int) -> np.ndarray:
     if n <= 0:
         raise ValueError("n must be > 0")
 
-    out = np.empty((n, n), dtype=np.float32)
+    out = np.empty((n + 1, n + 1), dtype=np.float32)
     out[0, :] = 1.0
     out[:, 0] = 0.0
     out[0, 0] = 0.5
@@ -83,12 +83,12 @@ def get_match_win_probs(n: int) -> np.ndarray:
     if n == 1:
         return out
 
-    pct = _expand_with_tail(_WOOSLEY_MET_15_PCT, n - 1)
+    pct = _expand_with_tail(_WOOSLEY_MET_15_PCT, n)
 
     # Enforce exact anti-symmetry and diagonal.
-    for i in range(n - 1):
+    for i in range(n):
         pct[i, i] = 50.0
-        for j in range(i + 1, n - 1):
+        for j in range(i + 1, n):
             pct[j, i] = 100.0 - pct[i, j]
 
     out[1:, 1:] = (pct / 100.0).astype(np.float32, copy=False)
