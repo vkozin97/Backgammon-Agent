@@ -128,11 +128,24 @@ void BackgammonEnv::reset_standard() {
     start_new_game(true);
 }
 
-uint8_t BackgammonEnv::double_possible_for_current() const {
+uint8_t BackgammonEnv::cube_available_for_white(bool white_player) const {
     if (crawford_active_) return 0;
-    if (first_turn_in_game_) return current_player_white_ == second_player_white_ ? 1 : 0;
+    if (dave_value_ > n_games_) return 0;
+    if (first_turn_in_game_) return white_player == second_player_white_ ? 1 : 0;
     if (cube_owner_ < 0) return 1;
-    return (cube_owner_ == (current_player_white_ ? 0 : 1)) ? 1 : 0;
+    return (cube_owner_ == (white_player ? 0 : 1)) ? 1 : 0;
+}
+
+uint8_t BackgammonEnv::double_possible_for_current() const {
+    return cube_available_for_white(current_player_white_);
+}
+
+uint8_t BackgammonEnv::cube_available_mine() const {
+    return cube_available_for_white(current_player_white_);
+}
+
+uint8_t BackgammonEnv::cube_available_opp() const {
+    return cube_available_for_white(!current_player_white_);
 }
 
 Dice BackgammonEnv::roll_dice() {

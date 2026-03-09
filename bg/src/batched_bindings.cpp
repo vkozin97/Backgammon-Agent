@@ -65,7 +65,7 @@ public:
         auto worker = [&](size_t begin, size_t end) {
             float tmp[bg::OBS_EXTENDED_DIM];
             for (size_t i = begin; i < end; ++i) {
-                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), envs_[i].mine_score(), envs_[i].opp_score(), envs_[i].dave_value(), tmp);
+                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), envs_[i].mine_score(), envs_[i].opp_score(), envs_[i].dave_value(), envs_[i].n_games(), envs_[i].cube_available_mine(), envs_[i].cube_available_opp(), tmp);
                 for (int j = 0; j < bg::OBS_EXTENDED_DIM; ++j) {
                     out((py::ssize_t)i, j) = tmp[j];
                 }
