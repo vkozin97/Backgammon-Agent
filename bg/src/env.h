@@ -46,6 +46,9 @@ namespace bg {
 		int mine_score() const { return current_player_white_ ? white_score_ : black_score_; }
 		int opp_score() const { return current_player_white_ ? black_score_ : white_score_; }
 		int dave_value() const { return dave_value_; }
+		int n_games() const { return n_games_; }
+		uint8_t cube_available_mine() const;
+		uint8_t cube_available_opp() const;
 
 		// Äëÿ UI: òåêóùèå êîñòè
 		void get_dice_raw(uint8_t* out /*len=2*/) const;
@@ -70,6 +73,7 @@ namespace bg {
 
 		void start_new_game(bool first_game);
 		uint8_t double_possible_for_current() const;
+		uint8_t cube_available_for_white(bool white_player) const;
 		int classify_win_reward() const;
 		uint8_t finish_game_and_maybe_match(int winner_color, int reward_points);
 
