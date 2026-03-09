@@ -409,7 +409,7 @@ class LeagueController:
             return [self.play_game(spec.p1, spec.p2, spec.game_id, epoch) for spec in game_specs]
 
         n_games = len(game_specs)
-        env = batched_bg_env.Env(n_games, self.seed + epoch * 100_000)
+        env = batched_bg_env.Env(n_matches=n_games, n_games=5, seed=self.seed + epoch * 100_000)
         env.reset()
 
         histories = [[] for _ in range(n_games)]
