@@ -5,7 +5,7 @@ match-equity matrix in the range ``[0, 1]``.
 
 Indexing convention:
 - ``table[i, j]`` = probability that the current player wins the match
-  when current player is ``i + 1`` away and opponent is ``j + 1`` away.
+  when current player is ``i`` away and opponent is ``j`` away.
 """
 
 from __future__ import annotations
@@ -40,10 +40,11 @@ _WOOSLEY_MET_15_PCT = np.array(
 def _expand_with_tail(base: np.ndarray, n: int) -> np.ndarray:
     """Expand MET beyond base size by repeating the far-away tail shape."""
     m = base.shape[0]
+    if n <= m:
+        return base[:n, :n].astype(np.float32, copy=True)
+
     out = np.empty((n, n), dtype=np.float32)
     out[:m, :m] = base
-    if n <= m:
-        return out
 
     # For larger matches, use a conservative tail extension based on the
     # outermost (15-away) profile. This keeps monotonicity and anti-symmetry.
@@ -64,16 +65,31 @@ def _expand_with_tail(base: np.ndarray, n: int) -> np.ndarray:
 
 
 def get_match_win_probs(n: int) -> np.ndarray:
-    """Return Woosley MET as ``n x n`` table in ``[0, 1]``."""
+    """Return Woosley MET as ``n x n`` table in ``[0, 1]``.
+
+    The returned table includes a 0-away row/column:
+    - row 0 is 1.0 (already won),
+    - column 0 is 0.0 (opponent already won),
+    - table[0, 0] is set to 0.5 by convention.
+    """
     if n <= 0:
         raise ValueError("n must be > 0")
 
-    pct = _expand_with_tail(_WOOSLEY_MET_15_PCT, n)
+    out = np.empty((n, n), dtype=np.float32)
+    out[0, :] = 1.0
+    out[:, 0] = 0.0
+    out[0, 0] = 0.5
+
+    if n == 1:
+        return out
+
+    pct = _expand_with_tail(_WOOSLEY_MET_15_PCT, n - 1)
 
     # Enforce exact anti-symmetry and diagonal.
-    for i in range(n):
+    for i in range(n - 1):
         pct[i, i] = 50.0
-        for j in range(i + 1, n):
+        for j in range(i + 1, n - 1):
             pct[j, i] = 100.0 - pct[i, j]
 
-    return (pct / 100.0).astype(np.float32, copy=False)
+    out[1:, 1:] = (pct / 100.0).astype(np.float32, copy=False)
+    return out
