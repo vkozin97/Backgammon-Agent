@@ -479,12 +479,17 @@ class LeagueController:
                 unique_agents.append(ag)
             model_idx[i] = agent_to_idx[ag.agent_id]
 
+        expected_dims = sorted({int(getattr(ag.model.cfg, "input_dim", -1)) for ag in agents_for_samples})
         model_in_dim = int(getattr(first_agent.model.cfg, "input_dim", obs_np.shape[1]))
         obs_arr = np.asarray(obs_np, dtype=np.float32)
         if obs_arr.ndim != 2 or int(obs_arr.shape[1]) != model_in_dim:
+            sample_agents = [ag.agent_id for ag in agents_for_samples[:5]]
             raise RuntimeError(
-                f"Observation dim mismatch: got {obs_arr.shape}, model expects (*, {model_in_dim}). "
-                "Check env.get_obs_extended availability and cfg.model_group_*.input_dim."
+                "Observation dim mismatch in league inference: "
+                f"got batch shape={obs_arr.shape}, expected input_dim={model_in_dim}, "
+                f"dims_in_group={expected_dims}, sample_agents={sample_agents}. "
+                "Root cause is usually config/input mismatch (e.g. model_group_*.input_dim vs env.get_obs_extended dim). "
+                "Verify checkpoint config and current environment build use same observation layout."
             )
         x_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=device)
 

@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 254
+    input_dim: int = 261
     output_dim: int = 25
     output_mode: str = "logit"
     activation_fn: str = "relu"
