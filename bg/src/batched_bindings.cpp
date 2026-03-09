@@ -15,10 +15,28 @@ namespace {
 
 class BatchedBackgammonEnv {
 public:
-    BatchedBackgammonEnv(size_t n_envs, uint64_t seed = 0) {
-        envs_.reserve(n_envs);
-        for (size_t i = 0; i < n_envs; ++i) {
-            envs_.emplace_back(seed + static_cast<uint64_t>(i));
+    BatchedBackgammonEnv(size_t n_matches, py::object n_games, uint64_t seed = 0) {
+        envs_.reserve(n_matches);
+
+        if (py::isinstance<py::int_>(n_games)) {
+            const int match_size = n_games.cast<int>();
+            for (size_t i = 0; i < n_matches; ++i) {
+                envs_.emplace_back(seed + static_cast<uint64_t>(i), match_size);
+            }
+            return;
+        }
+
+        if (!py::isinstance<py::sequence>(n_games)) {
+            throw std::runtime_error("n_games must be int or sequence[int]");
+        }
+
+        py::sequence n_games_seq = n_games.cast<py::sequence>();
+        if (static_cast<size_t>(n_games_seq.size()) != n_matches) {
+            throw std::runtime_error("n_games sequence length must be equal to n_matches");
+        }
+
+        for (size_t i = 0; i < n_matches; ++i) {
+            envs_.emplace_back(seed + static_cast<uint64_t>(i), n_games_seq[i].cast<int>());
         }
     }
 
@@ -152,7 +170,7 @@ PYBIND11_MODULE(batched_bg_env, m) {
     m.doc() = "Batched Backgammon C++ env (pybind11)";
 
     py::class_<BatchedBackgammonEnv>(m, "Env")
-        .def(py::init<size_t, uint64_t>(), py::arg("n_envs"), py::arg("seed") = 0)
+        .def(py::init<size_t, py::object, uint64_t>(), py::arg("n_matches"), py::arg("n_games"), py::arg("seed") = 0)
         .def("size", &BatchedBackgammonEnv::size)
         .def("reset", &BatchedBackgammonEnv::reset)
         .def("roll_dice", &BatchedBackgammonEnv::roll_dice)
