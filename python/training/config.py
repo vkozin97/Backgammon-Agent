@@ -64,7 +64,8 @@ class TrainConfig:
 
 @dataclass
 class LeagueConfig:
-    games_per_pair: int = 5
+    matches_per_pair: int = 5
+    games_in_match: int = 11
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 1.0
@@ -116,6 +117,10 @@ class ExperimentConfig:
         league_data = dict(data.get("league", {}))
         # Backward compatibility with old checkpoints/configs.
         league_data.pop("max_turns_per_game", None)
+        if "games_per_pair" in league_data and "matches_per_pair" not in league_data:
+            league_data["matches_per_pair"] = league_data.pop("games_per_pair")
+        if "pages_per_pair" in league_data and "matches_per_pair" not in league_data:
+            league_data["matches_per_pair"] = league_data.pop("pages_per_pair")
         return cls(
             model_group_a=ModelConfig(**data.get("model_group_a", {})),
             model_group_c=ModelConfig(**data.get("model_group_c", {})),

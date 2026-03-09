@@ -615,7 +615,11 @@ class LeagueController:
             return [self.play_game(spec.p1, spec.p2, spec.game_id, epoch) for spec in game_specs]
 
         n_games = len(game_specs)
-        env = batched_bg_env.Env(n_matches=n_games, n_games=5, seed=self.seed + epoch * 100_000)
+        env = batched_bg_env.Env(
+            n_matches=n_games,
+            n_games=int(getattr(self.cfg, "games_in_match", 11)),
+            seed=self.seed + epoch * 100_000,
+        )
         env.reset()
 
         histories = [[] for _ in range(n_games)]
@@ -729,7 +733,11 @@ class LeagueController:
         ]
 
     def play_game(self, p1, p2, game_id: str, epoch: int):
-        env = bg_env.Env(self.seed + hash(game_id) % 100000) if bg_env is not None else _FallbackEnv(self.seed + hash(game_id) % 100000)
+        env = (
+            bg_env.Env(self.seed + hash(game_id) % 100000, n_games=int(getattr(self.cfg, "games_in_match", 11)))
+            if bg_env is not None
+            else _FallbackEnv(self.seed + hash(game_id) % 100000)
+        )
         env.reset()
         history = []
         players = [p1, p2]
@@ -811,10 +819,10 @@ class LeagueController:
         for i, a in enumerate(trainable_agents):
             for j in range(i, len(trainable_agents)):
                 b = trainable_agents[j]
-                for g in range(self.cfg.games_per_pair):
+                for g in range(self.cfg.matches_per_pair):
                     specs.append(_GameSpec(game_id=f"e{epoch}_t{i}_{b.agent_id}_{g}", p1=a, p2=b))
             for opp in opponents:
-                for g in range(self.cfg.games_per_pair):
+                for g in range(self.cfg.matches_per_pair):
                     specs.append(_GameSpec(game_id=f"e{epoch}_{a.agent_id}_{opp.agent_id}_{g}", p1=a, p2=opp))
 
         results = self._play_all_games_batched(specs, epoch)

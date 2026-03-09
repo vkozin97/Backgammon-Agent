@@ -96,7 +96,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 1
     cfg.train.batch_size = 8
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.league.min_replay_size_to_train = 1
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
@@ -155,7 +155,7 @@ def test_temperature_decay_progression(tmp_path: Path):
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 2
     cfg.train.updates_per_epoch_per_agent = 0
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.league.selfplay_temperature = 1.0
     cfg.league.temperature_decay = 0.9
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
@@ -227,7 +227,7 @@ def test_league_run_epoch_includes_self_mirror_games():
     from training.league import LeagueController, _GameSpec
 
     cfg = ExperimentConfig().league
-    cfg.games_per_pair = 1
+    cfg.matches_per_pair = 1
     league = LeagueController(cfg, seed=123)
 
     class DummyAgent:
@@ -277,7 +277,7 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 0
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
     cfg.league.replay_storage_dir = str(tmp_path / "replay")
@@ -287,7 +287,7 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg_resume = ExperimentConfig()
     cfg_resume.train.num_epochs = 2
     cfg_resume.train.updates_per_epoch_per_agent = 0
-    cfg_resume.league.games_per_pair = 1
+    cfg_resume.league.matches_per_pair = 1
     cfg_resume.checkpoint_dir = cfg.checkpoint_dir
     cfg_resume.plots_dir = cfg.plots_dir
     cfg_resume.league.replay_storage_dir = cfg.league.replay_storage_dir
@@ -303,7 +303,7 @@ def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 0
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
 
