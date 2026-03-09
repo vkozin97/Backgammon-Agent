@@ -14,6 +14,18 @@ from .replay import ReplayBuffer
 from .plotting import load_metrics_history_from_checkpoints, plot_metrics_history
 
 
+MATCH_VECTOR_DIM = 12
+MODEL_OUTPUT_DIM = 25
+
+
+def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
+    vec = np.asarray(state_vector, dtype=np.float32).reshape(-1)
+    if vec.size < 2:
+        return MATCH_VECTOR_DIM - 1, MATCH_VECTOR_DIM - 1
+    my_left = int(np.clip(np.round(float(vec[-2])), 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(vec[-1])), 0, MATCH_VECTOR_DIM - 1))
+    return my_left, opp_left
+
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
     pair = []
     for g in game_results:
@@ -23,11 +35,31 @@ def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list
     return pair
 
 
-def _terminal_outcome_for_step(game, step: dict) -> float:
+def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     player_index = step.get("player_index")
     if player_index is not None:
-        return 1.0 if int(player_index) == int(getattr(game, "winner_player_index", 0)) else 0.0
-    return 1.0 if step["agent_id"] == game.winner else 0.0
+        won = int(player_index) == int(getattr(game, "winner_player_index", 0))
+    else:
+        won = step["agent_id"] == game.winner
+
+    my_left, opp_left = _left_to_win_from_state_vector(step.get("state_vector", np.empty((0,), dtype=np.float32)))
+    points_won = int(max(getattr(game, "points_won", 1), 1))
+
+    my_next = max(my_left - points_won, 0) if won else my_left
+    opp_next = opp_left if won else max(opp_left - points_won, 0)
+
+    my_vec = np.zeros((MATCH_VECTOR_DIM,), dtype=np.float32)
+    opp_vec = np.zeros((MATCH_VECTOR_DIM,), dtype=np.float32)
+    my_vec[my_next] = 1.0
+    opp_vec[opp_next] = 1.0
+
+    double_offered = bool(step.get("double_offered_by_agent", False))
+    double_accepted = bool(step.get("double_was_accepted", False))
+    accept_target = np.array([1.0 if (double_offered and double_accepted) else 0.0], dtype=np.float32)
+    accept_mask = np.array([1.0 if double_offered else 0.0], dtype=np.float32)
+
+    out = np.concatenate([my_vec, opp_vec, accept_target, accept_mask], dtype=np.float32)
+    return out
 
 
 def save_checkpoint(cfg: ExperimentConfig, agents, replay: ReplayBuffer, epoch: int, metrics: dict) -> None:
@@ -136,7 +168,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                 for agent in agents:
                     x_np, y_np = stratified_batches.get(
                         agent.agent_id,
-                        (np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32)),
+                        (np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32)),
                     )
                     if x_np.shape[0] == 0:
                         continue
