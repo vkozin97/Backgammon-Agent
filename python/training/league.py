@@ -169,18 +169,6 @@ def _decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: 
     p_reject = _reject_double_match_win_prob(obs_now)
     return int(p_accept >= p_reject)
 
-def _fit_obs_dim(obs_np: np.ndarray, expected_dim: int) -> np.ndarray:
-    x = np.asarray(obs_np, dtype=np.float32)
-    if x.ndim == 1:
-        x = x.reshape(1, -1)
-    cur = int(x.shape[1])
-    if cur == expected_dim:
-        return x
-    if cur > expected_dim:
-        return x[:, :expected_dim]
-    pad = np.zeros((x.shape[0], expected_dim - cur), dtype=np.float32)
-    return np.concatenate([x, pad], axis=1)
-
 class _FallbackEnv:
     def __init__(self, seed: int = 0):
         self.rng = np.random.default_rng(seed)
@@ -374,6 +362,15 @@ class LeagueController:
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
+        self._obs_probe_env = None
+        if bg_env is not None:
+            try:
+                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(cfg, "games_in_match", 11)))
+            except TypeError:
+                try:
+                    self._obs_probe_env = bg_env.Env(int(seed))
+                except Exception:
+                    self._obs_probe_env = None
 
     def set_decision_temperature(self, temperature: float) -> None:
         self.decision_temperature = float(temperature)
@@ -426,9 +423,15 @@ class LeagueController:
         raw = np.asarray(env.get_state_raw(), dtype=np.float32)
         return state_to_observation(raw)
 
-    @staticmethod
-    def state_vector_from_raw(raw: np.ndarray) -> np.ndarray:
-        return state_to_observation(np.asarray(raw, dtype=np.float32))
+    def state_vector_from_raw(self, raw: np.ndarray) -> np.ndarray:
+        raw_np = np.asarray(raw, dtype=np.int16)
+        if self._obs_probe_env is not None and hasattr(self._obs_probe_env, "set_state_raw") and hasattr(self._obs_probe_env, "get_obs_extended"):
+            try:
+                self._obs_probe_env.set_state_raw(raw_np)
+                return np.asarray(self._obs_probe_env.get_obs_extended(), dtype=np.float32)
+            except Exception:
+                pass
+        return state_to_observation(np.asarray(raw_np, dtype=np.float32))
 
     def _score_random(self, moves: np.ndarray) -> np.ndarray:
         if len(moves) == 0:
@@ -477,8 +480,13 @@ class LeagueController:
             model_idx[i] = agent_to_idx[ag.agent_id]
 
         model_in_dim = int(getattr(first_agent.model.cfg, "input_dim", obs_np.shape[1]))
-        obs_fit = _fit_obs_dim(obs_np, model_in_dim)
-        x_t = torch.as_tensor(obs_fit.astype(np.float32), dtype=torch.float32, device=device)
+        obs_arr = np.asarray(obs_np, dtype=np.float32)
+        if obs_arr.ndim != 2 or int(obs_arr.shape[1]) != model_in_dim:
+            raise RuntimeError(
+                f"Observation dim mismatch: got {obs_arr.shape}, model expects (*, {model_in_dim}). "
+                "Check env.get_obs_extended availability and cfg.model_group_*.input_dim."
+            )
+        x_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=device)
 
         # Fast path: one model in group -> ordinary single forward.
         if len(unique_agents) == 1:
