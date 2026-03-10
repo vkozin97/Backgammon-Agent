@@ -8,8 +8,8 @@ from typing import Any
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 254
-    output_dim: int = 1
+    input_dim: int = 261
+    output_dim: int = 25
     output_mode: str = "logit"
     activation_fn: str = "relu"
     weight_init: str = "xavier"
@@ -41,7 +41,7 @@ class TrainConfig:
     updates_per_epoch_per_agent: int = 40
     batch_size: int = 10_000
     optimizer_type: str = "adam"
-    learning_rate: float = 1.4579959882299264e-06
+    learning_rate: float = 1e-4
     lr_decay_factor: float = 0.96
     lr_decay_every_steps: int = 40
     weight_decay: float = 0.0
@@ -64,7 +64,8 @@ class TrainConfig:
 
 @dataclass
 class LeagueConfig:
-    games_per_pair: int = 5
+    matches_per_pair: int = 1
+    games_in_match: int = 3
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 1.0
@@ -75,8 +76,8 @@ class LeagueConfig:
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
     batched_obs_threads: int = 1
-    selfplay_temperature: float = 1.0
-    temperature_decay: float = 0.9
+    selfplay_temperature: float = 0.01
+    temperature_decay: float = 1
     evaluation_games_per_pair: int = 1
     checkpoint_frequency_epochs: int = 1
     metrics_flush_frequency: int = 1
@@ -85,7 +86,6 @@ class LeagueConfig:
 @dataclass
 class ExperimentConfig:
     model_group_a: ModelConfig = field(default_factory=lambda: ModelConfig(hidden_dims=[128, 64], num_layers=3, p_dropout=0.10, dropout_layout=[1, 2]))
-    model_group_b: ModelConfig = field(default_factory=lambda: ModelConfig(hidden_dims=[256, 256, 128, 128, 64], num_layers=6, p_dropout=0.15, dropout_layout=[1, 2, 3, 4, 5]))
     model_group_c: ModelConfig = field(default_factory=lambda: ModelConfig(
         p_dropout=0.10,
         dropout_layout=[1, 2],
@@ -117,9 +117,12 @@ class ExperimentConfig:
         league_data = dict(data.get("league", {}))
         # Backward compatibility with old checkpoints/configs.
         league_data.pop("max_turns_per_game", None)
+        if "games_per_pair" in league_data and "matches_per_pair" not in league_data:
+            league_data["matches_per_pair"] = league_data.pop("games_per_pair")
+        if "pages_per_pair" in league_data and "matches_per_pair" not in league_data:
+            league_data["matches_per_pair"] = league_data.pop("pages_per_pair")
         return cls(
             model_group_a=ModelConfig(**data.get("model_group_a", {})),
-            model_group_b=ModelConfig(**data.get("model_group_b", {})),
             model_group_c=ModelConfig(**data.get("model_group_c", {})),
             model_group_d=ModelConfig(**data.get("model_group_d", {})),
             train=TrainConfig(**data.get("train", {})),

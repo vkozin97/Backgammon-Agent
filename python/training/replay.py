@@ -62,7 +62,8 @@ class ReplayBuffer:
                 game_id TEXT NOT NULL,
                 step_index INTEGER NOT NULL,
                 epoch INTEGER NOT NULL,
-                terminal_outcome REAL NOT NULL,
+                terminal_outcome BLOB NOT NULL,
+                terminal_outcome_dim INTEGER NOT NULL,
                 timestamp REAL NOT NULL
             )
             """
@@ -81,7 +82,7 @@ class ReplayBuffer:
         self._pending_rows: list[tuple] = []
 
         rows = self._conn.execute(
-            "SELECT recency_index, state_vector, terminal_outcome, agent_id FROM replay ORDER BY recency_index ASC"
+            "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id FROM replay ORDER BY recency_index ASC"
         ).fetchall()
         self._recency_indices: list[int] = []
         self._states: list[np.ndarray] = []
@@ -89,12 +90,12 @@ class ReplayBuffer:
         self._agent_ids: list[str] = []
         self._agent_to_positions: dict[str, list[int]] = {}
         self._id_to_pos: dict[int, int] = {}
-        for recency_index, state_blob, terminal_outcome, agent_id in rows:
+        for recency_index, state_blob, terminal_outcome_blob, terminal_outcome_dim, agent_id in rows:
             rid = int(recency_index)
             pos = len(self._recency_indices)
             self._recency_indices.append(rid)
             self._states.append(np.frombuffer(state_blob, dtype=np.float32).copy())
-            self._outcomes.append(float(terminal_outcome))
+            self._outcomes.append(np.frombuffer(terminal_outcome_blob, dtype=np.float32, count=int(terminal_outcome_dim)).copy())
             aid = str(agent_id)
             self._agent_ids.append(aid)
             self._agent_to_positions.setdefault(aid, []).append(pos)
@@ -125,8 +126,8 @@ class ReplayBuffer:
         self._conn.executemany(
             """
             INSERT INTO replay (
-                state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, terminal_outcome_dim, timestamp
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._pending_rows,
         )
@@ -135,7 +136,7 @@ class ReplayBuffer:
 
     def _add_single(self, **kwargs) -> None:
         state_vector = np.asarray(kwargs["state_vector"], dtype=np.float32)
-        terminal_outcome = float(kwargs["terminal_outcome"])
+        terminal_outcome = np.asarray(kwargs["terminal_outcome"], dtype=np.float32).reshape(-1)
 
         rid = self._next_recency_index
         self._next_recency_index += 1
@@ -156,7 +157,8 @@ class ReplayBuffer:
                 kwargs["game_id"],
                 int(kwargs["step_index"]),
                 int(kwargs["epoch"]),
-                terminal_outcome,
+                terminal_outcome.tobytes(),
+                int(terminal_outcome.size),
                 time.time(),
             )
         )
@@ -235,12 +237,12 @@ class ReplayBuffer:
         if sampled_pos.size == 0:
             return (
                 np.empty((0, 0), dtype=np.float32),
-                np.empty((0, 1), dtype=np.float32),
+                np.empty((0, 0), dtype=np.float32),
                 np.empty((0,), dtype='<U1'),
             )
 
         states = np.stack([self._states[ix] for ix in sampled_pos]).astype(np.float32)
-        outcomes = np.array([self._outcomes[ix] for ix in sampled_pos], dtype=np.float32).reshape(-1, 1)
+        outcomes = np.stack([self._outcomes[ix] for ix in sampled_pos]).astype(np.float32)
         agent_ids = np.array([self._agent_ids[ix] for ix in sampled_pos], dtype=np.str_)
         return states, outcomes, agent_ids
 
@@ -256,7 +258,7 @@ class ReplayBuffer:
             return {
                 aid: (
                     np.empty((0, 0), dtype=np.float32),
-                    np.empty((0, 1), dtype=np.float32),
+                    np.empty((0, 0), dtype=np.float32),
                 )
                 for aid in batch_sizes_by_agent
             }
@@ -268,12 +270,12 @@ class ReplayBuffer:
         for agent_id, batch_size in batch_sizes_by_agent.items():
             target_size = int(batch_size)
             if target_size <= 0:
-                result[agent_id] = (np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32))
+                result[agent_id] = (np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32))
                 continue
 
             agent_positions = self._agent_to_positions.get(agent_id, [])
             if not agent_positions:
-                result[agent_id] = (np.empty((0, 0), dtype=np.float32), np.empty((0, 1), dtype=np.float32))
+                result[agent_id] = (np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32))
                 continue
 
             selected = pooled_pos[pooled_agent_ids == agent_id]
@@ -285,7 +287,7 @@ class ReplayBuffer:
                 selected = selected[take_idx]
 
             states = np.stack([self._states[ix] for ix in selected]).astype(np.float32)
-            outcomes = np.array([self._outcomes[ix] for ix in selected], dtype=np.float32).reshape(-1, 1)
+            outcomes = np.stack([self._outcomes[ix] for ix in selected]).astype(np.float32)
             result[agent_id] = (states, outcomes)
 
         return result

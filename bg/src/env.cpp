@@ -374,9 +374,47 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
         pending_double_by_ = current_player_white_ ? 0 : 1;
     }
 
-    for (int k = 0; k < 4; ++k) {
-        if (actions.from[k] == 255 || actions.to[k] == 255) continue;
-        if (!apply_micro_step(actions.from[k], actions.to[k], 0)) break;
+    std::array<int, 4> used_dice{};
+    size_t used_n = 0;
+    if (dice_.is_double()) {
+        used_dice = {dice_.a, dice_.a, dice_.a, dice_.a};
+        used_n = 4;
+    } else {
+        used_dice = {dice_.a, dice_.b, 0, 0};
+        used_n = 2;
+    }
+
+    std::array<std::array<int, 4>, 2> candidate_dice{used_dice, used_dice};
+    size_t candidate_count = 1;
+    if (!dice_.is_double()) {
+        candidate_dice[1] = {dice_.b, dice_.a, 0, 0};
+        candidate_count = 2;
+    }
+
+    bool applied = false;
+    for (size_t cand = 0; cand < candidate_count && !applied; ++cand) {
+        State saved = s_;
+        bool ok = true;
+        size_t step_idx = 0;
+        for (int k = 0; k < 4; ++k) {
+            if (actions.from[k] == 255 || actions.to[k] == 255) continue;
+            if (step_idx >= used_n) { ok = false; break; }
+            const uint8_t die = static_cast<uint8_t>(candidate_dice[cand][step_idx]);
+            if (!apply_micro_step(actions.from[k], actions.to[k], die)) { ok = false; break; }
+            step_idx++;
+        }
+        if (ok) {
+            applied = true;
+        } else {
+            s_ = saved;
+        }
+    }
+
+    if (!applied) {
+        for (int k = 0; k < 4; ++k) {
+            if (actions.from[k] == 255 || actions.to[k] == 255) continue;
+            if (!apply_micro_step(actions.from[k], actions.to[k], 0)) break;
+        }
     }
 
     if (s_.off >= 15) {

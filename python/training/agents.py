@@ -7,7 +7,12 @@ import torch
 from torch import nn
 
 from .config import ModelConfig, TrainConfig
-from .observation import POINTS_DIM, SCALAR_FEATURES_DIM, VECTOR_CHANNELS
+from .observation import POINTS_DIM, VECTOR_CHANNELS
+
+
+MATCH_VECTOR_DIM = 12
+ACCEPT_HEAD_DIM = 1
+TOTAL_OUTPUT_DIM = MATCH_VECTOR_DIM * 2 + ACCEPT_HEAD_DIM
 
 
 def _activation(name: str) -> nn.Module:
@@ -71,8 +76,9 @@ class TorchConvHeadValueModel(nn.Module):
             kernel_size=6,
         )
         self.conv_activation = _activation(cfg.conv_activation)
+        self.scalar_dim = max(int(cfg.input_dim) - VECTOR_CHANNELS * POINTS_DIM, 0)
         conv_len = POINTS_DIM - 6 + 1
-        mlp_in = cfg.conv_out_channels * conv_len + SCALAR_FEATURES_DIM
+        mlp_in = cfg.conv_out_channels * conv_len + self.scalar_dim
         self.head = _build_mlp(
             input_dim=mlp_in,
             hidden_dims=cfg.head_hidden_dims,
@@ -87,7 +93,7 @@ class TorchConvHeadValueModel(nn.Module):
 
     def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         vectors = x[:, : VECTOR_CHANNELS * POINTS_DIM].reshape(-1, VECTOR_CHANNELS, POINTS_DIM)
-        scalars = x[:, VECTOR_CHANNELS * POINTS_DIM : VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM]
+        scalars = x[:, VECTOR_CHANNELS * POINTS_DIM : VECTOR_CHANNELS * POINTS_DIM + self.scalar_dim]
         return vectors, scalars
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -116,7 +122,8 @@ class TorchDeepConvValueModel(nn.Module):
         self.conv_stack = nn.Sequential(*conv_blocks)
         self.proj = nn.Linear(channels[-1] * cur_len, cfg.conv_output_dim)
 
-        head_in = cfg.conv_output_dim + SCALAR_FEATURES_DIM
+        self.scalar_dim = max(int(cfg.input_dim) - VECTOR_CHANNELS * POINTS_DIM, 0)
+        head_in = cfg.conv_output_dim + self.scalar_dim
         self.head = _build_mlp(
             input_dim=head_in,
             hidden_dims=cfg.hidden_dims,
@@ -131,7 +138,7 @@ class TorchDeepConvValueModel(nn.Module):
 
     def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         vectors = x[:, : VECTOR_CHANNELS * POINTS_DIM].reshape(-1, VECTOR_CHANNELS, POINTS_DIM)
-        scalars = x[:, VECTOR_CHANNELS * POINTS_DIM : VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM]
+        scalars = x[:, VECTOR_CHANNELS * POINTS_DIM : VECTOR_CHANNELS * POINTS_DIM + self.scalar_dim]
         return vectors, scalars
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -185,14 +192,25 @@ class ValueAgent:
             logits = self.model(xt)
         return logits.detach().cpu().numpy()
 
+    def _probs_from_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        my_logits = logits[:, :MATCH_VECTOR_DIM]
+        opp_logits = logits[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
+        accept_logits = logits[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+        my_probs = torch.softmax(my_logits, dim=1)
+        opp_probs = torch.softmax(opp_logits, dim=1)
+        accept_prob = torch.sigmoid(accept_logits)
+        return torch.cat([my_probs, opp_probs, accept_prob], dim=1)
+
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         logits = self.predict_logits(x, training=False)
-        return 1.0 / (1.0 + np.exp(-logits))
+        logits_t = torch.as_tensor(logits, dtype=torch.float32)
+        probs = self._probs_from_logits(logits_t)
+        return probs.detach().cpu().numpy()
 
     def predict_proba_tensor(self, x: torch.Tensor) -> torch.Tensor:
         self.model.eval()
         with torch.no_grad():
-            return torch.sigmoid(self.model(x.to(self.device)))
+            return self._probs_from_logits(self.model(x.to(self.device)))
 
     def train_batch(self, x: np.ndarray, y: np.ndarray) -> float:
         x_t = torch.as_tensor(x, dtype=torch.float32, device=self.device)
@@ -203,18 +221,33 @@ class ValueAgent:
         self.model.train(True)
         self.optimizer.zero_grad(set_to_none=True)
         logits = self.model(x_t)
-        y_expanded = self._expand_targets(y_t, logits.shape[1])
+        y_expanded, accept_mask = self._expand_targets(y_t, logits.shape[1])
+
+        my_logits = logits[:, :MATCH_VECTOR_DIM]
+        opp_logits = logits[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
+        accept_logits = logits[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+
+        my_target = y_expanded[:, :MATCH_VECTOR_DIM]
+        opp_target = y_expanded[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
+        accept_target = y_expanded[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+
         if self.loss_type == "mse":
-            probs = torch.sigmoid(logits)
-            loss = torch.mean((probs - y_expanded) ** 2)
+            probs = self._probs_from_logits(logits)
+            loss_main = torch.mean((probs[:, : MATCH_VECTOR_DIM * 2] - y_expanded[:, : MATCH_VECTOR_DIM * 2]) ** 2)
         elif self.loss_type == "smooth_l1":
-            probs = torch.sigmoid(logits)
-            loss = torch.nn.functional.smooth_l1_loss(probs, y_expanded)
+            probs = self._probs_from_logits(logits)
+            loss_main = torch.nn.functional.smooth_l1_loss(probs[:, : MATCH_VECTOR_DIM * 2], y_expanded[:, : MATCH_VECTOR_DIM * 2])
         else:
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y_expanded, reduction="none")
-            if logits.shape[1] > 1:
-                loss = loss * self._loss_weights_tensor(logits.shape[1], logits.device)
-            loss = torch.mean(loss)
+            loss_my = -torch.mean(torch.sum(my_target * torch.log_softmax(my_logits, dim=1), dim=1))
+            loss_opp = -torch.mean(torch.sum(opp_target * torch.log_softmax(opp_logits, dim=1), dim=1))
+            loss_main = 0.5 * (loss_my + loss_opp)
+
+        bce = torch.nn.functional.binary_cross_entropy_with_logits(accept_logits, accept_target, reduction="none")
+        masked_bce = bce * accept_mask
+        accept_denom = torch.clamp(torch.sum(accept_mask), min=1.0)
+        loss_accept = torch.sum(masked_bce) / accept_denom
+
+        loss = loss_main + loss_accept
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
         self.optimizer.step()
@@ -252,18 +285,29 @@ class ValueAgent:
             adapted_state[key] = cur_tensor
         self.model.load_state_dict(adapted_state, strict=False)
 
-    def _expand_targets(self, y_t: torch.Tensor, output_dim: int) -> torch.Tensor:
+    def _expand_targets(self, y_t: torch.Tensor, output_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
         if y_t.ndim == 1:
             y_t = y_t.unsqueeze(1)
-        if y_t.shape[1] == output_dim:
-            return y_t
-        if output_dim == 1:
-            return y_t[:, :1]
-        if self.target_expansion == "first_head_only":
-            expanded = torch.zeros((y_t.shape[0], output_dim), dtype=y_t.dtype, device=y_t.device)
-            expanded[:, :1] = y_t[:, :1]
-            return expanded
-        return y_t[:, :1].repeat(1, output_dim)
+
+        if y_t.shape[1] == output_dim + 1:
+            accept_mask = y_t[:, output_dim: output_dim + 1]
+            y_main = y_t[:, :output_dim]
+        elif y_t.shape[1] == output_dim:
+            accept_mask = torch.ones((y_t.shape[0], 1), dtype=y_t.dtype, device=y_t.device)
+            y_main = y_t
+        else:
+            raise ValueError(f"Target dim {y_t.shape[1]} does not match model output dim {output_dim} (or {output_dim + 1} with mask)")
+
+        my = y_main[:, :MATCH_VECTOR_DIM]
+        opp = y_main[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
+        acc = y_main[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+
+        my = my / torch.clamp(torch.sum(my, dim=1, keepdim=True), min=1e-8)
+        opp = opp / torch.clamp(torch.sum(opp, dim=1, keepdim=True), min=1e-8)
+        acc = torch.clamp(acc, 0.0, 1.0)
+        accept_mask = torch.clamp(accept_mask, 0.0, 1.0)
+
+        return torch.cat([my, opp, acc], dim=1), accept_mask
 
     def _loss_weights_tensor(self, output_dim: int, device: torch.device) -> torch.Tensor:
         if self.loss_weights.size == output_dim:
@@ -277,13 +321,11 @@ class ValueAgent:
 
 def build_trainable_agents(cfg, seed: int = 0) -> list[ValueAgent]:
     agents: list[ValueAgent] = []
-    groups = ["A"] * 3 + ["B"] * 3 + ["C"] * 3 + ["D"] * 3
+    groups = ["A"] * 3 + ["C"] * 3 + ["D"] * 3
     for i, g in enumerate(groups):
         mcfg = (
             cfg.model_group_a
             if g == "A"
-            else cfg.model_group_b
-            if g == "B"
             else cfg.model_group_c
             if g == "C"
             else cfg.model_group_d

@@ -14,6 +14,13 @@ class _NoMoveEnv:
         return np.empty((0, 8), dtype=np.uint8)
 
 
+def _outcome_vec(v: float) -> np.ndarray:
+    out = np.zeros((26,), dtype=np.float32)
+    out[0 if v > 0 else 1] = 1.0
+    out[12 + (0 if v > 0 else 1)] = 1.0
+    return out
+
+
 def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
     from training.replay import ReplayBuffer
 
@@ -27,14 +34,14 @@ def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
             game_id=f"g_{i // 2}",
             step_index=i,
             epoch=0,
-            terminal_outcome=1.0 if aid == "trainable_0" else 0.0,
+            terminal_outcome=_outcome_vec(1.0 if aid == "trainable_0" else 0.0),
         )
 
     x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2, recency_window=2)
     replay.close()
 
     assert x.shape[0] == 64
-    assert y.shape == (64, 1)
+    assert y.shape == (64, 26)
     assert a.shape == (64,)
     assert set(a.tolist()).issubset({"trainable_0", "trainable_1"})
 
@@ -52,7 +59,7 @@ def test_replay_sample_stratified_with_agent_ids_returns_requested_counts(tmp_pa
             game_id=f"g_{i // 2}",
             step_index=i,
             epoch=0,
-            terminal_outcome=1.0 if aid == "trainable_0" else 0.0,
+            terminal_outcome=_outcome_vec(1.0 if aid == "trainable_0" else 0.0),
         )
 
     sampled = replay.sample_stratified_with_agent_ids(
@@ -68,11 +75,11 @@ def test_replay_sample_stratified_with_agent_ids_returns_requested_counts(tmp_pa
     xu, yu = sampled["unknown"]
 
     assert x0.shape[0] == 32
-    assert y0.shape == (32, 1)
+    assert y0.shape == (32, 26)
     assert x1.shape[0] == 24
-    assert y1.shape == (24, 1)
+    assert y1.shape == (24, 26)
     assert xu.shape[0] == 0
-    assert yu.shape == (0, 1)
+    assert yu.shape == (0, 0)
 
 def test_config_roundtrip(tmp_path: Path):
     cfg = ExperimentConfig()
@@ -89,7 +96,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 1
     cfg.train.batch_size = 8
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.league.min_replay_size_to_train = 1
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
@@ -148,7 +155,7 @@ def test_temperature_decay_progression(tmp_path: Path):
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 2
     cfg.train.updates_per_epoch_per_agent = 0
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.league.selfplay_temperature = 1.0
     cfg.league.temperature_decay = 0.9
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
@@ -220,7 +227,7 @@ def test_league_run_epoch_includes_self_mirror_games():
     from training.league import LeagueController, _GameSpec
 
     cfg = ExperimentConfig().league
-    cfg.games_per_pair = 1
+    cfg.matches_per_pair = 1
     league = LeagueController(cfg, seed=123)
 
     class DummyAgent:
@@ -255,15 +262,22 @@ def test_terminal_outcome_uses_player_index_for_same_agent_ids():
     step_p1 = {"agent_id": "trainable_0", "player_index": 0}
     step_p2 = {"agent_id": "trainable_0", "player_index": 1}
 
-    assert _terminal_outcome_for_step(game, step_p1) == 0.0
-    assert _terminal_outcome_for_step(game, step_p2) == 1.0
+    out_p1 = _terminal_outcome_for_step(game, {**step_p1, "state_vector": np.array([0.0, 0.0, 5.0, 5.0], dtype=np.float32)})
+    out_p2 = _terminal_outcome_for_step(game, {**step_p2, "state_vector": np.array([0.0, 0.0, 5.0, 5.0], dtype=np.float32)})
+    assert out_p1.shape == (26,)
+    assert out_p2.shape == (26,)
+    assert np.isclose(np.sum(out_p1[:12]), 1.0)
+    assert np.isclose(np.sum(out_p1[12:24]), 1.0)
+    assert np.isclose(np.sum(out_p2[:12]), 1.0)
+    assert np.isclose(np.sum(out_p2[12:24]), 1.0)
+    assert int(np.argmax(out_p1[:12])) != int(np.argmax(out_p2[:12]))
 
 
 def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 0
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
     cfg.league.replay_storage_dir = str(tmp_path / "replay")
@@ -273,7 +287,7 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg_resume = ExperimentConfig()
     cfg_resume.train.num_epochs = 2
     cfg_resume.train.updates_per_epoch_per_agent = 0
-    cfg_resume.league.games_per_pair = 1
+    cfg_resume.league.matches_per_pair = 1
     cfg_resume.checkpoint_dir = cfg.checkpoint_dir
     cfg_resume.plots_dir = cfg.plots_dir
     cfg_resume.league.replay_storage_dir = cfg.league.replay_storage_dir
@@ -289,7 +303,7 @@ def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 0
-    cfg.league.games_per_pair = 1
+    cfg.league.matches_per_pair = 1
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
 
@@ -303,7 +317,6 @@ def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path
 
     cfg_new = ExperimentConfig()
     cfg_new.model_group_a.output_dim = 3
-    cfg_new.model_group_b.output_dim = 3
     cfg_new.model_group_c.output_dim = 3
     cfg_new.model_group_d.output_dim = 3
     cfg_new.checkpoint_dir = cfg.checkpoint_dir
