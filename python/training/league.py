@@ -374,7 +374,10 @@ class LeagueController:
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
         self._baseline_eval_agent: ValueAgent | None = None
+        self._ensemble_base_model_cache: dict[tuple, torch.nn.Module] = {}
         self._obs_probe_env = None
+        self._move_eval_env = bg_env.Env(int(seed) + 11) if bg_env is not None else _FallbackEnv(int(seed) + 11)
+        self._accept_eval_env = bg_env.Env(int(seed) + 17) if bg_env is not None else _FallbackEnv(int(seed) + 17)
         if bg_env is not None:
             try:
                 self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(cfg, "games_in_match", 11)))
@@ -580,8 +583,19 @@ class LeagueController:
                 for m in models:
                     m.eval()
 
-                base_model = copy.deepcopy(models[0]).to(device)
-                base_model.eval()
+                m0 = models[0]
+                cfg0 = getattr(m0, "cfg", None)
+                cache_key = (
+                    type(m0),
+                    str(device),
+                    int(getattr(cfg0, "input_dim", -1)),
+                    int(getattr(cfg0, "output_dim", -1)),
+                )
+                base_model = self._ensemble_base_model_cache.get(cache_key)
+                if base_model is None:
+                    base_model = copy.deepcopy(m0).to(device)
+                    base_model.eval()
+                    self._ensemble_base_model_cache[cache_key] = base_model
                 params, buffers = stack_module_state(models)
 
                 def _fmodel(p, b, x):
@@ -613,15 +627,13 @@ class LeagueController:
         apply_doubles = np.zeros((len(legal_moves_list),), dtype=np.uint8)
         accept_doubles = np.zeros((len(legal_moves_list),), dtype=np.uint8)
 
-        base_obs: list[np.ndarray] = []
-        for i in range(len(legal_moves_list)):
-            if obs_batch is not None:
-                base_obs.append(np.asarray(obs_batch[i], dtype=np.float32))
-            else:
-                base_obs.append(self.state_vector_from_raw(states[i]))
+        if obs_batch is not None:
+            base_obs = np.asarray(obs_batch, dtype=np.float32)
+        else:
+            base_obs = np.stack([self.state_vector_from_raw(states[i]) for i in range(len(legal_moves_list))]).astype(np.float32)
 
         if actors:
-            probs_now = self._predict_probs_single_cuda_call(actors, np.stack(base_obs).astype(np.float32))
+            probs_now = self._predict_probs_single_cuda_call(actors, base_obs)
             obs_double_batch = np.stack([_set_obs_double_state(x) for x in base_obs]).astype(np.float32)
             probs_double = self._predict_probs_single_cuda_call(actors, obs_double_batch)
             for i in range(len(actors)):
@@ -632,7 +644,7 @@ class LeagueController:
         candidate_owner: list[int] = []
         candidate_actor: list[ValueAgent] = []
 
-        sim = bg_env.Env(int(self.seed)) if bg_env is not None else _FallbackEnv(int(self.seed))
+        sim = self._move_eval_env
         for i, moves in enumerate(legal_moves_list):
             if len(moves) == 0:
                 continue
@@ -645,20 +657,22 @@ class LeagueController:
                 try:
                     _, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), apply_double=int(apply_doubles[i]), accept_double=1)
                 except TypeError:
-                    _, done = sim.step_move(mv)
+                    _, done = sim.step_move(np.asarray(mv, dtype=np.uint8))
                 candidate_obs.append(self.state_vector(sim))
                 candidate_done.append(done)
                 candidate_owner.append(i)
                 candidate_actor.append(actors[i])
 
+        probs = None
         if candidate_obs:
-            probs = self._predict_probs_single_cuda_call(candidate_actor, np.stack(candidate_obs).astype(np.float32))
+            candidate_obs_np = np.stack(candidate_obs).astype(np.float32)
+            probs = self._predict_probs_single_cuda_call(candidate_actor, candidate_obs_np)
             vals = []
-            for is_done, p_row, obs_row in zip(np.asarray(candidate_done, dtype=bool), probs, candidate_obs):
+            for is_done, p_row, obs_row in zip(np.asarray(candidate_done, dtype=bool), probs, candidate_obs_np):
                 if is_done:
                     vals.append(0.0)
                 else:
-                    vals.append(_head_win_eval(p_row, np.asarray(obs_row, dtype=np.float32)))
+                    vals.append(_head_win_eval(p_row, obs_row))
 
             grouped_vals: dict[int, list[float]] = {}
             for owner, val in zip(candidate_owner, vals):
@@ -675,7 +689,7 @@ class LeagueController:
         accept_eval_obs: list[np.ndarray] = []
         accept_eval_actor: list[ValueAgent] = []
         accept_eval_owner: list[int] = []
-        sim2 = bg_env.Env(int(self.seed) + 17) if bg_env is not None else _FallbackEnv(int(self.seed) + 17)
+        sim2 = self._accept_eval_env
         for i, mv in enumerate(actions):
             if int(mv[0]) == 255:
                 accept_doubles[i] = 0
@@ -695,8 +709,9 @@ class LeagueController:
             accept_eval_owner.append(i)
 
         if accept_eval_obs:
-            probs_accept = self._predict_probs_single_cuda_call(accept_eval_actor, np.stack(accept_eval_obs).astype(np.float32))
-            for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs):
+            accept_eval_obs_np = np.stack(accept_eval_obs).astype(np.float32)
+            probs_accept = self._predict_probs_single_cuda_call(accept_eval_actor, accept_eval_obs_np)
+            for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs_np):
                 # reject threshold uses pre-offer post-move state (halve cube back)
                 obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
                 if obs_pre.size >= 5:
@@ -767,20 +782,21 @@ class LeagueController:
                 if not idxs:
                     continue
 
-                local_states = states[idxs]
+                idxs_np = np.asarray(idxs, dtype=np.int64)
+                local_states = states[idxs_np]
                 local_moves = [legal_moves[i] for i in idxs]
                 local_actors = [(game_specs[i].p1 if turn % 2 == 0 else game_specs[i].p2) for i in idxs]
-                local_obs = np.asarray(obs_extended_batch[idxs], dtype=np.float32) if obs_extended_batch is not None else None
+                local_obs = obs_extended_batch[idxs_np] if obs_extended_batch is not None else None
                 local_actions, local_apply, local_accept = self._select_group_actions_single_call(local_states, local_moves, local_actors, local_obs)
-                actions[np.asarray(idxs, dtype=np.int64)] = local_actions
-                apply_doubles[np.asarray(idxs, dtype=np.int64)] = local_apply
-                accept_doubles[np.asarray(idxs, dtype=np.int64)] = local_accept
+                actions[idxs_np] = local_actions
+                apply_doubles[idxs_np] = local_apply
+                accept_doubles[idxs_np] = local_accept
 
             if baseline_idxs and self._baseline_eval_agent is not None:
                 b_idx = np.asarray(baseline_idxs, dtype=np.int64)
                 b_states = states[b_idx]
                 b_actions = actions[b_idx]
-                b_obs = np.asarray(obs_extended_batch[b_idx], dtype=np.float32) if obs_extended_batch is not None else None
+                b_obs = obs_extended_batch[b_idx] if obs_extended_batch is not None else None
                 b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
                 apply_doubles[b_idx] = b_apply
                 accept_doubles[b_idx] = b_accept
@@ -798,7 +814,9 @@ class LeagueController:
             rewards = np.asarray(rewards, dtype=np.float32)
             done_code = np.asarray(done_step, dtype=np.uint8)
             accepted_step = np.asarray(accepted_step, dtype=np.uint8)
-            states_after = np.asarray(env.get_states_raw(), dtype=np.int16)
+            states_after = None
+            if np.any(done_code[active_idx] > 0):
+                states_after = np.asarray(env.get_states_raw(), dtype=np.int16)
 
             for i in active_idx:
                 spec = game_specs[int(i)]
@@ -806,7 +824,7 @@ class LeagueController:
                 opp = spec.p2 if turn % 2 == 0 else spec.p1
                 actor_player_index = 0 if turn % 2 == 0 else 1
                 state_vector = (
-                    np.asarray(obs_extended_batch[i], dtype=np.float32).copy()
+                    obs_extended_batch[i].copy()
                     if obs_extended_batch is not None
                     else self.state_vector_from_raw(states[i])
                 )
@@ -841,9 +859,9 @@ class LeagueController:
                         )
                     )
 
-                    white_score = int(states_after[i][53]) if states_after.shape[1] > 53 else -1
-                    black_score = int(states_after[i][54]) if states_after.shape[1] > 54 else -1
-                    dave_after = int(states_after[i][55]) if states_after.shape[1] > 55 else int(dave_before[i])
+                    white_score = int(states_after[i][53]) if states_after is not None and states_after.shape[1] > 53 else -1
+                    black_score = int(states_after[i][54]) if states_after is not None and states_after.shape[1] > 54 else -1
+                    dave_after = int(states_after[i][55]) if states_after is not None and states_after.shape[1] > 55 else int(dave_before[i])
                     print(
                         "[self-play] game finished "
                         f"pair={spec.p1.agent_id} vs {spec.p2.agent_id}, "
