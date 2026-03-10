@@ -719,11 +719,12 @@ class LeagueController:
         env.reset()
 
         histories = [[] for _ in range(n_games)]
-        winners = [spec.p1.agent_id for spec in game_specs]
-        winner_player_indices = [0 for _ in range(n_games)]
         turns = [0 for _ in range(n_games)]
-        points_won = [1 for _ in range(n_games)]
+        finished_games = [0 for _ in range(n_games)]
+        game_results: list[GameResult] = []
         done = np.zeros((n_games,), dtype=bool)
+
+        target_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
 
         turn = 0
         while True:
@@ -745,6 +746,8 @@ class LeagueController:
 
             by_group: dict[str, list[int]] = {"A": [], "C": [], "D": []}
             baseline_idxs: list[int] = []
+            dave_before = np.maximum(states[:, 55].astype(np.int32), 1) if states.shape[1] > 55 else np.ones((n_games,), dtype=np.int32)
+
             for i in active_idx:
                 spec = game_specs[int(i)]
                 actor = spec.p1 if turn % 2 == 0 else spec.p2
@@ -790,8 +793,9 @@ class LeagueController:
                 rewards, done_step = step_ret
                 accepted_step = np.zeros((n_games,), dtype=np.uint8)
             rewards = np.asarray(rewards, dtype=np.float32)
-            done_step = np.asarray(done_step, dtype=np.uint8).astype(bool)
+            done_code = np.asarray(done_step, dtype=np.uint8)
             accepted_step = np.asarray(accepted_step, dtype=np.uint8)
+            states_after = np.asarray(env.get_states_raw(), dtype=np.int16)
 
             for i in active_idx:
                 spec = game_specs[int(i)]
@@ -815,30 +819,46 @@ class LeagueController:
                     "double_was_accepted": bool(accepted_step[i]) if bool(apply_doubles[i]) else False,
                 })
                 turns[i] += 1
-                if done_step[i]:
-                    winners[i] = actor.agent_id if rewards[i] > 0 else opp.agent_id
-                    winner_player_indices[i] = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
-                    dave_value = int(states[i][55]) if states.shape[1] > 55 else 1
-                    points_won[i] = max(1, int(round(abs(float(rewards[i])) * max(dave_value, 1))))
-                    done[i] = True
+                if int(done_code[i]) in (1, 2):
+                    winner = actor.agent_id if rewards[i] > 0 else opp.agent_id
+                    winner_player_index = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
+                    points_won = max(1, int(round(abs(float(rewards[i])) * int(dave_before[i]))))
+                    finished_games[i] += 1
+
+                    game_results.append(
+                        GameResult(
+                            game_id=f"{spec.game_id}_g{finished_games[i]}",
+                            steps=histories[i],
+                            winner=winner,
+                            turns=turns[i],
+                            player_1_id=spec.p1.agent_id,
+                            player_2_id=spec.p2.agent_id,
+                            winner_player_index=winner_player_index,
+                            points_won=points_won,
+                        )
+                    )
+
+                    white_score = int(states_after[i][53]) if states_after.shape[1] > 53 else -1
+                    black_score = int(states_after[i][54]) if states_after.shape[1] > 54 else -1
+                    dave_after = int(states_after[i][55]) if states_after.shape[1] > 55 else int(dave_before[i])
+                    print(
+                        "[self-play] game finished "
+                        f"pair={spec.p1.agent_id} vs {spec.p2.agent_id}, "
+                        f"match={spec.game_id}, game_in_match={finished_games[i]}, "
+                        f"winner={winner}, reward={float(rewards[i]):.3f}, dave={dave_after}, "
+                        f"match_score={white_score}:{black_score}"
+                    )
+
+                    histories[i] = []
+                    turns[i] = 0
+                    if int(done_code[i]) == 2 or finished_games[i] >= target_games_in_match:
+                        done[i] = True
                     
             dt = time.time() - t0
             # print(f"Ran step {turn} via {dt} sec")
             turn += 1
 
-        return [
-            GameResult(
-                game_id=game_specs[i].game_id,
-                steps=histories[i],
-                winner=winners[i],
-                turns=turns[i],
-                player_1_id=game_specs[i].p1.agent_id,
-                player_2_id=game_specs[i].p2.agent_id,
-                winner_player_index=winner_player_indices[i],
-                points_won=points_won[i],
-            )
-            for i in range(n_games)
-        ]
+        return game_results
 
     def play_game(self, p1, p2, game_id: str, epoch: int):
         env = (
