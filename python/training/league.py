@@ -862,13 +862,13 @@ class LeagueController:
                     white_score = int(states_after[i][53]) if states_after is not None and states_after.shape[1] > 53 else -1
                     black_score = int(states_after[i][54]) if states_after is not None and states_after.shape[1] > 54 else -1
                     dave_after = int(states_after[i][55]) if states_after is not None and states_after.shape[1] > 55 else int(dave_before[i])
-                    print(
-                        "[self-play] game finished "
-                        f"pair={spec.p1.agent_id} vs {spec.p2.agent_id}, "
-                        f"match={spec.game_id}, game_in_match={finished_games[i]}, "
-                        f"winner={winner}, reward={float(rewards[i]):.3f}, dave={dave_after}, "
-                        f"match_score={white_score}:{black_score}"
-                    )
+                    # print(
+                    #     "[self-play] game finished "
+                    #     f"pair={spec.p1.agent_id} vs {spec.p2.agent_id}, "
+                    #     f"match={spec.game_id}, game_in_match={finished_games[i]}, "
+                    #     f"winner={winner}, reward={float(rewards[i]):.3f}, dave={dave_after}, "
+                    #     f"match_score={white_score}:{black_score}"
+                    # )
 
                     histories[i] = []
                     turns[i] = 0

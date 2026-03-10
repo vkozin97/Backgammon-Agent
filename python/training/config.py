@@ -41,7 +41,7 @@ class TrainConfig:
     updates_per_epoch_per_agent: int = 40
     batch_size: int = 10_000
     optimizer_type: str = "adam"
-    learning_rate: float = 1.4579959882299264e-06
+    learning_rate: float = 1e-4
     lr_decay_factor: float = 0.96
     lr_decay_every_steps: int = 40
     weight_decay: float = 0.0
@@ -64,8 +64,8 @@ class TrainConfig:
 
 @dataclass
 class LeagueConfig:
-    matches_per_pair: int = 5
-    games_in_match: int = 11
+    matches_per_pair: int = 1
+    games_in_match: int = 3
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 1.0
@@ -76,8 +76,8 @@ class LeagueConfig:
     sampling_mode: str = "window"
     parallel_env_workers: int = 1
     batched_obs_threads: int = 1
-    selfplay_temperature: float = 1.0
-    temperature_decay: float = 0.9
+    selfplay_temperature: float = 0.01
+    temperature_decay: float = 1
     evaluation_games_per_pair: int = 1
     checkpoint_frequency_epochs: int = 1
     metrics_flush_frequency: int = 1
