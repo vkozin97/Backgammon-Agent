@@ -60,7 +60,9 @@ def _mask_eval_outputs(probs_row: np.ndarray, obs: np.ndarray) -> np.ndarray:
 def _match_win_probability(masked_probs_row: np.ndarray) -> float:
     return float(np.asarray(masked_probs_row, dtype=np.float32)[0])
 
-MET_TABLE = get_match_win_probs(MATCH_VECTOR_DIM - 1)
+# MET is immutable and shared across all self-play calls.
+# Keep one float32 table in memory and reuse it in all evaluations.
+MET_TABLE = np.asarray(get_match_win_probs(MATCH_VECTOR_DIM - 1), dtype=np.float32)
 
 
 def _redistribute_forbidden_stay_mass(my_probs: np.ndarray, opp_probs: np.ndarray, my_left: int, opp_left: int) -> tuple[np.ndarray, np.ndarray]:
@@ -92,8 +94,9 @@ def _redistribute_forbidden_stay_mass(my_probs: np.ndarray, opp_probs: np.ndarra
 def _expected_match_win_prob(my_probs: np.ndarray, opp_probs: np.ndarray) -> float:
     my = np.asarray(my_probs, dtype=np.float32).reshape(-1)
     opp = np.asarray(opp_probs, dtype=np.float32).reshape(-1)
-    m = np.outer(my, opp)
-    return float(np.sum(m * MET_TABLE[: my.shape[0], : opp.shape[0]]))
+    met_view = MET_TABLE[: my.shape[0], : opp.shape[0]]
+    # Avoid temporary outer-product allocations in hot self-play path.
+    return float(my @ met_view @ opp)
 
 
 def _extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
