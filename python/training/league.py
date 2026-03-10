@@ -758,6 +758,7 @@ class LeagueController:
                 obs_extended_batch = np.asarray(env.get_obs_extended(getattr(self.cfg, "batched_obs_threads", 0)), dtype=np.float32)
             legal_moves_raw = list(env.legal_moves())
             legal_moves = [_unwrap_legal_moves_entry(x) for x in legal_moves_raw]
+            white_to_move = (states[:, 57] > 0) if states.shape[1] > 57 else ((turn % 2) == 0) * np.ones((n_games,), dtype=bool)
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
             apply_doubles = np.zeros((n_games,), dtype=np.uint8)
             accept_doubles = np.zeros((n_games,), dtype=np.uint8)
@@ -768,7 +769,7 @@ class LeagueController:
 
             for i in active_idx:
                 spec = game_specs[int(i)]
-                actor = spec.p1 if turn % 2 == 0 else spec.p2
+                actor = spec.p1 if bool(white_to_move[i]) else spec.p2
                 if isinstance(actor, ValueAgent):
                     by_group[actor.group].append(int(i))
                 elif actor.agent_id == self.conservative_baseline.agent_id:
@@ -785,7 +786,7 @@ class LeagueController:
                 idxs_np = np.asarray(idxs, dtype=np.int64)
                 local_states = states[idxs_np]
                 local_moves = [legal_moves[i] for i in idxs]
-                local_actors = [(game_specs[i].p1 if turn % 2 == 0 else game_specs[i].p2) for i in idxs]
+                local_actors = [(game_specs[i].p1 if bool(white_to_move[i]) else game_specs[i].p2) for i in idxs]
                 local_obs = obs_extended_batch[idxs_np] if obs_extended_batch is not None else None
                 local_actions, local_apply, local_accept = self._select_group_actions_single_call(local_states, local_moves, local_actors, local_obs)
                 actions[idxs_np] = local_actions
@@ -820,9 +821,9 @@ class LeagueController:
 
             for i in active_idx:
                 spec = game_specs[int(i)]
-                actor = spec.p1 if turn % 2 == 0 else spec.p2
-                opp = spec.p2 if turn % 2 == 0 else spec.p1
-                actor_player_index = 0 if turn % 2 == 0 else 1
+                actor = spec.p1 if bool(white_to_move[i]) else spec.p2
+                opp = spec.p2 if bool(white_to_move[i]) else spec.p1
+                actor_player_index = 0 if bool(white_to_move[i]) else 1
                 state_vector = (
                     obs_extended_batch[i].copy()
                     if obs_extended_batch is not None
@@ -897,8 +898,11 @@ class LeagueController:
         points_won = 1
         while not done:
             env.roll_dice()
-            actor = players[turn % 2]
-            opp = players[(turn + 1) % 2]
+            raw_turn = np.asarray(env.get_state_raw(), dtype=np.int16)
+            white_to_move = bool(raw_turn[57]) if raw_turn.shape[0] > 57 else ((turn % 2) == 0)
+            actor_player_index = 0 if white_to_move else 1
+            actor = players[actor_player_index]
+            opp = players[1 - actor_player_index]
             state = self.state_vector(env)
             if isinstance(actor, ValueAgent):
                 lm = env.legal_moves()
@@ -941,7 +945,6 @@ class LeagueController:
             except TypeError:
                 reward, done = env.step_move(move)
                 accepted = 0
-            actor_player_index = turn % 2
             history.append({
                 "state_vector": state,
                 "agent_id": actor.agent_id,
