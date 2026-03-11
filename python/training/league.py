@@ -400,7 +400,7 @@ class LeagueController:
         self._accept_eval_env = bg_env.Env(int(seed) + 17) if bg_env is not None else _FallbackEnv(int(seed) + 17)
         if bg_env is not None:
             try:
-                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(cfg, "games_in_match", 11)))
+                self._obs_probe_env = bg_env.Env(int(seed), n_games=self._env_n_games_value())
             except TypeError:
                 try:
                     self._obs_probe_env = bg_env.Env(int(seed))
@@ -412,6 +412,12 @@ class LeagueController:
 
     def set_choose_best_probability(self, choose_best_probability: float) -> None:
         self.choose_best_probability = float(np.clip(choose_best_probability, 0.0, 1.0))
+
+    def _env_n_games_value(self) -> int:
+        v = getattr(self.cfg, "n_games_per_match", None)
+        if v is None:
+            return int(getattr(self.cfg, "games_in_match", 11))
+        return int(v)
 
     def reset_decision_stats(self) -> None:
         self._decision_topk_hits.fill(0.0)
@@ -787,7 +793,7 @@ class LeagueController:
         n_games = len(game_specs)
         env = batched_bg_env.Env(
             n_matches=n_games,
-            n_games=int(getattr(self.cfg, "games_in_match", 11)),
+            n_games=self._env_n_games_value(),
             seed=self.seed + epoch * 100_000,
         )
         env.reset()
@@ -798,7 +804,7 @@ class LeagueController:
         game_results: list[GameResult] = []
         done = np.zeros((n_games,), dtype=bool)
 
-        target_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
+        target_games_in_match = max(1, int(getattr(self.cfg, "games_in_match", 11)))
 
         turn = 0
         while True:
@@ -943,7 +949,7 @@ class LeagueController:
 
     def play_game(self, p1, p2, game_id: str, epoch: int):
         env = (
-            bg_env.Env(self.seed + hash(game_id) % 100000, n_games=int(getattr(self.cfg, "games_in_match", 11)))
+            bg_env.Env(self.seed + hash(game_id) % 100000, n_games=self._env_n_games_value())
             if bg_env is not None
             else _FallbackEnv(self.seed + hash(game_id) % 100000)
         )

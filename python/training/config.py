@@ -66,6 +66,9 @@ class TrainConfig:
 class LeagueConfig:
     matches_per_pair: int = 1
     games_in_match: int = 3
+    # Rule-mode target for env scoring/Crawford logic; set -1 for endless-rule mode.
+    # If None, falls back to games_in_match.
+    n_games_per_match: int | None = None
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 1.0
