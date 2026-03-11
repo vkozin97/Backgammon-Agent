@@ -798,7 +798,8 @@ class LeagueController:
         game_results: list[GameResult] = []
         done = np.zeros((n_games,), dtype=bool)
 
-        target_games_in_match = max(1, int(getattr(self.cfg, "games_in_match", 11)))
+        cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
+        target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
 
         turn = 0
         while True:
@@ -956,6 +957,9 @@ class LeagueController:
         winner_player_index = 0
         points_won = 1
         reward_value = 1
+        cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
+        target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
+        finished_games = 0
         while not done:
             env.roll_dice()
             raw_turn = np.asarray(env.get_state_raw(), dtype=np.int16)
@@ -1017,11 +1021,15 @@ class LeagueController:
                 "double_was_accepted": bool(accepted) if bool(apply_double) else False,
                 "accept_double_opponent": bool(accept_double),
             })
-            if done:
+            if int(done) in (1, 2):
                 winner = actor.agent_id if reward > 0 else opp.agent_id
                 winner_player_index = actor_player_index if reward > 0 else (1 - actor_player_index)
                 reward_value = max(1, int(round(abs(float(reward)))))
                 points_won = max(1, int(round(abs(float(reward)) * max(dave_value, 1))))
+                finished_games += 1
+                done = bool(int(done) == 2 or finished_games >= target_games_in_match)
+            else:
+                done = False
             turn += 1
         return GameResult(
             game_id=game_id,
@@ -1045,13 +1053,16 @@ class LeagueController:
         opponents = [self.conservative_baseline]
         specs: list[_GameSpec] = []
 
+        endless_mode = int(getattr(self.cfg, "games_in_match", 11)) < 0
+        matches_per_pair = 1 if endless_mode else int(self.cfg.matches_per_pair)
+
         for i, a in enumerate(trainable_agents):
             for j in range(i, len(trainable_agents)):
                 b = trainable_agents[j]
-                for g in range(self.cfg.matches_per_pair):
+                for g in range(matches_per_pair):
                     specs.append(_GameSpec(game_id=f"e{epoch}_t{i}_{b.agent_id}_{g}", p1=a, p2=b))
             for opp in opponents:
-                for g in range(self.cfg.matches_per_pair):
+                for g in range(matches_per_pair):
                     specs.append(_GameSpec(game_id=f"e{epoch}_{a.agent_id}_{opp.agent_id}_{g}", p1=a, p2=opp))
 
         results = self._play_all_games_batched(specs, epoch)
