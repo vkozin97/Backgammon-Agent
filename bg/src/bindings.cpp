@@ -87,7 +87,7 @@ PYBIND11_MODULE(bg_env, m) {
             py::array_t<float> arr({bg::OBS_EXTENDED_DIM});
             auto buf = arr.mutable_unchecked<1>();
             float tmp[bg::OBS_EXTENDED_DIM];
-            bg::get_obs_extended(self.state(), self.current_dice(), self.mine_score(), self.opp_score(), self.dave_value(), self.n_games(), self.cube_available_mine(), self.cube_available_opp(), tmp);
+            bg::get_obs_extended(self.state(), self.current_dice(), self.mine_score(), self.opp_score(), self.dave_value(), self.n_games(), self.cube_available_mine(), self.cube_available_opp(), self.is_crawford_game(), self.double_offered(), tmp);
             for (int i = 0; i < bg::OBS_EXTENDED_DIM; ++i) buf(i) = tmp[i];
             return arr;
         })

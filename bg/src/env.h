@@ -49,6 +49,8 @@ namespace bg {
 		int n_games() const { return n_games_; }
 		uint8_t cube_available_mine() const;
 		uint8_t cube_available_opp() const;
+		uint8_t is_crawford_game() const { return crawford_active_ ? 1 : 0; }
+		uint8_t double_offered() const { return double_offered_in_match_ ? 1 : 0; }
 
 		// Äëÿ UI: òåêóùèå êîñòè
 		void get_dice_raw(uint8_t* out /*len=2*/) const;
@@ -70,6 +72,8 @@ namespace bg {
 		int cube_owner_{-1};
 		int previous_game_loser_{-1};
 		int pending_double_by_{-1};
+		bool double_offered_in_match_{false};
+		bool endless_mode_{false};
 
 		void start_new_game(bool first_game);
 		uint8_t double_possible_for_current() const;

@@ -8,8 +8,8 @@ from typing import Any
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 261
-    output_dim: int = 25
+    input_dim: int = 263
+    output_dim: int = 31
     output_mode: str = "logit"
     activation_fn: str = "relu"
     weight_init: str = "xavier"
@@ -78,6 +78,8 @@ class LeagueConfig:
     batched_obs_threads: int = 1
     selfplay_temperature: float = 0.01
     temperature_decay: float = 1
+    choose_best_probability: float = 0.5
+    choose_best_decay: float = 0.9
     evaluation_games_per_pair: int = 1
     checkpoint_frequency_epochs: int = 1
     metrics_flush_frequency: int = 1

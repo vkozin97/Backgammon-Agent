@@ -214,6 +214,18 @@ def plot_metrics_history(
         plt.savefig(decision_dir / "decision_temperature.png")
         plt.close()
 
+    choose_best_probs = [float(m.get("choose_best_probability", np.nan)) for m in metrics_history]
+    if any(np.isfinite(v) for v in choose_best_probs):
+        plt.figure(figsize=(18, 9))
+        plt.plot(xs, choose_best_probs)
+        plt.title("Choose-best probability")
+        plt.xlabel("epoch")
+        plt.ylabel("probability")
+        plt.ylim(0.0, 1.0)
+        plt.tight_layout()
+        plt.savefig(decision_dir / "choose_best_probability.png")
+        plt.close()
+
     for k in range(1, 11):
         topk_series = []
         for m in metrics_history:

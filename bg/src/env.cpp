@@ -91,7 +91,10 @@ bool apply_single_checked(State& s, uint8_t from, uint8_t to, uint8_t die) {
 }  // namespace
 
 BackgammonEnv::BackgammonEnv(uint64_t seed, int n_games)
-    : rng_(seed ? seed : std::random_device{}()), n_games_(std::max(1, n_games)) {}
+    : rng_(seed ? seed : std::random_device{}()) {
+    endless_mode_ = (n_games < 0);
+    n_games_ = endless_mode_ ? 1 : std::max(1, n_games);
+}
 
 void BackgammonEnv::start_new_game(bool first_game) {
     s_ = State{};
@@ -112,7 +115,7 @@ void BackgammonEnv::start_new_game(bool first_game) {
     dave_value_ = 1;
     cube_owner_ = -1;
     pending_double_by_ = -1;
-    crawford_active_ = !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
+    crawford_active_ = !endless_mode_ && !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
     if (crawford_active_) crawford_used_ = true;
 
     dice_ = Dice{1, 1};
@@ -124,13 +127,14 @@ void BackgammonEnv::reset_standard() {
     dave_value_ = 1;
     crawford_used_ = false;
     previous_game_loser_ = -1;
+    double_offered_in_match_ = false;
     s_.ply = 0;
     start_new_game(true);
 }
 
 uint8_t BackgammonEnv::cube_available_for_white(bool white_player) const {
     if (crawford_active_) return 0;
-    if (dave_value_ > n_games_) return 0;
+    if (!endless_mode_ && dave_value_ > n_games_) return 0;
     if (first_turn_in_game_) return white_player == second_player_white_ ? 1 : 0;
     if (cube_owner_ < 0) return 1;
     return (cube_owner_ == (white_player ? 0 : 1)) ? 1 : 0;
@@ -333,20 +337,20 @@ std::pair<uint8_t, size_t> BackgammonEnv::legal_moves(std::vector<Move>& out, bo
 
 int BackgammonEnv::classify_win_reward() const {
     if (s_.opp_off > 0) return 1;
+    if (!double_offered_in_match_) return 1;
     bool kox = s_.opp_bar > 0;
     if (!kox) {
         for (int i = 6; i < 24; ++i) if (s_.opp_points[i] > 0) { kox = true; break; }
     }
-    if (dave_value_ == 1) return 1;
     if (kox) return 3;
     return 2;
 }
 
 uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_points) {
     int points = reward_points * dave_value_;
-    if (winner_color == 0) { white_score_ += points; previous_game_loser_ = 1; }
-    else { black_score_ += points; previous_game_loser_ = 0; }
-    if (white_score_ >= n_games_ || black_score_ >= n_games_) return 2;
+    if (winner_color == 0) { if (!endless_mode_) white_score_ += points; previous_game_loser_ = 1; }
+    else { if (!endless_mode_) black_score_ += points; previous_game_loser_ = 0; }
+    if (!endless_mode_ && (white_score_ >= n_games_ || black_score_ >= n_games_)) return 2;
 
     s_.ply++;
     start_new_game(false);
@@ -372,6 +376,7 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
 
     if (apply_double && double_possible_for_current()) {
         pending_double_by_ = current_player_white_ ? 0 : 1;
+        double_offered_in_match_ = true;
     }
 
     std::array<int, 4> used_dice{};
@@ -430,6 +435,7 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
 bool BackgammonEnv::request_double() {
     if (!double_possible_for_current()) return false;
     pending_double_by_ = current_player_white_ ? 0 : 1;
+    double_offered_in_match_ = true;
     return true;
 }
 
@@ -474,8 +480,9 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     black_score_ = std::max(0, int(in[54]));
     dave_value_ = std::max(1, int(in[55]));
     n_games_ = std::max(1, int(in[56]));
+    endless_mode_ = (int(in[56]) < 0);
     current_player_white_ = in[57] != 0;
-    crawford_active_ = !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
+    crawford_active_ = !endless_mode_ && !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
     if (crawford_active_) crawford_used_ = true;
 }
 
@@ -509,7 +516,7 @@ void BackgammonEnv::get_state_raw(int16_t* out) const {
     out[53] = int16_t(white_score_);
     out[54] = int16_t(black_score_);
     out[55] = int16_t(dave_value_);
-    out[56] = int16_t(n_games_);
+    out[56] = int16_t(endless_mode_ ? -1 : n_games_);
     out[57] = int16_t(current_player_white_ ? 1 : 0);
 }
 

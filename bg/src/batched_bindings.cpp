@@ -83,7 +83,7 @@ public:
         auto worker = [&](size_t begin, size_t end) {
             float tmp[bg::OBS_EXTENDED_DIM];
             for (size_t i = begin; i < end; ++i) {
-                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), envs_[i].mine_score(), envs_[i].opp_score(), envs_[i].dave_value(), envs_[i].n_games(), envs_[i].cube_available_mine(), envs_[i].cube_available_opp(), tmp);
+                bg::get_obs_extended(envs_[i].state(), envs_[i].current_dice(), envs_[i].mine_score(), envs_[i].opp_score(), envs_[i].dave_value(), envs_[i].n_games(), envs_[i].cube_available_mine(), envs_[i].cube_available_opp(), envs_[i].is_crawford_game(), envs_[i].double_offered(), tmp);
                 for (int j = 0; j < bg::OBS_EXTENDED_DIM; ++j) {
                     out((py::ssize_t)i, j) = tmp[j];
                 }
@@ -137,14 +137,28 @@ public:
         }
     }
 
-    py::tuple step_apply(py::array_t<uint8_t, py::array::c_style | py::array::forcecast> moves_arr) {
+    py::tuple step_apply(
+        py::array_t<uint8_t, py::array::c_style | py::array::forcecast> moves_arr,
+        py::array_t<uint8_t, py::array::c_style | py::array::forcecast> apply_doubles_arr,
+        py::array_t<uint8_t, py::array::c_style | py::array::forcecast> accept_doubles_arr
+    ) {
         if (moves_arr.ndim() != 2 || moves_arr.shape(0) != (py::ssize_t)envs_.size() || moves_arr.shape(1) != 8) {
             throw std::runtime_error("step_apply: expected uint8 array with shape (N, 8)");
         }
+        if (apply_doubles_arr.ndim() != 1 || apply_doubles_arr.shape(0) != (py::ssize_t)envs_.size()) {
+            throw std::runtime_error("step_apply: expected apply_doubles shape (N,)");
+        }
+        if (accept_doubles_arr.ndim() != 1 || accept_doubles_arr.shape(0) != (py::ssize_t)envs_.size()) {
+            throw std::runtime_error("step_apply: expected accept_doubles shape (N,)");
+        }
         auto mv = moves_arr.unchecked<2>();
+        auto ad = apply_doubles_arr.unchecked<1>();
+        auto ac = accept_doubles_arr.unchecked<1>();
         py::array_t<float> rewards({(py::ssize_t)envs_.size()});
+        py::array_t<uint8_t> accepted({(py::ssize_t)envs_.size()});
         py::array_t<uint8_t> done({(py::ssize_t)envs_.size()});
         auto r = rewards.mutable_unchecked<1>();
+        auto a = accepted.mutable_unchecked<1>();
         auto d = done.mutable_unchecked<1>();
 
         for (py::ssize_t i = 0; i < (py::ssize_t)envs_.size(); ++i) {
@@ -153,11 +167,12 @@ public:
                 m.from[k] = mv(i, 2 * k);
                 m.to[k] = mv(i, 2 * k + 1);
             }
-            auto [reward, _dave_after, _accepted, done_code] = envs_[i].step_apply(0, m, 1);
+            auto [reward, _dave_after, accepted_code, done_code] = envs_[i].step_apply(ad(i), m, ac(i));
             r(i) = reward;
+            a(i) = accepted_code;
             d(i) = done_code;
         }
-        return py::make_tuple(rewards, done);
+        return py::make_tuple(rewards, accepted, done);
     }
 
 private:
@@ -177,6 +192,6 @@ PYBIND11_MODULE(batched_bg_env, m) {
         .def("legal_moves", &BatchedBackgammonEnv::legal_moves, py::arg("unique_states") = false)
         .def("get_states_raw", &BatchedBackgammonEnv::get_states_raw)
         .def("set_states_raw", &BatchedBackgammonEnv::set_states_raw)
-        .def("step_apply", &BatchedBackgammonEnv::step_apply)
+                .def("step_apply", &BatchedBackgammonEnv::step_apply, py::arg("moves_arr"), py::arg("apply_doubles_arr"), py::arg("accept_doubles_arr"))
         .def("get_obs_extended", &BatchedBackgammonEnv::get_obs_extended, py::arg("n_threads") = 0);
 }

@@ -15,15 +15,16 @@ from .plotting import load_metrics_history_from_checkpoints, plot_metrics_histor
 
 
 MATCH_VECTOR_DIM = 12
-MODEL_OUTPUT_DIM = 25
+REWARD_VECTOR_DIM = 6
+MODEL_OUTPUT_DIM = 31
 
 
 def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
     vec = np.asarray(state_vector, dtype=np.float32).reshape(-1)
-    if vec.size < 2:
+    if vec.size < 6:
         return MATCH_VECTOR_DIM - 1, MATCH_VECTOR_DIM - 1
-    my_left = int(np.clip(np.round(float(vec[-2])), 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(vec[-1])), 0, MATCH_VECTOR_DIM - 1))
+    my_left = int(np.clip(np.round(float(vec[-6])), 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(vec[-5])), 0, MATCH_VECTOR_DIM - 1))
     return my_left, opp_left
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -53,12 +54,14 @@ def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     my_vec[my_next] = 1.0
     opp_vec[opp_next] = 1.0
 
-    double_offered = bool(step.get("double_offered_by_agent", False))
-    double_accepted = bool(step.get("double_was_accepted", False))
-    accept_target = np.array([1.0 if (double_offered and double_accepted) else 0.0], dtype=np.float32)
-    accept_mask = np.array([1.0 if double_offered else 0.0], dtype=np.float32)
+    accept_target = np.array([1.0 if bool(step.get("accept_double_opponent", False)) else 0.0], dtype=np.float32)
 
-    out = np.concatenate([my_vec, opp_vec, accept_target, accept_mask], dtype=np.float32)
+    reward_value = int(np.clip(getattr(game, "reward_value", 1), 1, 3))
+    signed_reward = reward_value if won else -reward_value
+    reward_vec = np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
+    reward_vec[signed_reward + 3 - (1 if signed_reward > 0 else 0)] = 1.0
+
+    out = np.concatenate([my_vec, opp_vec, accept_target, reward_vec], dtype=np.float32)
     return out
 
 
@@ -112,6 +115,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
     all_agent_ids = [x.agent_id for x in agents] + ["conservative_baseline"]
 
     current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
+    current_choose_best_probability = float(cfg.league.choose_best_probability)
 
     for epoch in range(start_epoch, cfg.train.num_epochs):
         epoch_t0 = time.time()
@@ -119,6 +123,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         print("[1/6] Self-play started")
         play_t0 = time.time()
         league.set_decision_temperature(current_temperature)
+        league.set_choose_best_probability(current_choose_best_probability)
         game_results, games_sec = league.run_epoch(agents, epoch)
         decision_stats = league.get_decision_stats()
         play_dt = max(time.time() - play_t0, 1e-6)
@@ -247,6 +252,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                 "replay_sampling_sec": replay_sample_time_total,
             },
             "decision_temperature": float(current_temperature),
+            "choose_best_probability": float(current_choose_best_probability),
             "decision_count": int(decision_stats["decision_count"]),
             "decision_topk_freq": decision_stats["topk_freq"],
             "agents": per_agent,
@@ -271,5 +277,6 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
 
         current_temperature *= float(cfg.league.temperature_decay)
+        current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
 
     return metrics_history
