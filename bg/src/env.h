@@ -46,7 +46,7 @@ namespace bg {
 		int mine_score() const { return current_player_white_ ? white_score_ : black_score_; }
 		int opp_score() const { return current_player_white_ ? black_score_ : white_score_; }
 		int dave_value() const { return dave_value_; }
-		int n_games() const { return n_games_; }
+		int n_games() const { return endless_mode_ ? -1 : n_games_; }
 		uint8_t cube_available_mine() const;
 		uint8_t cube_available_opp() const;
 		uint8_t is_crawford_game() const { return crawford_active_ ? 1 : 0; }

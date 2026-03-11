@@ -247,8 +247,8 @@ void get_obs_extended(const State& s, const Dice& d, int mine_score, int opp_sco
 	out[base_scalars + 14] = float(mine_score);
 	out[base_scalars + 15] = float(opp_score);
 	out[base_scalars + 16] = float(dave_value);
-	out[base_scalars + 17] = (n_games < 0) ? 11.0f : float(std::max(0, n_games - mine_score));
-	out[base_scalars + 18] = (n_games < 0) ? 11.0f : float(std::max(0, n_games - opp_score));
+	out[base_scalars + 17] = (n_games < 0) ? 1.0f : float(std::max(0, n_games - mine_score));
+	out[base_scalars + 18] = (n_games < 0) ? 1.0f : float(std::max(0, n_games - opp_score));
 	out[base_scalars + 19] = float(cube_available_mine);
 	out[base_scalars + 20] = float(cube_available_opp);
 	out[base_scalars + 21] = float(is_crawford_game);

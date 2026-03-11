@@ -65,10 +65,7 @@ class TrainConfig:
 @dataclass
 class LeagueConfig:
     matches_per_pair: int = 1
-    games_in_match: int = 3
-    # Rule-mode target for env scoring/Crawford logic; set -1 for endless-rule mode.
-    # If None, falls back to games_in_match.
-    n_games_per_match: int | None = None
+    games_in_match: int = -1
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 1.0
@@ -122,6 +119,7 @@ class ExperimentConfig:
         league_data = dict(data.get("league", {}))
         # Backward compatibility with old checkpoints/configs.
         league_data.pop("max_turns_per_game", None)
+        league_data.pop("n_games_per_match", None)
         if "games_per_pair" in league_data and "matches_per_pair" not in league_data:
             league_data["matches_per_pair"] = league_data.pop("games_per_pair")
         if "pages_per_pair" in league_data and "matches_per_pair" not in league_data:
