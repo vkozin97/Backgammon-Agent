@@ -181,12 +181,14 @@ def plot_metrics_history(
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
     decision_dir = out_dir / "decision_temperature"
+    replay_dir = out_dir / "graphs" / "replay"
     step_t0 = time.perf_counter()
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
+    replay_dir.mkdir(parents=True, exist_ok=True)
     _print_plot_timing("prepare output directories", step_t0, plot_total_t0)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
@@ -203,6 +205,16 @@ def plot_metrics_history(
     )
 
     step_t0 = time.perf_counter()
+    if replay_sizes:
+        plt.figure(figsize=(18, 9))
+        plt.plot(xs, replay_sizes)
+        plt.title("Replay size")
+        plt.xlabel("epoch")
+        plt.ylabel("samples")
+        plt.tight_layout()
+        plt.savefig(replay_dir / "replay_size.png")
+        plt.close()
+
     temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
     if any(np.isfinite(v) for v in temps):
         plt.figure(figsize=(18, 9))
