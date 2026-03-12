@@ -235,6 +235,7 @@ class GameResult:
     winner_player_index: int = 0
     points_won: int = 1
     reward_value: int = 1
+    ended_by_double_reject: bool = False
 
 
 @dataclass
@@ -897,6 +898,7 @@ class LeagueController:
                     "double_offered_by_agent": bool(apply_doubles[i]),
                     "double_was_accepted": bool(accepted_step[i]) if bool(apply_doubles[i]) else False,
                     "accept_double_opponent": bool(accept_doubles[i]),
+                    "accept_double_opportunity": bool(states[i][65] >= 0) if states.shape[1] > 65 else False,
                 })
                 turns[i] += 1
                 if int(done_code[i]) in (1, 2):
@@ -906,6 +908,7 @@ class LeagueController:
                     points_won = max(1, int(round(abs(float(rewards[i])) * int(dave_before[i]))))
                     finished_games[i] += 1
 
+                    ended_by_double_reject = bool(states[i][65] >= 0 and int(accept_doubles[i]) == 0 and int(done_code[i]) in (1, 2)) if states.shape[1] > 65 else False
                     game_results.append(
                         GameResult(
                             game_id=f"{spec.game_id}_g{finished_games[i]}",
@@ -917,6 +920,7 @@ class LeagueController:
                             winner_player_index=winner_player_index,
                             points_won=points_won,
                             reward_value=reward_value,
+                            ended_by_double_reject=ended_by_double_reject,
                         )
                     )
 
@@ -1020,6 +1024,7 @@ class LeagueController:
                 "double_offered_by_agent": bool(apply_double),
                 "double_was_accepted": bool(accepted) if bool(apply_double) else False,
                 "accept_double_opponent": bool(accept_double),
+                "accept_double_opportunity": bool(raw_before[65] >= 0) if raw_before.shape[0] > 65 else False,
             })
             if int(done) in (1, 2):
                 winner = actor.agent_id if reward > 0 else opp.agent_id
@@ -1031,6 +1036,7 @@ class LeagueController:
             else:
                 done = False
             turn += 1
+        ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done) in (1, 2)) if raw_before.shape[0] > 65 else False
         return GameResult(
             game_id=game_id,
             steps=history,
@@ -1041,6 +1047,7 @@ class LeagueController:
             winner_player_index=winner_player_index,
             points_won=points_won,
             reward_value=reward_value,
+            ended_by_double_reject=ended_by_double_reject,
         )
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):

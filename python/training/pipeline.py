@@ -36,6 +36,70 @@ def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list
     return pair
 
 
+
+def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
+    reward_bins = np.zeros((6,), dtype=np.float64)
+    # Two signed outcomes per game: winner (+r) and loser (-r).
+    for g in game_results:
+        rv = int(np.clip(getattr(g, "reward_value", 1), 1, 3))
+        reward_bins[rv + 2] += 1.0      # +1,+2,+3 -> idx 3,4,5
+        reward_bins[3 - rv] += 1.0      # -1,-2,-3 -> idx 2,1,0
+    total = float(np.sum(reward_bins))
+    if total > 0:
+        reward_probs = (reward_bins / total).astype(np.float32).tolist()
+    else:
+        reward_probs = np.full((6,), 1.0 / 6.0, dtype=np.float32).tolist()
+
+    ended_natural = float(sum(1 for g in game_results if not bool(getattr(g, "ended_by_double_reject", False))))
+    ended_total = float(len(game_results))
+    ended_natural_freq = (ended_natural / ended_total) if ended_total > 0 else 0.0
+
+    avg_steps_per_game = float(np.mean([float(getattr(g, "turns", 0)) for g in game_results])) if game_results else 0.0
+
+    offers_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+    games_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+    accept_cnt_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+    accept_opp_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+
+    for g in game_results:
+        p1 = getattr(g, "player_1_id", None)
+        p2 = getattr(g, "player_2_id", None)
+        if p1 in games_by_agent:
+            games_by_agent[p1] += 1.0
+        if p2 in games_by_agent:
+            games_by_agent[p2] += 1.0
+
+        for st in getattr(g, "steps", []):
+            aid = st.get("agent_id")
+            if aid in offers_by_agent and bool(st.get("double_offered_by_agent", False)):
+                offers_by_agent[aid] += 1.0
+            if aid in accept_cnt_by_agent and bool(st.get("accept_double_opportunity", False)):
+                accept_opp_by_agent[aid] += 1.0
+                if bool(st.get("accept_double_opponent", False)):
+                    accept_cnt_by_agent[aid] += 1.0
+
+    offers_per_game_by_agent = {
+        aid: float(offers_by_agent[aid] / games_by_agent[aid]) if games_by_agent[aid] > 0 else 0.0
+        for aid in agent_ids
+    }
+    accept_prob_by_agent = {
+        aid: float(accept_cnt_by_agent[aid] / accept_opp_by_agent[aid]) if accept_opp_by_agent[aid] > 0 else 0.0
+        for aid in agent_ids
+    }
+
+    mean_offers_per_game = float(np.mean(list(offers_per_game_by_agent.values()))) if offers_per_game_by_agent else 0.0
+    mean_accept_prob = float(np.mean(list(accept_prob_by_agent.values()))) if accept_prob_by_agent else 0.0
+
+    return {
+        "signed_reward_probs": reward_probs,
+        "ended_natural_freq": ended_natural_freq,
+        "avg_steps_per_game": avg_steps_per_game,
+        "offers_per_game_by_agent": offers_per_game_by_agent,
+        "offers_per_game_mean": mean_offers_per_game,
+        "accept_prob_by_agent": accept_prob_by_agent,
+        "accept_prob_mean": mean_accept_prob,
+    }
+
 def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     player_index = step.get("player_index")
     if player_index is not None:
@@ -234,6 +298,8 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             gpu_mem = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
             torch.cuda.reset_peak_memory_stats()
 
+        games_stats = _games_stats(game_results, all_agent_ids)
+
         metrics = {
             "epoch": epoch,
             "epoch_total_sec": max(time.time() - epoch_t0, 1e-6),
@@ -256,6 +322,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             "decision_count": int(decision_stats["decision_count"]),
             "decision_topk_freq": decision_stats["topk_freq"],
             "agents": per_agent,
+            "games_stats": games_stats,
         }
         metrics_history.append(metrics)
 
