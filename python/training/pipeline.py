@@ -15,15 +15,16 @@ from .plotting import load_metrics_history_from_checkpoints, plot_metrics_histor
 
 
 MATCH_VECTOR_DIM = 12
-MODEL_OUTPUT_DIM = 25
+REWARD_VECTOR_DIM = 6
+MODEL_OUTPUT_DIM = 31
 
 
 def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
     vec = np.asarray(state_vector, dtype=np.float32).reshape(-1)
-    if vec.size < 2:
+    if vec.size < 6:
         return MATCH_VECTOR_DIM - 1, MATCH_VECTOR_DIM - 1
-    my_left = int(np.clip(np.round(float(vec[-2])), 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(vec[-1])), 0, MATCH_VECTOR_DIM - 1))
+    my_left = int(np.clip(np.round(float(vec[-6])), 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(vec[-5])), 0, MATCH_VECTOR_DIM - 1))
     return my_left, opp_left
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -34,6 +35,70 @@ def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list
             pair.append(g)
     return pair
 
+
+
+def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
+    reward_bins = np.zeros((6,), dtype=np.float64)
+    # Two signed outcomes per game: winner (+r) and loser (-r).
+    for g in game_results:
+        rv = int(np.clip(getattr(g, "reward_value", 1), 1, 3))
+        reward_bins[rv + 2] += 1.0      # +1,+2,+3 -> idx 3,4,5
+        reward_bins[3 - rv] += 1.0      # -1,-2,-3 -> idx 2,1,0
+    total = float(np.sum(reward_bins))
+    if total > 0:
+        reward_probs = (reward_bins / total).astype(np.float32).tolist()
+    else:
+        reward_probs = np.full((6,), 1.0 / 6.0, dtype=np.float32).tolist()
+
+    ended_natural = float(sum(1 for g in game_results if not bool(getattr(g, "ended_by_double_reject", False))))
+    ended_total = float(len(game_results))
+    ended_natural_freq = (ended_natural / ended_total) if ended_total > 0 else 0.0
+
+    avg_steps_per_game = float(np.mean([float(getattr(g, "turns", 0)) for g in game_results])) if game_results else 0.0
+
+    offers_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+    games_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+    accept_cnt_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+    accept_opp_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
+
+    for g in game_results:
+        p1 = getattr(g, "player_1_id", None)
+        p2 = getattr(g, "player_2_id", None)
+        if p1 in games_by_agent:
+            games_by_agent[p1] += 1.0
+        if p2 in games_by_agent:
+            games_by_agent[p2] += 1.0
+
+        for st in getattr(g, "steps", []):
+            aid = st.get("agent_id")
+            if aid in offers_by_agent and bool(st.get("double_offered_by_agent", False)):
+                offers_by_agent[aid] += 1.0
+            if aid in accept_cnt_by_agent and bool(st.get("accept_double_opportunity", False)):
+                accept_opp_by_agent[aid] += 1.0
+                if bool(st.get("accept_double_opponent", False)):
+                    accept_cnt_by_agent[aid] += 1.0
+
+    offers_per_game_by_agent = {
+        aid: float(offers_by_agent[aid] / games_by_agent[aid]) if games_by_agent[aid] > 0 else 0.0
+        for aid in agent_ids
+    }
+    accept_prob_by_agent = {
+        aid: float(accept_cnt_by_agent[aid] / accept_opp_by_agent[aid]) if accept_opp_by_agent[aid] > 0 else 0.0
+        for aid in agent_ids
+    }
+
+    mean_offers_per_game = float(np.mean(list(offers_per_game_by_agent.values()))) if offers_per_game_by_agent else 0.0
+    mean_accept_prob = float(np.mean(list(accept_prob_by_agent.values()))) if accept_prob_by_agent else 0.0
+
+    return {
+        "signed_reward_probs": reward_probs,
+        "ended_natural_freq": ended_natural_freq,
+        "avg_steps_per_game": avg_steps_per_game,
+        "offers_per_game_by_agent": offers_per_game_by_agent,
+        "offers_per_game_mean": mean_offers_per_game,
+        "accept_prob_by_agent": accept_prob_by_agent,
+        "accept_prob_mean": mean_accept_prob,
+    }
 
 def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     player_index = step.get("player_index")
@@ -53,12 +118,14 @@ def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     my_vec[my_next] = 1.0
     opp_vec[opp_next] = 1.0
 
-    double_offered = bool(step.get("double_offered_by_agent", False))
-    double_accepted = bool(step.get("double_was_accepted", False))
-    accept_target = np.array([1.0 if (double_offered and double_accepted) else 0.0], dtype=np.float32)
-    accept_mask = np.array([1.0 if double_offered else 0.0], dtype=np.float32)
+    accept_target = np.array([1.0 if bool(step.get("accept_double_opponent", False)) else 0.0], dtype=np.float32)
 
-    out = np.concatenate([my_vec, opp_vec, accept_target, accept_mask], dtype=np.float32)
+    reward_value = int(np.clip(getattr(game, "reward_value", 1), 1, 3))
+    signed_reward = reward_value if won else -reward_value
+    reward_vec = np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
+    reward_vec[signed_reward + 3 - (1 if signed_reward > 0 else 0)] = 1.0
+
+    out = np.concatenate([my_vec, opp_vec, accept_target, reward_vec], dtype=np.float32)
     return out
 
 
@@ -112,6 +179,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
     all_agent_ids = [x.agent_id for x in agents] + ["conservative_baseline"]
 
     current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
+    current_choose_best_probability = float(cfg.league.choose_best_probability)
 
     for epoch in range(start_epoch, cfg.train.num_epochs):
         epoch_t0 = time.time()
@@ -119,6 +187,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         print("[1/6] Self-play started")
         play_t0 = time.time()
         league.set_decision_temperature(current_temperature)
+        league.set_choose_best_probability(current_choose_best_probability)
         game_results, games_sec = league.run_epoch(agents, epoch)
         decision_stats = league.get_decision_stats()
         play_dt = max(time.time() - play_t0, 1e-6)
@@ -229,6 +298,8 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             gpu_mem = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
             torch.cuda.reset_peak_memory_stats()
 
+        games_stats = _games_stats(game_results, all_agent_ids)
+
         metrics = {
             "epoch": epoch,
             "epoch_total_sec": max(time.time() - epoch_t0, 1e-6),
@@ -247,9 +318,11 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                 "replay_sampling_sec": replay_sample_time_total,
             },
             "decision_temperature": float(current_temperature),
+            "choose_best_probability": float(current_choose_best_probability),
             "decision_count": int(decision_stats["decision_count"]),
             "decision_topk_freq": decision_stats["topk_freq"],
             "agents": per_agent,
+            "games_stats": games_stats,
         }
         metrics_history.append(metrics)
 
@@ -271,5 +344,6 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
 
         current_temperature *= float(cfg.league.temperature_decay)
+        current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
 
     return metrics_history

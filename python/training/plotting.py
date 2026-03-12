@@ -181,12 +181,16 @@ def plot_metrics_history(
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
     decision_dir = out_dir / "decision_temperature"
+    replay_dir = out_dir / "graphs" / "replay"
+    games_stats_dir = out_dir / "games_stats"
     step_t0 = time.perf_counter()
     winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    games_stats_dir.mkdir(parents=True, exist_ok=True)
     _print_plot_timing("prepare output directories", step_t0, plot_total_t0)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
@@ -203,6 +207,16 @@ def plot_metrics_history(
     )
 
     step_t0 = time.perf_counter()
+    if replay_sizes:
+        plt.figure(figsize=(18, 9))
+        plt.plot(xs, replay_sizes)
+        plt.title("Replay size")
+        plt.xlabel("epoch")
+        plt.ylabel("samples")
+        plt.tight_layout()
+        plt.savefig(replay_dir / "replay_size.png")
+        plt.close()
+
     temps = [float(m.get("decision_temperature", np.nan)) for m in metrics_history]
     if any(np.isfinite(v) for v in temps):
         plt.figure(figsize=(18, 9))
@@ -212,6 +226,18 @@ def plot_metrics_history(
         plt.ylabel("temperature")
         plt.tight_layout()
         plt.savefig(decision_dir / "decision_temperature.png")
+        plt.close()
+
+    choose_best_probs = [float(m.get("choose_best_probability", np.nan)) for m in metrics_history]
+    if any(np.isfinite(v) for v in choose_best_probs):
+        plt.figure(figsize=(18, 9))
+        plt.plot(xs, choose_best_probs)
+        plt.title("Choose-best probability")
+        plt.xlabel("epoch")
+        plt.ylabel("probability")
+        plt.ylim(0.0, 1.0)
+        plt.tight_layout()
+        plt.savefig(decision_dir / "choose_best_probability.png")
         plt.close()
 
     for k in range(1, 11):
@@ -230,6 +256,79 @@ def plot_metrics_history(
             plt.savefig(decision_dir / f"selected_action_top_{k}.png")
             plt.close()
     _print_plot_timing("decision-temperature and top-k plots", step_t0, plot_total_t0)
+
+    step_t0 = time.perf_counter()
+    reward_labels = ["-3", "-2", "-1", "+1", "+2", "+3"]
+    reward_colors = ["#8b0000", "#d95f02", "#e6ab02", "#66a61e", "#1b9e77", "#1f78b4"]
+    signed_reward_probs_series = [np.asarray(m.get("games_stats", {}).get("signed_reward_probs", [np.nan] * 6), dtype=np.float64) for m in metrics_history]
+    if signed_reward_probs_series:
+        arr = np.vstack(signed_reward_probs_series)
+        if np.any(np.isfinite(arr)):
+            plt.figure(figsize=(18, 9))
+            plt.stackplot(xs, [arr[:, i] for i in range(6)], labels=reward_labels, colors=reward_colors, alpha=0.9)
+            plt.title("Signed reward distribution")
+            plt.xlabel("epoch")
+            plt.ylabel("probability")
+            plt.ylim(0.0, 1.0)
+            plt.legend(loc="upper right", ncol=3, fontsize=8)
+            plt.tight_layout()
+            plt.savefig(games_stats_dir / "signed_reward_distribution.png")
+            plt.close()
+
+    ended_natural = [float(m.get("games_stats", {}).get("ended_natural_freq", np.nan)) for m in metrics_history]
+    if any(np.isfinite(v) for v in ended_natural):
+        plt.figure(figsize=(18, 9))
+        plt.plot(xs, ended_natural)
+        plt.title("Frequency of naturally finished games")
+        plt.xlabel("epoch")
+        plt.ylabel("frequency")
+        plt.ylim(0.0, 1.0)
+        plt.tight_layout()
+        plt.savefig(games_stats_dir / "natural_finish_frequency.png")
+        plt.close()
+
+    avg_steps = [float(m.get("games_stats", {}).get("avg_steps_per_game", np.nan)) for m in metrics_history]
+    if any(np.isfinite(v) for v in avg_steps):
+        plt.figure(figsize=(18, 9))
+        plt.plot(xs, avg_steps)
+        plt.title("Average steps per game")
+        plt.xlabel("epoch")
+        plt.ylabel("steps")
+        plt.tight_layout()
+        plt.savefig(games_stats_dir / "avg_steps_per_game.png")
+        plt.close()
+
+    agent_ids = sorted(metrics_history[-1].get("games_stats", {}).get("offers_per_game_by_agent", {}).keys())
+    if agent_ids:
+        plt.figure(figsize=(18, 9))
+        for aid in agent_ids:
+            series = [float(m.get("games_stats", {}).get("offers_per_game_by_agent", {}).get(aid, np.nan)) for m in metrics_history]
+            plt.plot(xs, series, alpha=0.55, linewidth=1.2, label=aid)
+        mean_series = [float(m.get("games_stats", {}).get("offers_per_game_mean", np.nan)) for m in metrics_history]
+        plt.plot(xs, mean_series, color="black", linewidth=2.8, label="mean")
+        plt.title("Double offers per game")
+        plt.xlabel("epoch")
+        plt.ylabel("offers / game")
+        plt.legend(fontsize=6, ncol=3)
+        plt.tight_layout()
+        plt.savefig(games_stats_dir / "double_offers_per_game_by_agent.png")
+        plt.close()
+
+        plt.figure(figsize=(18, 9))
+        for aid in agent_ids:
+            series = [float(m.get("games_stats", {}).get("accept_prob_by_agent", {}).get(aid, np.nan)) for m in metrics_history]
+            plt.plot(xs, series, alpha=0.55, linewidth=1.2, label=aid)
+        mean_series = [float(m.get("games_stats", {}).get("accept_prob_mean", np.nan)) for m in metrics_history]
+        plt.plot(xs, mean_series, color="black", linewidth=2.8, label="mean")
+        plt.title("Double acceptance probability")
+        plt.xlabel("epoch")
+        plt.ylabel("probability")
+        plt.ylim(0.0, 1.0)
+        plt.legend(fontsize=6, ncol=3)
+        plt.tight_layout()
+        plt.savefig(games_stats_dir / "double_accept_prob_by_agent.png")
+        plt.close()
+    _print_plot_timing("games-stats plots", step_t0, plot_total_t0)
 
     step_t0 = time.perf_counter()
     fixed_opponents = {"conservative_baseline"}
