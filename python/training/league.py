@@ -395,7 +395,7 @@ class LeagueController:
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
         self._baseline_eval_agent: ValueAgent | None = None
-        self._agents_double_decision_enabled: bool = True
+        self._agents_double_decision_enabled_by_agent: dict[str, bool] = {}
         self._ensemble_base_model_cache: dict[tuple, torch.nn.Module] = {}
         self._obs_probe_env = None
         self._move_eval_env = bg_env.Env(int(seed) + 11) if bg_env is not None else _FallbackEnv(int(seed) + 11)
@@ -416,7 +416,10 @@ class LeagueController:
         self.choose_best_probability = float(np.clip(choose_best_probability, 0.0, 1.0))
 
     def set_agents_double_decision_enabled(self, enabled: bool) -> None:
-        self._agents_double_decision_enabled = bool(enabled)
+        self._agents_double_decision_enabled_by_agent = {k: bool(enabled) for k in self._agents_double_decision_enabled_by_agent}
+
+    def _is_agent_double_decision_enabled(self, agent_id: str) -> bool:
+        return bool(self._agents_double_decision_enabled_by_agent.get(agent_id, True))
 
     def reset_decision_stats(self) -> None:
         self._decision_topk_hits.fill(0.0)
@@ -558,7 +561,7 @@ class LeagueController:
             accept_eval_obs.append(_set_obs_opponent_double_offer(post_obs))
             accept_eval_owner.append(i)
 
-        if self._agents_double_decision_enabled and accept_eval_obs:
+        if accept_eval_obs:
             probs_accept = self._predict_probs_single_cuda_call([evaluator for _ in range(len(accept_eval_obs))], np.stack(accept_eval_obs).astype(np.float32))
             for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs):
                 obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
@@ -676,18 +679,23 @@ class LeagueController:
         else:
             base_obs = np.stack([self.state_vector_from_raw(states[i]) for i in range(len(legal_moves_list))]).astype(np.float32)
 
-        if actors and self._agents_double_decision_enabled:
-            probs_now = self._predict_probs_single_cuda_call(actors, base_obs)
-            obs_double_batch = np.stack([_set_obs_double_state(x) for x in base_obs]).astype(np.float32)
-            probs_double = self._predict_probs_single_cuda_call(actors, obs_double_batch)
-            for i in range(len(actors)):
+        enabled_for_double = [self._is_agent_double_decision_enabled(a.agent_id) for a in actors]
+        if actors and any(enabled_for_double):
+            enabled_idx = np.flatnonzero(np.asarray(enabled_for_double, dtype=bool))
+            enabled_actors = [actors[int(i)] for i in enabled_idx]
+            enabled_obs = base_obs[enabled_idx]
+            probs_now = self._predict_probs_single_cuda_call(enabled_actors, enabled_obs)
+            obs_double_batch = np.stack([_set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
+            probs_double = self._predict_probs_single_cuda_call(enabled_actors, obs_double_batch)
+            for local_i, i in enumerate(enabled_idx):
+                i = int(i)
                 if _is_endless_state(states[i]):
-                    p_accept = float(np.clip(probs_now[i][MATCH_VECTOR_DIM * 2], 0.0, 1.0))
-                    exp_no_double = _reward_expectation(probs_now[i])
-                    exp_double = p_accept * 2.0 * _reward_expectation(probs_double[i]) + (1.0 - p_accept) * 1.0
+                    p_accept = float(np.clip(probs_now[local_i][MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+                    exp_no_double = _reward_expectation(probs_now[local_i])
+                    exp_double = p_accept * 2.0 * _reward_expectation(probs_double[local_i]) + (1.0 - p_accept) * 1.0
                     apply_doubles[i] = int(exp_double > exp_no_double)
                 else:
-                    apply_doubles[i] = _decide_apply_double(probs_now[i], probs_double[i], base_obs[i])
+                    apply_doubles[i] = _decide_apply_double(probs_now[local_i], probs_double[local_i], base_obs[i])
 
         candidate_obs: list[np.ndarray] = []
         candidate_done: list[bool] = []
@@ -759,6 +767,9 @@ class LeagueController:
             _, _, _, _, opp_double_avail = _extract_obs_controls(post_obs)
             if opp_double_avail <= 0:
                 accept_doubles[i] = 0
+                continue
+            if i < len(actors) and not enabled_for_double[i]:
+                accept_doubles[i] = 1
                 continue
             accept_eval_obs.append(_set_obs_opponent_double_offer(post_obs))
             accept_eval_actor.append(actors[i])
@@ -1068,7 +1079,10 @@ class LeagueController:
             self._baseline_eval_agent = None
 
         agents_double_decision_prob = float(np.clip(getattr(self.cfg, "agents_double_decision_prob", 0.0), 0.0, 1.0))
-        self._agents_double_decision_enabled = bool(self.rng.random() < agents_double_decision_prob)
+        self._agents_double_decision_enabled_by_agent = {
+            a.agent_id: bool(self.rng.random() < agents_double_decision_prob)
+            for a in trainable_agents
+        }
         opponents = [self.conservative_baseline]
         specs: list[_GameSpec] = []
 
