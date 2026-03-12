@@ -851,14 +851,18 @@ class LeagueController:
                 apply_doubles[idxs_np] = local_apply
                 accept_doubles[idxs_np] = local_accept
 
-            if baseline_idxs and self._baseline_eval_agent is not None:
+            if baseline_idxs:
                 b_idx = np.asarray(baseline_idxs, dtype=np.int64)
-                b_states = states[b_idx]
-                b_actions = actions[b_idx]
-                b_obs = obs_extended_batch[b_idx] if obs_extended_batch is not None else None
-                b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
-                apply_doubles[b_idx] = b_apply
-                accept_doubles[b_idx] = b_accept
+                if self._baseline_eval_agent is not None:
+                    b_states = states[b_idx]
+                    b_actions = actions[b_idx]
+                    b_obs = obs_extended_batch[b_idx] if obs_extended_batch is not None else None
+                    b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
+                    apply_doubles[b_idx] = b_apply
+                    accept_doubles[b_idx] = b_accept
+                else:
+                    apply_doubles[b_idx] = 0
+                    accept_doubles[b_idx] = 1
 
             try:
                 step_ret = env.step_apply(actions, apply_doubles, accept_doubles)
@@ -999,7 +1003,7 @@ class LeagueController:
                     accept_double = int(b_accept[0])
                 else:
                     apply_double = 0
-                    accept_double = 0
+                    accept_double = 1
             else:
                 lm = env.legal_moves()
                 local_moves = lm[1] if isinstance(lm, tuple) else lm
@@ -1053,7 +1057,7 @@ class LeagueController:
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
         self.reset_decision_stats()
-        if trainable_agents:
+        if trainable_agents and self.rng.random() < float(np.clip(getattr(self.cfg, "baseline_conservative_double_copy_prob", 0.0), 0.0, 1.0)):
             self._baseline_eval_agent = trainable_agents[int(self.rng.integers(0, len(trainable_agents)))]
         else:
             self._baseline_eval_agent = None

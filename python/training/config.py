@@ -62,6 +62,7 @@ class LeagueConfig:
     temperature_decay: float = 1
     choose_best_probability: float = 0.5
     choose_best_decay: float = 0.9
+    baseline_conservative_double_copy_prob: float = 0.0
     checkpoint_frequency_epochs: int = 1
 
 
