@@ -416,6 +416,7 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
                dave_value, n_games, white_score, black_score,
                cube_owner_visual, cube_clickable, cube_offer_pending,
                cube_offer_to_white, show_roll_button,
+               endless_mode=False, endless_white_score=0, endless_black_score=0, endless_game_number=1,
                piece_anim=None, shake_anim=None, cube_shake_anim=None, cube_move_anim=None):
     surface.fill(APP_BG)
     pygame.draw.rect(surface, FRAME, (0, 0, BOARD_W, H))
@@ -425,7 +426,10 @@ def draw_board(surface, font, mine, opp, mine_bar, mine_off, opp_bar, opp_off, p
     pygame.draw.line(surface, DIV, (0, HEADER_H), (BOARD_W, HEADER_H), 2)
 
     draw_text(surface, font, f"turn={ply}", 16, 10)
-    draw_text(surface, font, f"match to {n_games} | white: {white_score}  black: {black_score}", 150, 10)
+    if endless_mode:
+        draw_text(surface, font, f"endless game #{endless_game_number} | white: {endless_white_score}  black: {endless_black_score}", 150, 10)
+    else:
+        draw_text(surface, font, f"match to {n_games} | white: {white_score}  black: {black_score}", 150, 10)
 
     bar_x0 = MARGIN + 6 * POINT_W + GAP
     bar_rect = pygame.Rect(bar_x0, TOP, BAR_W, BOTTOM - TOP)
@@ -659,6 +663,21 @@ def main():
 
     turn_white = is_white_turn_from_env()
     info_lines = ["Started. Click points (or bar) to move checkers."]
+    endless_white_score = 0
+    endless_black_score = 0
+    endless_game_number = 1
+
+    def on_endless_game_finished(mover_was_white: bool, reward_points: int):
+        nonlocal endless_white_score, endless_black_score, endless_game_number
+        if reward_points <= 0:
+            return
+        if mover_was_white:
+            endless_white_score += int(reward_points)
+            endless_black_score -= int(reward_points)
+        else:
+            endless_white_score -= int(reward_points)
+            endless_black_score += int(reward_points)
+        endless_game_number += 1
 
     def refresh_moves():
         double_possible, arr = env.legal_moves(LEGAL_MOVES_UNIQUE)
@@ -745,12 +764,15 @@ def main():
 
     def apply_committed_move(chosen_mv: np.ndarray, value_hint=None, use_current_state: bool = False):
         nonlocal turn_white, macro_pending_submit
+        mover_was_white = bool(turn_white)
         mv = np.asarray(chosen_mv, dtype=np.uint8)
         if use_current_state:
             mv = np.full((8,), 255, dtype=np.uint8)
         else:
             set_env_state(turn_start_state)
         reward, _dave_after, _accepted, done_code = env.step_move(mv, apply_double=0, accept_double=1)
+        if int(n_games) <= 0 and agent_mode == "none" and int(done_code) in (1, 2):
+            on_endless_game_finished(mover_was_white, int(reward))
         value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
         info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done_code}{value_suffix}")
         if done_code == 2:
@@ -845,6 +867,7 @@ def main():
         clock.tick(FPS)
         raw = get_env_state()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
+        endless_mode = int(n_games) <= 0
         dave_value_ui = int(dave_value)
 
         if turn_white:
@@ -939,8 +962,11 @@ def main():
             screen, font, view_mine, view_opp, white_bar, view_mine_off, black_bar, view_opp_off,
             ply, turn_white, dice_values, used_dice, required_dice, active_idx, can_submit,
             dave_value_ui, n_games, white_score, black_score,
-            cube_owner_visual, cube_clickable, cube_offer_pending,
-            cube_offer_to_white, show_roll_button, piece_anim, shake_anim, cube_shake_anim, cube_move_anim
+            cube_owner_visual=cube_owner_visual, cube_clickable=cube_clickable, cube_offer_pending=cube_offer_pending,
+            cube_offer_to_white=cube_offer_to_white, show_roll_button=show_roll_button,
+            endless_mode=endless_mode, endless_white_score=endless_white_score,
+            endless_black_score=endless_black_score, endless_game_number=endless_game_number,
+            piece_anim=piece_anim, shake_anim=shake_anim, cube_shake_anim=cube_shake_anim, cube_move_anim=cube_move_anim
         )
         obs_extended = np.asarray(env.get_obs_extended(), dtype=np.float32)
         sh = _global_indexed_prob_row(obs_extended[OBS_BASE_HIT_SELF:OBS_BASE_HIT_SELF + OBS_POINTS])
@@ -1049,7 +1075,11 @@ def main():
                     continue
 
                 if cube_offer_pending and reject_rect is not None and reject_rect.collidepoint(mx, my):
+                    offerer_is_white = bool(cube_offer_from_white)
+                    dave_before_reject = int(dave_value_ui)
                     _dave_after, _accepted, done_code = env.resolve_pending_double(0)
+                    if endless_mode and agent_mode == "none" and int(done_code) in (1, 2):
+                        on_endless_game_finished(offerer_is_white, dave_before_reject)
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None
                     cube_offer_pending = False
