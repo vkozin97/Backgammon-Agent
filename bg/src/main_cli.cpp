@@ -31,7 +31,7 @@ static int run_selftest() {
         float obs_compact[bg::OBS_COMPACT_DIM];
         float obs_extended[bg::OBS_EXTENDED_DIM];
         bg::get_obs_compact(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), obs_compact);
-        bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), env.n_games(), env.cube_available_mine(), env.cube_available_opp(), obs_extended);
+        bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), env.n_games(), env.cube_available_mine(), env.cube_available_opp(), env.is_crawford_game(), env.double_offered(), obs_extended);
 
         if (!is_finite_array(obs_compact, bg::OBS_COMPACT_DIM) || !is_finite_array(obs_extended, bg::OBS_EXTENDED_DIM)) {
             std::cerr << "[FAIL] non-finite observation at t=" << t << "\n";
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
 
     // Extended obs
     float obs_e[bg::OBS_EXTENDED_DIM];
-    bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), env.n_games(), env.cube_available_mine(), env.cube_available_opp(), obs_e);
+    bg::get_obs_extended(env.state(), env.current_dice(), env.mine_score(), env.opp_score(), env.dave_value(), env.n_games(), env.cube_available_mine(), env.cube_available_opp(), env.is_crawford_game(), env.double_offered(), obs_e);
     std::cout << "OBS_EXTENDED_DIM=" << bg::OBS_EXTENDED_DIM << "\n";
     std::cout << "extended metrics (last " << bg::OBS_EXTENDED_SCALARS_DIM << "): ";
     for (int i = bg::OBS_EXTENDED_DIM - bg::OBS_EXTENDED_SCALARS_DIM; i < bg::OBS_EXTENDED_DIM; ++i) {

@@ -11,8 +11,9 @@ from .observation import POINTS_DIM, VECTOR_CHANNELS
 
 
 MATCH_VECTOR_DIM = 12
+REWARD_VECTOR_DIM = 6
 ACCEPT_HEAD_DIM = 1
-TOTAL_OUTPUT_DIM = MATCH_VECTOR_DIM * 2 + ACCEPT_HEAD_DIM
+TOTAL_OUTPUT_DIM = MATCH_VECTOR_DIM * 2 + ACCEPT_HEAD_DIM + REWARD_VECTOR_DIM
 
 
 def _activation(name: str) -> nn.Module:
@@ -196,10 +197,12 @@ class ValueAgent:
         my_logits = logits[:, :MATCH_VECTOR_DIM]
         opp_logits = logits[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
         accept_logits = logits[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+        reward_logits = logits[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
         my_probs = torch.softmax(my_logits, dim=1)
         opp_probs = torch.softmax(opp_logits, dim=1)
         accept_prob = torch.sigmoid(accept_logits)
-        return torch.cat([my_probs, opp_probs, accept_prob], dim=1)
+        reward_probs = torch.softmax(reward_logits, dim=1)
+        return torch.cat([my_probs, opp_probs, accept_prob, reward_probs], dim=1)
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         logits = self.predict_logits(x, training=False)
@@ -221,7 +224,7 @@ class ValueAgent:
         self.model.train(True)
         self.optimizer.zero_grad(set_to_none=True)
         logits = self.model(x_t)
-        y_expanded, accept_mask = self._expand_targets(y_t, logits.shape[1])
+        y_expanded = self._expand_targets(y_t, logits.shape[1])
 
         my_logits = logits[:, :MATCH_VECTOR_DIM]
         opp_logits = logits[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
@@ -230,22 +233,21 @@ class ValueAgent:
         my_target = y_expanded[:, :MATCH_VECTOR_DIM]
         opp_target = y_expanded[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
         accept_target = y_expanded[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+        reward_target = y_expanded[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
 
         if self.loss_type == "mse":
             probs = self._probs_from_logits(logits)
-            loss_main = torch.mean((probs[:, : MATCH_VECTOR_DIM * 2] - y_expanded[:, : MATCH_VECTOR_DIM * 2]) ** 2)
+            loss_main = torch.mean((probs[:, : MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM] - y_expanded[:, : MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]) ** 2)
         elif self.loss_type == "smooth_l1":
             probs = self._probs_from_logits(logits)
-            loss_main = torch.nn.functional.smooth_l1_loss(probs[:, : MATCH_VECTOR_DIM * 2], y_expanded[:, : MATCH_VECTOR_DIM * 2])
+            loss_main = torch.nn.functional.smooth_l1_loss(probs[:, : MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM], y_expanded[:, : MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM])
         else:
             loss_my = -torch.mean(torch.sum(my_target * torch.log_softmax(my_logits, dim=1), dim=1))
             loss_opp = -torch.mean(torch.sum(opp_target * torch.log_softmax(opp_logits, dim=1), dim=1))
-            loss_main = 0.5 * (loss_my + loss_opp)
+            loss_reward = -torch.mean(torch.sum(reward_target * torch.log_softmax(logits[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM], dim=1), dim=1))
+            loss_main = (loss_my + loss_opp + loss_reward) / 3.0
 
-        bce = torch.nn.functional.binary_cross_entropy_with_logits(accept_logits, accept_target, reduction="none")
-        masked_bce = bce * accept_mask
-        accept_denom = torch.clamp(torch.sum(accept_mask), min=1.0)
-        loss_accept = torch.sum(masked_bce) / accept_denom
+        loss_accept = torch.nn.functional.binary_cross_entropy_with_logits(accept_logits, accept_target)
 
         loss = loss_main + loss_accept
         loss.backward()
@@ -285,29 +287,28 @@ class ValueAgent:
             adapted_state[key] = cur_tensor
         self.model.load_state_dict(adapted_state, strict=False)
 
-    def _expand_targets(self, y_t: torch.Tensor, output_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def _expand_targets(self, y_t: torch.Tensor, output_dim: int) -> torch.Tensor:
         if y_t.ndim == 1:
             y_t = y_t.unsqueeze(1)
 
         if y_t.shape[1] == output_dim + 1:
-            accept_mask = y_t[:, output_dim: output_dim + 1]
             y_main = y_t[:, :output_dim]
         elif y_t.shape[1] == output_dim:
-            accept_mask = torch.ones((y_t.shape[0], 1), dtype=y_t.dtype, device=y_t.device)
             y_main = y_t
         else:
-            raise ValueError(f"Target dim {y_t.shape[1]} does not match model output dim {output_dim} (or {output_dim + 1} with mask)")
+            raise ValueError(f"Target dim {y_t.shape[1]} does not match model output dim {output_dim} (or {output_dim + 1} legacy format)")
 
         my = y_main[:, :MATCH_VECTOR_DIM]
         opp = y_main[:, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
         acc = y_main[:, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1]
+        reward = y_main[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
 
         my = my / torch.clamp(torch.sum(my, dim=1, keepdim=True), min=1e-8)
         opp = opp / torch.clamp(torch.sum(opp, dim=1, keepdim=True), min=1e-8)
+        reward = reward / torch.clamp(torch.sum(reward, dim=1, keepdim=True), min=1e-8)
         acc = torch.clamp(acc, 0.0, 1.0)
-        accept_mask = torch.clamp(accept_mask, 0.0, 1.0)
 
-        return torch.cat([my, opp, acc], dim=1), accept_mask
+        return torch.cat([my, opp, acc, reward], dim=1)
 
     def _loss_weights_tensor(self, output_dim: int, device: torch.device) -> torch.Tensor:
         if self.loss_weights.size == output_dim:

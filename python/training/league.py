@@ -30,7 +30,17 @@ except Exception:  # pragma: no cover
 
 
 MATCH_VECTOR_DIM = 12
-MODEL_OUTPUT_DIM = 25
+MODEL_OUTPUT_DIM = 31
+
+REWARD_VECTOR_DIM = 6
+REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
+
+def _reward_expectation(probs_row: np.ndarray) -> float:
+    p = np.asarray(probs_row, dtype=np.float32)
+    reward_head = p[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    if reward_head.size != REWARD_VECTOR_DIM:
+        return 0.0
+    return float(np.dot(REWARD_VALUES, reward_head))
 
 
 def _mask_and_normalize_head(head_probs: np.ndarray, left_to_win: int) -> np.ndarray:
@@ -49,8 +59,8 @@ def _mask_and_normalize_head(head_probs: np.ndarray, left_to_win: int) -> np.nda
 
 def _mask_eval_outputs(probs_row: np.ndarray, obs: np.ndarray) -> np.ndarray:
     out = np.asarray(probs_row, dtype=np.float32).copy()
-    my_left = int(np.clip(np.round(float(obs[-2])) if obs.size >= 2 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(obs[-1])) if obs.size >= 1 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    my_left = int(np.clip(np.round(float(obs[-6])) if obs.size >= 6 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(obs[-5])) if obs.size >= 5 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
     out[:MATCH_VECTOR_DIM] = _mask_and_normalize_head(out[:MATCH_VECTOR_DIM], my_left)
     out[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2] = _mask_and_normalize_head(out[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2], opp_left)
     out[MATCH_VECTOR_DIM * 2] = float(np.clip(out[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
@@ -101,9 +111,9 @@ def _expected_match_win_prob(my_probs: np.ndarray, opp_probs: np.ndarray) -> flo
 
 def _extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
     v = np.asarray(obs, dtype=np.float32).reshape(-1)
-    my_left = int(np.clip(np.round(float(v[-2])) if v.size >= 2 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(v[-1])) if v.size >= 1 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    dave_val = int(max(1, round(float(v[-5])))) if v.size >= 5 else 1
+    my_left = int(np.clip(np.round(float(v[-6])) if v.size >= 6 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(v[-5])) if v.size >= 5 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    dave_val = int(max(1, round(float(v[-7])))) if v.size >= 7 else 1
     my_double_avail = int(round(float(v[-4]))) if v.size >= 4 else 0
     opp_double_avail = int(round(float(v[-3]))) if v.size >= 3 else 0
     return my_left, opp_left, dave_val, my_double_avail, opp_double_avail
@@ -111,12 +121,14 @@ def _extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
 
 def _set_obs_double_state(obs: np.ndarray) -> np.ndarray:
     x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 5:
-        x[-5] = x[-5] * 2.0
+    if x.size >= 7:
+        x[-7] = x[-7] * 2.0
     if x.size >= 4:
         x[-4] = 0.0
     if x.size >= 3:
         x[-3] = 1.0
+    if x.size >= 1:
+        x[-1] = 1.0
     return x
 
 
@@ -149,12 +161,14 @@ def _decide_apply_double(probs_now: np.ndarray, probs_after_double: np.ndarray, 
 
 def _set_obs_opponent_double_offer(obs: np.ndarray) -> np.ndarray:
     x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 5:
-        x[-5] = x[-5] * 2.0
+    if x.size >= 7:
+        x[-7] = x[-7] * 2.0
     if x.size >= 4:
         x[-4] = 1.0
     if x.size >= 3:
         x[-3] = 0.0
+    if x.size >= 1:
+        x[-1] = 1.0
     return x
 
 
@@ -163,6 +177,10 @@ def _reject_double_match_win_prob(obs_now: np.ndarray) -> float:
     opp_after = max(opp_left - int(max(dave_val, 1)), 0)
     return float(MET_TABLE[my_left, opp_after])
 
+
+def _is_endless_state(raw_state: np.ndarray) -> bool:
+    rs = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    return rs.size > 56 and int(rs[56]) < 0
 
 def _decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: np.ndarray) -> int:
     my_left, opp_left, _, _, opp_double_avail = _extract_obs_controls(obs_now)
@@ -216,6 +234,8 @@ class GameResult:
     player_2_id: str
     winner_player_index: int = 0
     points_won: int = 1
+    reward_value: int = 1
+    ended_by_double_reject: bool = False
 
 
 @dataclass
@@ -371,16 +391,18 @@ class LeagueController:
         self.random = RandomAgent()
         self.conservative_baseline = ConservativeBaselineAgent()
         self.decision_temperature = float(getattr(cfg, "selfplay_temperature", 0.0))
+        self.choose_best_probability = float(np.clip(getattr(cfg, "choose_best_probability", 0.5), 0.0, 1.0))
         self._decision_topk_hits = np.zeros((10,), dtype=np.float64)
         self._decision_count = 0
         self._baseline_eval_agent: ValueAgent | None = None
+        self._agents_double_decision_enabled_by_agent: dict[str, bool] = {}
         self._ensemble_base_model_cache: dict[tuple, torch.nn.Module] = {}
         self._obs_probe_env = None
         self._move_eval_env = bg_env.Env(int(seed) + 11) if bg_env is not None else _FallbackEnv(int(seed) + 11)
         self._accept_eval_env = bg_env.Env(int(seed) + 17) if bg_env is not None else _FallbackEnv(int(seed) + 17)
         if bg_env is not None:
             try:
-                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(cfg, "games_in_match", 11)))
+                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(self.cfg, "games_in_match", 11)))
             except TypeError:
                 try:
                     self._obs_probe_env = bg_env.Env(int(seed))
@@ -389,6 +411,15 @@ class LeagueController:
 
     def set_decision_temperature(self, temperature: float) -> None:
         self.decision_temperature = float(temperature)
+
+    def set_choose_best_probability(self, choose_best_probability: float) -> None:
+        self.choose_best_probability = float(np.clip(choose_best_probability, 0.0, 1.0))
+
+    def set_agents_double_decision_enabled(self, enabled: bool) -> None:
+        self._agents_double_decision_enabled_by_agent = {k: bool(enabled) for k in self._agents_double_decision_enabled_by_agent}
+
+    def _is_agent_double_decision_enabled(self, agent_id: str) -> bool:
+        return bool(self._agents_double_decision_enabled_by_agent.get(agent_id, True))
 
     def reset_decision_stats(self) -> None:
         self._decision_topk_hits.fill(0.0)
@@ -405,10 +436,14 @@ class LeagueController:
         }
 
     def _sample_action_index(self, values: np.ndarray) -> int:
-        temp = float(self.decision_temperature)
         vals = np.asarray(values, dtype=np.float64)
         if vals.size == 0:
             return 0
+
+        if self.rng.random() < float(np.clip(self.choose_best_probability, 0.0, 1.0)):
+            return int(np.argmax(vals))
+
+        temp = float(self.decision_temperature)
         if temp <= 0.0 or not np.all(np.isfinite(vals)):
             return int(np.argmax(vals))
 
@@ -499,7 +534,13 @@ class LeagueController:
         obs_double_batch = np.stack([_set_obs_double_state(x) for x in base_obs]).astype(np.float32)
         probs_double = self._predict_probs_single_cuda_call(eval_agents, obs_double_batch)
         for i in range(n):
-            apply_doubles[i] = _decide_apply_double(probs_now[i], probs_double[i], base_obs[i])
+            if _is_endless_state(states[i]):
+                p_accept = float(np.clip(probs_now[i][MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+                exp_no_double = _reward_expectation(probs_now[i])
+                exp_double = p_accept * 2.0 * _reward_expectation(probs_double[i]) + (1.0 - p_accept) * 1.0
+                apply_doubles[i] = int(exp_double > exp_no_double)
+            else:
+                apply_doubles[i] = _decide_apply_double(probs_now[i], probs_double[i], base_obs[i])
 
         accept_eval_obs: list[np.ndarray] = []
         accept_eval_owner: list[int] = []
@@ -524,13 +565,18 @@ class LeagueController:
             probs_accept = self._predict_probs_single_cuda_call([evaluator for _ in range(len(accept_eval_obs))], np.stack(accept_eval_obs).astype(np.float32))
             for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs):
                 obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
-                if obs_pre.size >= 5:
-                    obs_pre[-5] = obs_pre[-5] / 2.0
+                if obs_pre.size >= 7:
+                    obs_pre[-7] = obs_pre[-7] / 2.0
                 if obs_pre.size >= 4:
                     obs_pre[-4] = 0.0
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
-                accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
+                if _is_endless_state(states[owner]):
+                    exp_keep = -_reward_expectation(p_row)
+                    exp_double = -2.0 * _reward_expectation(p_row)
+                    accept_doubles[owner] = int(exp_double >= exp_keep)
+                else:
+                    accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
 
         return apply_doubles, accept_doubles
 
@@ -605,7 +651,8 @@ class LeagueController:
                 my = torch.softmax(logits_all[:, :, :MATCH_VECTOR_DIM], dim=-1)
                 opp = torch.softmax(logits_all[:, :, MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2], dim=-1)
                 acc = torch.sigmoid(logits_all[:, :, MATCH_VECTOR_DIM * 2: MATCH_VECTOR_DIM * 2 + 1])
-                probs_all = torch.cat([my, opp, acc], dim=-1)
+                rew = torch.softmax(logits_all[:, :, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM], dim=-1)
+                probs_all = torch.cat([my, opp, acc, rew], dim=-1)
                 model_idx_t = torch.as_tensor(model_idx, dtype=torch.long, device=device)
                 sample_idx_t = torch.arange(x_t.shape[0], dtype=torch.long, device=device)
                 probs = probs_all[model_idx_t, sample_idx_t, :]
@@ -625,19 +672,30 @@ class LeagueController:
     def _select_group_actions_single_call(self, states: np.ndarray, legal_moves_list: list[np.ndarray], actors: list[ValueAgent], obs_batch: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         actions = np.full((len(legal_moves_list), 8), 255, dtype=np.uint8)
         apply_doubles = np.zeros((len(legal_moves_list),), dtype=np.uint8)
-        accept_doubles = np.zeros((len(legal_moves_list),), dtype=np.uint8)
+        accept_doubles = np.ones((len(legal_moves_list),), dtype=np.uint8)
 
         if obs_batch is not None:
             base_obs = np.asarray(obs_batch, dtype=np.float32)
         else:
             base_obs = np.stack([self.state_vector_from_raw(states[i]) for i in range(len(legal_moves_list))]).astype(np.float32)
 
-        if actors:
-            probs_now = self._predict_probs_single_cuda_call(actors, base_obs)
-            obs_double_batch = np.stack([_set_obs_double_state(x) for x in base_obs]).astype(np.float32)
-            probs_double = self._predict_probs_single_cuda_call(actors, obs_double_batch)
-            for i in range(len(actors)):
-                apply_doubles[i] = _decide_apply_double(probs_now[i], probs_double[i], base_obs[i])
+        enabled_for_double = [self._is_agent_double_decision_enabled(a.agent_id) for a in actors]
+        if actors and any(enabled_for_double):
+            enabled_idx = np.flatnonzero(np.asarray(enabled_for_double, dtype=bool))
+            enabled_actors = [actors[int(i)] for i in enabled_idx]
+            enabled_obs = base_obs[enabled_idx]
+            probs_now = self._predict_probs_single_cuda_call(enabled_actors, enabled_obs)
+            obs_double_batch = np.stack([_set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
+            probs_double = self._predict_probs_single_cuda_call(enabled_actors, obs_double_batch)
+            for local_i, i in enumerate(enabled_idx):
+                i = int(i)
+                if _is_endless_state(states[i]):
+                    p_accept = float(np.clip(probs_now[local_i][MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+                    exp_no_double = _reward_expectation(probs_now[local_i])
+                    exp_double = p_accept * 2.0 * _reward_expectation(probs_double[local_i]) + (1.0 - p_accept) * 1.0
+                    apply_doubles[i] = int(exp_double > exp_no_double)
+                else:
+                    apply_doubles[i] = _decide_apply_double(probs_now[local_i], probs_double[local_i], base_obs[i])
 
         candidate_obs: list[np.ndarray] = []
         candidate_done: list[bool] = []
@@ -668,7 +726,8 @@ class LeagueController:
             candidate_obs_np = np.stack(candidate_obs).astype(np.float32)
             probs = self._predict_probs_single_cuda_call(candidate_actor, candidate_obs_np)
             vals = []
-            for is_done, p_row, obs_row in zip(np.asarray(candidate_done, dtype=bool), probs, candidate_obs_np):
+            done_np = np.asarray(candidate_done, dtype=bool)
+            for is_done, p_row, obs_row in zip(done_np, probs, candidate_obs_np):
                 if is_done:
                     vals.append(0.0)
                 else:
@@ -681,8 +740,13 @@ class LeagueController:
                 if len(moves) <= 1:
                     continue
                 values_i = np.asarray(grouped_vals[i], dtype=np.float32)
-                selected_idx = self._sample_action_index(-values_i)
-                self._record_topk_hit(-values_i, selected_idx)
+                if _is_endless_state(states[i]):
+                    values_i = -np.asarray([_reward_expectation(probs[j]) for j,o in enumerate(candidate_owner) if o==i], dtype=np.float32)
+                    selected_idx = self._sample_action_index(values_i)
+                    self._record_topk_hit(values_i, selected_idx)
+                else:
+                    selected_idx = self._sample_action_index(-values_i)
+                    self._record_topk_hit(-values_i, selected_idx)
                 actions[i] = moves[selected_idx]
 
         # Decide accept_double for opponent's potential next-turn double using post-move state
@@ -704,6 +768,9 @@ class LeagueController:
             if opp_double_avail <= 0:
                 accept_doubles[i] = 0
                 continue
+            if i < len(actors) and not enabled_for_double[i]:
+                accept_doubles[i] = 1
+                continue
             accept_eval_obs.append(_set_obs_opponent_double_offer(post_obs))
             accept_eval_actor.append(actors[i])
             accept_eval_owner.append(i)
@@ -714,13 +781,18 @@ class LeagueController:
             for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs_np):
                 # reject threshold uses pre-offer post-move state (halve cube back)
                 obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
-                if obs_pre.size >= 5:
-                    obs_pre[-5] = obs_pre[-5] / 2.0
+                if obs_pre.size >= 7:
+                    obs_pre[-7] = obs_pre[-7] / 2.0
                 if obs_pre.size >= 4:
                     obs_pre[-4] = 0.0
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
-                accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
+                if _is_endless_state(states[owner]):
+                    exp_keep = -_reward_expectation(p_row)
+                    exp_double = -2.0 * _reward_expectation(p_row)
+                    accept_doubles[owner] = int(exp_double >= exp_keep)
+                else:
+                    accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
 
         return actions, apply_doubles, accept_doubles
 
@@ -742,7 +814,8 @@ class LeagueController:
         game_results: list[GameResult] = []
         done = np.zeros((n_games,), dtype=bool)
 
-        target_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
+        cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
+        target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
 
         turn = 0
         while True:
@@ -761,7 +834,7 @@ class LeagueController:
             white_to_move = (states[:, 57] > 0) if states.shape[1] > 57 else ((turn % 2) == 0) * np.ones((n_games,), dtype=bool)
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
             apply_doubles = np.zeros((n_games,), dtype=np.uint8)
-            accept_doubles = np.zeros((n_games,), dtype=np.uint8)
+            accept_doubles = np.ones((n_games,), dtype=np.uint8)
 
             by_group: dict[str, list[int]] = {"A": [], "C": [], "D": []}
             baseline_idxs: list[int] = []
@@ -793,14 +866,18 @@ class LeagueController:
                 apply_doubles[idxs_np] = local_apply
                 accept_doubles[idxs_np] = local_accept
 
-            if baseline_idxs and self._baseline_eval_agent is not None:
+            if baseline_idxs:
                 b_idx = np.asarray(baseline_idxs, dtype=np.int64)
-                b_states = states[b_idx]
-                b_actions = actions[b_idx]
-                b_obs = obs_extended_batch[b_idx] if obs_extended_batch is not None else None
-                b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
-                apply_doubles[b_idx] = b_apply
-                accept_doubles[b_idx] = b_accept
+                if self._baseline_eval_agent is not None:
+                    b_states = states[b_idx]
+                    b_actions = actions[b_idx]
+                    b_obs = obs_extended_batch[b_idx] if obs_extended_batch is not None else None
+                    b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
+                    apply_doubles[b_idx] = b_apply
+                    accept_doubles[b_idx] = b_accept
+                else:
+                    apply_doubles[b_idx] = 0
+                    accept_doubles[b_idx] = 1
 
             try:
                 step_ret = env.step_apply(actions, apply_doubles, accept_doubles)
@@ -839,14 +916,18 @@ class LeagueController:
                     "epoch": epoch,
                     "double_offered_by_agent": bool(apply_doubles[i]),
                     "double_was_accepted": bool(accepted_step[i]) if bool(apply_doubles[i]) else False,
+                    "accept_double_opponent": bool(accept_doubles[i]),
+                    "accept_double_opportunity": bool(states[i][65] >= 0) if states.shape[1] > 65 else False,
                 })
                 turns[i] += 1
                 if int(done_code[i]) in (1, 2):
                     winner = actor.agent_id if rewards[i] > 0 else opp.agent_id
                     winner_player_index = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
+                    reward_value = max(1, int(round(abs(float(rewards[i])))))
                     points_won = max(1, int(round(abs(float(rewards[i])) * int(dave_before[i]))))
                     finished_games[i] += 1
 
+                    ended_by_double_reject = bool(states[i][65] >= 0 and int(accept_doubles[i]) == 0 and int(done_code[i]) in (1, 2)) if states.shape[1] > 65 else False
                     game_results.append(
                         GameResult(
                             game_id=f"{spec.game_id}_g{finished_games[i]}",
@@ -857,6 +938,8 @@ class LeagueController:
                             player_2_id=spec.p2.agent_id,
                             winner_player_index=winner_player_index,
                             points_won=points_won,
+                            reward_value=reward_value,
+                            ended_by_double_reject=ended_by_double_reject,
                         )
                     )
 
@@ -896,6 +979,10 @@ class LeagueController:
         winner = players[0].agent_id
         winner_player_index = 0
         points_won = 1
+        reward_value = 1
+        cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
+        target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
+        finished_games = 0
         while not done:
             env.roll_dice()
             raw_turn = np.asarray(env.get_state_raw(), dtype=np.int16)
@@ -931,7 +1018,7 @@ class LeagueController:
                     accept_double = int(b_accept[0])
                 else:
                     apply_double = 0
-                    accept_double = 0
+                    accept_double = 1
             else:
                 lm = env.legal_moves()
                 local_moves = lm[1] if isinstance(lm, tuple) else lm
@@ -955,12 +1042,20 @@ class LeagueController:
                 "epoch": epoch,
                 "double_offered_by_agent": bool(apply_double),
                 "double_was_accepted": bool(accepted) if bool(apply_double) else False,
+                "accept_double_opponent": bool(accept_double),
+                "accept_double_opportunity": bool(raw_before[65] >= 0) if raw_before.shape[0] > 65 else False,
             })
-            if done:
+            if int(done) in (1, 2):
                 winner = actor.agent_id if reward > 0 else opp.agent_id
                 winner_player_index = actor_player_index if reward > 0 else (1 - actor_player_index)
+                reward_value = max(1, int(round(abs(float(reward)))))
                 points_won = max(1, int(round(abs(float(reward)) * max(dave_value, 1))))
+                finished_games += 1
+                done = bool(int(done) == 2 or finished_games >= target_games_in_match)
+            else:
+                done = False
             turn += 1
+        ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done) in (1, 2)) if raw_before.shape[0] > 65 else False
         return GameResult(
             game_id=game_id,
             steps=history,
@@ -970,25 +1065,37 @@ class LeagueController:
             player_2_id=p2.agent_id,
             winner_player_index=winner_player_index,
             points_won=points_won,
+            reward_value=reward_value,
+            ended_by_double_reject=ended_by_double_reject,
         )
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
         self.reset_decision_stats()
-        if trainable_agents:
+        baseline_copy_prob = float(np.clip(getattr(self.cfg, "conservative_baseline_double_copy_prob", 0.0), 0.0, 1.0))
+        if trainable_agents and self.rng.random() < baseline_copy_prob:
             self._baseline_eval_agent = trainable_agents[int(self.rng.integers(0, len(trainable_agents)))]
         else:
             self._baseline_eval_agent = None
+
+        agents_double_decision_prob = float(np.clip(getattr(self.cfg, "agents_double_decision_prob", 0.0), 0.0, 1.0))
+        self._agents_double_decision_enabled_by_agent = {
+            a.agent_id: bool(self.rng.random() < agents_double_decision_prob)
+            for a in trainable_agents
+        }
         opponents = [self.conservative_baseline]
         specs: list[_GameSpec] = []
+
+        endless_mode = int(getattr(self.cfg, "games_in_match", 11)) < 0
+        matches_per_pair = 1 if endless_mode else int(self.cfg.matches_per_pair)
 
         for i, a in enumerate(trainable_agents):
             for j in range(i, len(trainable_agents)):
                 b = trainable_agents[j]
-                for g in range(self.cfg.matches_per_pair):
+                for g in range(matches_per_pair):
                     specs.append(_GameSpec(game_id=f"e{epoch}_t{i}_{b.agent_id}_{g}", p1=a, p2=b))
             for opp in opponents:
-                for g in range(self.cfg.matches_per_pair):
+                for g in range(matches_per_pair):
                     specs.append(_GameSpec(game_id=f"e{epoch}_{a.agent_id}_{opp.agent_id}_{g}", p1=a, p2=opp))
 
         results = self._play_all_games_batched(specs, epoch)
