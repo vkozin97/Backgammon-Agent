@@ -305,12 +305,31 @@ def plot_metrics_history(
         plt.close()
 
     avg_steps = [float(m.get("games_stats", {}).get("avg_steps_per_game", np.nan)) for m in metrics_history]
+    min_steps = [float(m.get("games_stats", {}).get("min_steps_per_game", np.nan)) for m in metrics_history]
+    max_steps = [float(m.get("games_stats", {}).get("max_steps_per_game", np.nan)) for m in metrics_history]
     if any(np.isfinite(v) for v in avg_steps):
         plt.figure(figsize=(18, 9))
-        plt.plot(xs, avg_steps)
-        plt.title("Average steps per game")
+        avg_arr = np.asarray(avg_steps, dtype=np.float64)
+        min_arr = np.asarray(min_steps, dtype=np.float64)
+        max_arr = np.asarray(max_steps, dtype=np.float64)
+        lower = np.where(np.isfinite(min_arr), np.maximum(avg_arr - min_arr, 0.0), np.nan)
+        upper = np.where(np.isfinite(max_arr), np.maximum(max_arr - avg_arr, 0.0), np.nan)
+
+        plt.errorbar(xs, avg_steps, yerr=[lower, upper], fmt="-o", capsize=4, linewidth=1.5, markersize=4, label="avg [min..max]")
+
+        for x, avg_v, min_v, max_v in zip(xs, avg_arr, min_arr, max_arr):
+            if not np.isfinite(avg_v):
+                continue
+            plt.annotate(f"{avg_v:.1f}", (x, avg_v), textcoords="offset points", xytext=(0, 8), ha="center", fontsize=7)
+            if np.isfinite(min_v):
+                plt.annotate(f"min {min_v:.0f}", (x, min_v), textcoords="offset points", xytext=(0, -11), ha="center", fontsize=6, color="#666666")
+            if np.isfinite(max_v):
+                plt.annotate(f"max {max_v:.0f}", (x, max_v), textcoords="offset points", xytext=(0, 6), ha="center", fontsize=6, color="#666666")
+
+        plt.title("Average steps per game (with min/max whiskers)")
         plt.xlabel("epoch")
         plt.ylabel("steps")
+        plt.legend()
         plt.tight_layout()
         plt.savefig(games_stats_dir / "avg_steps_per_game.png")
         plt.close()
