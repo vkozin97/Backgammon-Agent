@@ -54,7 +54,10 @@ def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
     ended_total = float(len(game_results))
     ended_natural_freq = (ended_natural / ended_total) if ended_total > 0 else 0.0
 
-    avg_steps_per_game = float(np.mean([float(getattr(g, "turns", 0)) for g in game_results])) if game_results else 0.0
+    steps_per_game = [float(getattr(g, "turns", 0)) for g in game_results]
+    avg_steps_per_game = float(np.mean(steps_per_game)) if steps_per_game else 0.0
+    min_steps_per_game = float(np.min(steps_per_game)) if steps_per_game else 0.0
+    max_steps_per_game = float(np.max(steps_per_game)) if steps_per_game else 0.0
 
     offers_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
     games_by_agent: dict[str, float] = {aid: 0.0 for aid in agent_ids}
@@ -94,6 +97,8 @@ def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
         "signed_reward_probs": reward_probs,
         "ended_natural_freq": ended_natural_freq,
         "avg_steps_per_game": avg_steps_per_game,
+        "min_steps_per_game": min_steps_per_game,
+        "max_steps_per_game": max_steps_per_game,
         "offers_per_game_by_agent": offers_per_game_by_agent,
         "offers_per_game_mean": mean_offers_per_game,
         "accept_prob_by_agent": accept_prob_by_agent,
