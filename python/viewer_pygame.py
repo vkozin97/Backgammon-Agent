@@ -106,6 +106,7 @@ OBS_POINTS = 24
 
 # Viewer hyperparameters
 agent_mode = "none"  # "none" | "hint" | "play"
+viewer_n_games = -1  # <=0 enables endless mode; >0 is match length (e.g. 5, 7, 11)
 agent_id = "trainable_2"
 agent_epoch = 248
 agent_checkpoint_dir = "training_stats/checkpoints"
@@ -639,7 +640,7 @@ def main():
     tiny = pygame.font.Font(FONT_NAME, 13)
     clock = pygame.time.Clock()
 
-    env = bg_env.Env(123)
+    env = bg_env.Env(123, n_games=int(viewer_n_games))
     env.reset()
 
     agent = None
@@ -663,7 +664,8 @@ def main():
 
 
     turn_white = is_white_turn_from_env()
-    info_lines = ["Started. Click points (or bar) to move checkers."]
+    mode_label = f"endless (n_games={viewer_n_games})" if int(viewer_n_games) <= 0 else f"match to {int(viewer_n_games)}"
+    info_lines = [f"Started. Mode: {mode_label}. Click points (or bar) to move checkers."]
     endless_white_score = 0
     endless_black_score = 0
     endless_game_number = 1
