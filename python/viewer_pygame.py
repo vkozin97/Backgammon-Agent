@@ -1,6 +1,7 @@
 import sys
 import json
 from pathlib import Path
+from typing import Optional
 import numpy as np
 import pygame
 
@@ -710,7 +711,7 @@ def main():
         if agent_mode == "play" and not turn_white:
             info_lines.append(f"Opponent dice: {dice_values}")
 
-    def sync_cube_visual_from_env(state: np.ndarray | None = None):
+    def sync_cube_visual_from_env(state: Optional[np.ndarray] = None):
         nonlocal cube_owner_visual
         st = get_env_state() if state is None else np.asarray(state, dtype=np.int16)
         if st.shape[0] >= 64:
