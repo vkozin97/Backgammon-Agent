@@ -27,12 +27,12 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     num_epochs: int = 400
-    updates_per_epoch_per_agent: int = 40
+    updates_per_epoch_per_agent: int = 100
     batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-4
-    lr_decay_factor: float = 0.96
-    lr_decay_every_steps: int = 40
+    lr_decay_factor: float = 0.97
+    lr_decay_every_steps: int = 50
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -42,13 +42,13 @@ class TrainConfig:
     loss_type: str = "bce_with_logits"
     loss_weights: list[float] = field(default_factory=lambda: [1.0])
     target_expansion: str = "repeat"
-    plot_every_k_epochs: int = 10
+    plot_every_k_epochs: int = 5
     winrate_window_size: int = 10
 
 
 @dataclass
 class LeagueConfig:
-    matches_per_pair: int = 1
+    matches_per_pair: int = 5
     games_in_match: int = -1
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
@@ -60,7 +60,7 @@ class LeagueConfig:
     batched_obs_threads: int = 1
     selfplay_temperature: float = 0.01
     temperature_decay: float = 1
-    choose_best_probability: float = 0.5
+    choose_best_probability: float = 0.3
     choose_best_decay: float = 0.9
     conservative_baseline_double_copy_prob: float = 0.0
     conservative_baseline_double_copy_decay: float = 1.0

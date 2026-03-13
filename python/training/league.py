@@ -829,6 +829,23 @@ class LeagueController:
             obs_extended_batch = None
             if hasattr(env, "get_obs_extended"):
                 obs_extended_batch = np.asarray(env.get_obs_extended(getattr(self.cfg, "batched_obs_threads", 0)), dtype=np.float32)
+                
+            # avg_pips_mine = round(obs_extended_batch[active_idx, 244].mean(), 1)
+            # avg_pips_opp = round(obs_extended_batch[active_idx, 245].mean(), 1)
+            # avg_bar_mine = round(obs_extended_batch[active_idx, 240].mean(), 1)
+            # avg_bar_opp = round(obs_extended_batch[active_idx, 242].mean(), 1)
+            # avg_off_mine = round(obs_extended_batch[active_idx, 241].mean(), 1)
+            # avg_off_opp = round(obs_extended_batch[active_idx, 243].mean(), 1)
+            # avg_blots_mine = round(obs_extended_batch[active_idx, 246].mean(), 1)
+            # avg_blots_opp = round(obs_extended_batch[active_idx, 247].mean(), 1)
+            
+            # print(f"Turn {turn}, active players: {len(active_idx)}\n"
+            #       f"pips:  {avg_pips_mine:.1f} \t {avg_pips_opp:.1f}\n"
+            #       f"bar:   {avg_bar_mine:.1f} \t {avg_bar_opp:.1f}\n"
+            #       f"off:   {avg_off_mine:.1f} \t {avg_off_opp:.1f}\n"
+            #       f"blots: {avg_blots_mine:.1f} \t {avg_blots_opp:.1f}\n"
+            #       )
+            
             legal_moves_raw = list(env.legal_moves())
             legal_moves = [_unwrap_legal_moves_entry(x) for x in legal_moves_raw]
             white_to_move = (states[:, 57] > 0) if states.shape[1] > 57 else ((turn % 2) == 0) * np.ones((n_games,), dtype=bool)
