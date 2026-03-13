@@ -670,16 +670,16 @@ def main():
     endless_black_score = 0
     endless_game_number = 1
 
-    def on_endless_game_finished(mover_was_white: bool, reward_points: int):
+    def on_endless_game_finished(mover_was_white: bool, scored_points: int):
         nonlocal endless_white_score, endless_black_score, endless_game_number
-        if reward_points <= 0:
+        if scored_points <= 0:
             return
         if mover_was_white:
-            endless_white_score += int(reward_points)
-            endless_black_score -= int(reward_points)
+            endless_white_score += int(scored_points)
+            endless_black_score -= int(scored_points)
         else:
-            endless_white_score -= int(reward_points)
-            endless_black_score += int(reward_points)
+            endless_white_score -= int(scored_points)
+            endless_black_score += int(scored_points)
         endless_game_number += 1
 
     def refresh_moves():
@@ -773,9 +773,10 @@ def main():
             mv = np.full((8,), 255, dtype=np.uint8)
         else:
             set_env_state(turn_start_state)
-        reward, _dave_after, _accepted, done_code = env.step_move(mv, apply_double=0, accept_double=1)
+        reward, dave_after, _accepted, done_code = env.step_move(mv, apply_double=0, accept_double=1)
         if int(n_games) <= 0 and agent_mode == "none" and int(done_code) in (1, 2):
-            on_endless_game_finished(mover_was_white, int(reward))
+            scored_points = int(round(float(reward))) * int(dave_after)
+            on_endless_game_finished(mover_was_white, scored_points)
         value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
         info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done_code}{value_suffix}")
         if done_code == 2:
