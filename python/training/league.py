@@ -236,6 +236,7 @@ class GameResult:
     points_won: int = 1
     reward_value: int = 1
     ended_by_double_reject: bool = False
+    max_steps_reached: bool = False
 
 
 @dataclass
@@ -816,6 +817,7 @@ class LeagueController:
 
         cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
         target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
+        max_steps_per_game = max(1, int(getattr(self.cfg, "max_steps_per_game", 200)))
 
         turn = 0
         while True:
@@ -937,14 +939,16 @@ class LeagueController:
                     "accept_double_opportunity": bool(states[i][65] >= 0) if states.shape[1] > 65 else False,
                 })
                 turns[i] += 1
-                if int(done_code[i]) in (1, 2):
+                game_finished = int(done_code[i]) in (1, 2)
+                max_steps_reached = turns[i] >= max_steps_per_game
+                if game_finished or max_steps_reached:
                     winner = actor.agent_id if rewards[i] > 0 else opp.agent_id
                     winner_player_index = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
                     reward_value = max(1, int(round(abs(float(rewards[i])))))
                     points_won = max(1, int(round(abs(float(rewards[i])) * int(dave_before[i]))))
                     finished_games[i] += 1
 
-                    ended_by_double_reject = bool(states[i][65] >= 0 and int(accept_doubles[i]) == 0 and int(done_code[i]) in (1, 2)) if states.shape[1] > 65 else False
+                    ended_by_double_reject = bool(states[i][65] >= 0 and int(accept_doubles[i]) == 0 and game_finished) if states.shape[1] > 65 else False
                     game_results.append(
                         GameResult(
                             game_id=f"{spec.game_id}_g{finished_games[i]}",
@@ -957,6 +961,7 @@ class LeagueController:
                             points_won=points_won,
                             reward_value=reward_value,
                             ended_by_double_reject=ended_by_double_reject,
+                            max_steps_reached=max_steps_reached and not game_finished,
                         )
                     )
 
@@ -973,7 +978,9 @@ class LeagueController:
 
                     histories[i] = []
                     turns[i] = 0
-                    if int(done_code[i]) == 2 or finished_games[i] >= target_games_in_match:
+                    if max_steps_reached:
+                        done[i] = True
+                    elif int(done_code[i]) == 2 or finished_games[i] >= target_games_in_match:
                         done[i] = True
                     
             dt = time.time() - t0
@@ -999,7 +1006,9 @@ class LeagueController:
         reward_value = 1
         cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
         target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
+        max_steps_per_game = max(1, int(getattr(self.cfg, "max_steps_per_game", 200)))
         finished_games = 0
+        max_steps_reached = False
         while not done:
             env.roll_dice()
             raw_turn = np.asarray(env.get_state_raw(), dtype=np.int16)
@@ -1062,7 +1071,8 @@ class LeagueController:
                 "accept_double_opponent": bool(accept_double),
                 "accept_double_opportunity": bool(raw_before[65] >= 0) if raw_before.shape[0] > 65 else False,
             })
-            if int(done) in (1, 2):
+            game_finished = int(done) in (1, 2)
+            if game_finished:
                 winner = actor.agent_id if reward > 0 else opp.agent_id
                 winner_player_index = actor_player_index if reward > 0 else (1 - actor_player_index)
                 reward_value = max(1, int(round(abs(float(reward)))))
@@ -1072,6 +1082,9 @@ class LeagueController:
             else:
                 done = False
             turn += 1
+            if not done and turn >= max_steps_per_game:
+                max_steps_reached = True
+                done = True
         ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done) in (1, 2)) if raw_before.shape[0] > 65 else False
         return GameResult(
             game_id=game_id,
@@ -1084,6 +1097,7 @@ class LeagueController:
             points_won=points_won,
             reward_value=reward_value,
             ended_by_double_reject=ended_by_double_reject,
+            max_steps_reached=max_steps_reached,
         )
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):

@@ -134,6 +134,32 @@ def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     return out
 
 
+def _bootstrap_outcomes_for_unfinished_game(game, agent_lookup: dict[str, object]) -> dict[int, np.ndarray]:
+    if not game.steps:
+        return {}
+
+    latest_by_player: dict[int, dict] = {}
+    for st in game.steps:
+        pidx = int(st.get("player_index", -1))
+        if pidx < 0:
+            continue
+        prev = latest_by_player.get(pidx)
+        if prev is None or int(st.get("step_index", -1)) >= int(prev.get("step_index", -1)):
+            latest_by_player[pidx] = st
+
+    result: dict[int, np.ndarray] = {}
+    for pidx, st in latest_by_player.items():
+        aid = st.get("agent_id")
+        agent = agent_lookup.get(aid)
+        if agent is None:
+            continue
+        state = np.asarray(st.get("state_vector", np.empty((0,), dtype=np.float32)), dtype=np.float32).reshape(1, -1)
+        if state.shape[1] == 0:
+            continue
+        result[pidx] = np.asarray(agent.predict_proba(state)[0], dtype=np.float32)
+    return result
+
+
 def save_checkpoint(cfg: ExperimentConfig, agents, replay: ReplayBuffer, epoch: int, metrics: dict) -> None:
     d = Path(cfg.checkpoint_dir) / f"epoch_{epoch:04d}"
     d.mkdir(parents=True, exist_ok=True)
@@ -203,10 +229,25 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         print(f"[1/6] Self-play took {play_dt:.2f} seconds")
 
         replay_add_t0 = time.time()
+        agent_lookup = {a.agent_id: a for a in agents}
         for game in game_results:
             records = []
+            bootstrap_targets = _bootstrap_outcomes_for_unfinished_game(game, agent_lookup) if bool(getattr(game, "max_steps_reached", False)) else {}
             for st in game.steps:
-                outcome = _terminal_outcome_for_step(game, st)
+                if bootstrap_targets:
+                    pidx = int(st.get("player_index", -1))
+                    outcome = bootstrap_targets.get(pidx)
+                    if outcome is None:
+                        aid = st.get("agent_id")
+                        ag = agent_lookup.get(aid)
+                        if ag is not None:
+                            state = np.asarray(st.get("state_vector", np.empty((0,), dtype=np.float32)), dtype=np.float32).reshape(1, -1)
+                            if state.shape[1] > 0:
+                                outcome = np.asarray(ag.predict_proba(state)[0], dtype=np.float32)
+                else:
+                    outcome = None
+                if outcome is None:
+                    outcome = _terminal_outcome_for_step(game, st)
                 records.append({**st, "terminal_outcome": outcome})
             replay.add_many(records)
         replay_add_dt = max(time.time() - replay_add_t0, 1e-6)
@@ -302,9 +343,11 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         print(f"[5/6] Replay sampling took {replay_sample_time_total:.2f} seconds (avg={avg_sample_ms:.2f}ms, calls={replay_sample_calls})")
         print(f"Losses: {[round(float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0), 6) for a in agents]}\n")
 
-        gpu_mem = 0.0
+        gpu_mem_allocated = 0.0
+        gpu_mem_reserved = 0.0
         if torch.cuda.is_available():
-            gpu_mem = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+            gpu_mem_allocated = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+            gpu_mem_reserved = float(torch.cuda.max_memory_reserved() / (1024 * 1024))
             torch.cuda.reset_peak_memory_stats()
 
         games_stats = _games_stats(game_results, all_agent_ids)
@@ -314,7 +357,9 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             "epoch_total_sec": max(time.time() - epoch_t0, 1e-6),
             "games_sec": games_sec,
             "steps_sec": steps_per_sec,
-            "gpu_mem_mb": gpu_mem,
+            "gpu_mem_mb": gpu_mem_allocated,
+            "gpu_mem_allocated_mb": gpu_mem_allocated,
+            "gpu_mem_reserved_mb": gpu_mem_reserved,
             "replay_sampling_total_sec": replay_sample_time_total,
             "replay_sampling_avg_ms": avg_sample_ms,
             "replay_size": int(len(replay)),

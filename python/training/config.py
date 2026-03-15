@@ -67,6 +67,7 @@ class LeagueConfig:
     agents_double_decision_prob: float = 0.0
     agents_double_decision_decay: float = 1.0
     checkpoint_frequency_epochs: int = 1
+    max_steps_per_game: int = 200
 
 
 @dataclass

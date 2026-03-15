@@ -4,7 +4,7 @@ import sqlite3
 import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
-from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step
+from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game
 from training.agents import build_trainable_agents
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
@@ -330,3 +330,47 @@ def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path
     assert new_w.shape[0] == 3
     assert np.allclose(new_w[0], old_w[0])
     assert np.allclose(new_b[0], old_b[0])
+
+
+def test_bootstrap_outcomes_for_unfinished_game_uses_last_step_per_player():
+    class DummyAgent:
+        def __init__(self, value: float):
+            self.value = value
+
+        def predict_proba(self, x: np.ndarray) -> np.ndarray:
+            out = np.zeros((x.shape[0], 31), dtype=np.float32)
+            out[:, 0] = self.value
+            return out
+
+    game = GameResult(
+        game_id="g_truncated",
+        steps=[
+            {"player_index": 0, "step_index": 0, "agent_id": "a0", "state_vector": np.array([1.0, 0.0], dtype=np.float32)},
+            {"player_index": 1, "step_index": 1, "agent_id": "a1", "state_vector": np.array([2.0, 0.0], dtype=np.float32)},
+            {"player_index": 0, "step_index": 2, "agent_id": "a0", "state_vector": np.array([3.0, 0.0], dtype=np.float32)},
+        ],
+        winner="a0",
+        turns=3,
+        player_1_id="a0",
+        player_2_id="a1",
+        max_steps_reached=True,
+    )
+
+    targets = _bootstrap_outcomes_for_unfinished_game(game, {"a0": DummyAgent(0.25), "a1": DummyAgent(0.75)})
+    assert set(targets.keys()) == {0, 1}
+    assert targets[0].shape == (31,)
+    assert targets[1].shape == (31,)
+    assert np.isclose(targets[0][0], 0.25)
+    assert np.isclose(targets[1][0], 0.75)
+
+
+def test_play_game_respects_max_steps_per_game():
+    from training.league import LeagueController
+
+    cfg = ExperimentConfig().league
+    cfg.max_steps_per_game = 2
+    league = LeagueController(cfg, seed=1)
+
+    result = league.play_game(RandomAgent(), RandomAgent(), game_id="g_cap", epoch=0)
+    assert result.max_steps_reached is True
+    assert result.turns == 2
