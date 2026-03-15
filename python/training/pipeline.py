@@ -343,9 +343,11 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         print(f"[5/6] Replay sampling took {replay_sample_time_total:.2f} seconds (avg={avg_sample_ms:.2f}ms, calls={replay_sample_calls})")
         print(f"Losses: {[round(float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0), 6) for a in agents]}\n")
 
-        gpu_mem = 0.0
+        gpu_mem_allocated = 0.0
+        gpu_mem_reserved = 0.0
         if torch.cuda.is_available():
-            gpu_mem = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+            gpu_mem_allocated = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+            gpu_mem_reserved = float(torch.cuda.max_memory_reserved() / (1024 * 1024))
             torch.cuda.reset_peak_memory_stats()
 
         games_stats = _games_stats(game_results, all_agent_ids)
@@ -355,7 +357,9 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
             "epoch_total_sec": max(time.time() - epoch_t0, 1e-6),
             "games_sec": games_sec,
             "steps_sec": steps_per_sec,
-            "gpu_mem_mb": gpu_mem,
+            "gpu_mem_mb": gpu_mem_allocated,
+            "gpu_mem_allocated_mb": gpu_mem_allocated,
+            "gpu_mem_reserved_mb": gpu_mem_reserved,
             "replay_sampling_total_sec": replay_sample_time_total,
             "replay_sampling_avg_ms": avg_sample_ms,
             "replay_size": int(len(replay)),
