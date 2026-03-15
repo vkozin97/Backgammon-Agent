@@ -248,7 +248,15 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                     outcome = None
                 if outcome is None:
                     outcome = _terminal_outcome_for_step(game, st)
-                records.append({**st, "terminal_outcome": outcome})
+                records.append({
+                    **st,
+                    "terminal_outcome": outcome,
+                    "match_length": int(getattr(game, "turns", 0)),
+                    "match_agent_1_id": getattr(game, "player_1_id", ""),
+                    "match_agent_2_id": getattr(game, "player_2_id", ""),
+                    "final_dave_value": int(getattr(game, "final_dave_value", 1)),
+                    "final_reward_value": int(getattr(game, "reward_value", 1)),
+                })
             replay.add_many(records)
         replay_add_dt = max(time.time() - replay_add_t0, 1e-6)
         print(f"[2/6] Replay append took {replay_add_dt:.2f} seconds")

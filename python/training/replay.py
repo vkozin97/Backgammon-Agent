@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sqlite3
 import tempfile
 import time
@@ -64,10 +65,17 @@ class ReplayBuffer:
                 epoch INTEGER NOT NULL,
                 terminal_outcome BLOB NOT NULL,
                 terminal_outcome_dim INTEGER NOT NULL,
+                action_meta TEXT,
+                match_length INTEGER,
+                match_agent_1_id TEXT,
+                match_agent_2_id TEXT,
+                final_dave_value INTEGER,
+                final_reward_value INTEGER,
                 timestamp REAL NOT NULL
             )
             """
         )
+        self._ensure_optional_columns()
         self._conn.commit()
         self._conn.execute("PRAGMA busy_timeout=5000")
         if clear_existing:
@@ -106,6 +114,25 @@ class ReplayBuffer:
 
         self._recency_weights = build_recency_weights(self._size, self._recency_center_mass_ratio)
 
+    def _ensure_optional_columns(self) -> None:
+        existing = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(replay)").fetchall()}
+        optional_columns = {
+            "action_meta": "TEXT",
+            "match_length": "INTEGER",
+            "match_agent_1_id": "TEXT",
+            "match_agent_2_id": "TEXT",
+            "final_dave_value": "INTEGER",
+            "final_reward_value": "INTEGER",
+        }
+        altered = False
+        for col_name, col_type in optional_columns.items():
+            if col_name in existing:
+                continue
+            self._conn.execute(f"ALTER TABLE replay ADD COLUMN {col_name} {col_type}")
+            altered = True
+        if altered:
+            self._conn.commit()
+
     def _normalize_weights(self, force: bool = False) -> None:
         if self._recency_weights.size == 0:
             return
@@ -126,8 +153,9 @@ class ReplayBuffer:
         self._conn.executemany(
             """
             INSERT INTO replay (
-                state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, terminal_outcome_dim, timestamp
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, terminal_outcome_dim,
+                action_meta, match_length, match_agent_1_id, match_agent_2_id, final_dave_value, final_reward_value, timestamp
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._pending_rows,
         )
@@ -159,6 +187,12 @@ class ReplayBuffer:
                 int(kwargs["epoch"]),
                 terminal_outcome.tobytes(),
                 int(terminal_outcome.size),
+                json.dumps(kwargs.get("action_meta", {}), ensure_ascii=False),
+                kwargs.get("match_length"),
+                kwargs.get("match_agent_1_id"),
+                kwargs.get("match_agent_2_id"),
+                kwargs.get("final_dave_value"),
+                kwargs.get("final_reward_value"),
                 time.time(),
             )
         )

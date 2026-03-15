@@ -235,6 +235,7 @@ class GameResult:
     winner_player_index: int = 0
     points_won: int = 1
     reward_value: int = 1
+    final_dave_value: int = 1
     ended_by_double_reject: bool = False
     max_steps_reached: bool = False
 
@@ -826,7 +827,7 @@ class LeagueController:
                 break
 
             t0= time.time()
-            env.roll_dice()
+            rolled_dice = np.asarray(env.roll_dice(), dtype=np.uint8)
             states = np.asarray(env.get_states_raw(), dtype=np.int16)
             obs_extended_batch = None
             if hasattr(env, "get_obs_extended"):
@@ -937,11 +938,22 @@ class LeagueController:
                     "double_was_accepted": bool(accepted_step[i]) if bool(apply_doubles[i]) else False,
                     "accept_double_opponent": bool(accept_doubles[i]),
                     "accept_double_opportunity": bool(states[i][65] >= 0) if states.shape[1] > 65 else False,
+                    "action_meta": {
+                        "dice": [int(rolled_dice[i][0]), int(rolled_dice[i][1])],
+                        "move": [int(x) for x in actions[i].tolist()],
+                        "apply_double": int(apply_doubles[i]),
+                        "accept_double": int(accept_doubles[i]),
+                        "raw_state": [int(x) for x in states[i].tolist()],
+                    },
                 })
                 turns[i] += 1
                 game_finished = int(done_code[i]) in (1, 2)
                 max_steps_reached = turns[i] >= max_steps_per_game
                 if game_finished or max_steps_reached:
+                    histories[i][-1]["action_meta"]["reward"] = float(rewards[i])
+                    histories[i][-1]["action_meta"]["done_code"] = int(done_code[i])
+                    histories[i][-1]["action_meta"]["double_was_accepted"] = int(accepted_step[i])
+                    dave_after = int(states_after[i][55]) if states_after is not None and states_after.shape[1] > 55 else int(dave_before[i])
                     winner = actor.agent_id if rewards[i] > 0 else opp.agent_id
                     winner_player_index = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
                     reward_value = max(1, int(round(abs(float(rewards[i])))))
@@ -960,6 +972,7 @@ class LeagueController:
                             winner_player_index=winner_player_index,
                             points_won=points_won,
                             reward_value=reward_value,
+                            final_dave_value=dave_after,
                             ended_by_double_reject=ended_by_double_reject,
                             max_steps_reached=max_steps_reached and not game_finished,
                         )
@@ -967,7 +980,6 @@ class LeagueController:
 
                     white_score = int(states_after[i][53]) if states_after is not None and states_after.shape[1] > 53 else -1
                     black_score = int(states_after[i][54]) if states_after is not None and states_after.shape[1] > 54 else -1
-                    dave_after = int(states_after[i][55]) if states_after is not None and states_after.shape[1] > 55 else int(dave_before[i])
                     # print(
                     #     "[self-play] game finished "
                     #     f"pair={spec.p1.agent_id} vs {spec.p2.agent_id}, "
@@ -1011,6 +1023,7 @@ class LeagueController:
         max_steps_reached = False
         while not done:
             env.roll_dice()
+            rolled_dice = np.asarray(env.current_dice(), dtype=np.uint8)
             raw_turn = np.asarray(env.get_state_raw(), dtype=np.int16)
             white_to_move = bool(raw_turn[57]) if raw_turn.shape[0] > 57 else ((turn % 2) == 0)
             actor_player_index = 0 if white_to_move else 1
@@ -1070,7 +1083,17 @@ class LeagueController:
                 "double_was_accepted": bool(accepted) if bool(apply_double) else False,
                 "accept_double_opponent": bool(accept_double),
                 "accept_double_opportunity": bool(raw_before[65] >= 0) if raw_before.shape[0] > 65 else False,
+                "action_meta": {
+                    "dice": [int(rolled_dice[0]), int(rolled_dice[1])],
+                    "move": [int(x) for x in np.asarray(move, dtype=np.uint8).tolist()],
+                    "apply_double": int(apply_double),
+                    "accept_double": int(accept_double),
+                    "raw_state": [int(x) for x in raw_before.tolist()],
+                },
             })
+            history[-1]["action_meta"]["reward"] = float(reward)
+            history[-1]["action_meta"]["done_code"] = int(done)
+            history[-1]["action_meta"]["double_was_accepted"] = int(accepted)
             game_finished = int(done) in (1, 2)
             if game_finished:
                 winner = actor.agent_id if reward > 0 else opp.agent_id
@@ -1086,6 +1109,7 @@ class LeagueController:
                 max_steps_reached = True
                 done = True
         ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done) in (1, 2)) if raw_before.shape[0] > 65 else False
+        raw_after = np.asarray(env.get_state_raw(), dtype=np.int16)
         return GameResult(
             game_id=game_id,
             steps=history,
@@ -1096,6 +1120,7 @@ class LeagueController:
             winner_player_index=winner_player_index,
             points_won=points_won,
             reward_value=reward_value,
+            final_dave_value=int(raw_after[55]) if raw_after.shape[0] > 55 else 1,
             ended_by_double_reject=ended_by_double_reject,
             max_steps_reached=max_steps_reached,
         )
