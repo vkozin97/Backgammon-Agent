@@ -1226,6 +1226,9 @@ def main():
                 elif event.key == pygame.K_SPACE:
                     if agent_mode == "replay":
                         apply_replay_step()
+                    elif show_roll_button and agent_mode != "replay":
+                        roll_current_dice()
+                        info_lines.append(f"Roll: {dice_values}")
                     elif is_opponent_turn and can_submit:
                         if len(move_hints) > 0:
                             _, chosen_mv, chosen_v, _ = move_hints[0]
