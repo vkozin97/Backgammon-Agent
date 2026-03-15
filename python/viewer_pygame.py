@@ -207,19 +207,24 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     result = []
     for i, mv in enumerate(moves):
         restore(sim, state0)
-        _, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
+        reward, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
         if done:
             value = 1.0
-            reward_vec_inv = np.ones((REWARD_VECTOR_DIM,), dtype=np.float32)
+            reward_vec_swapped = _reward_vector_for_terminal(float(reward))
         else:
             raw = np.asarray(sim.get_state_raw(), dtype=np.float32)
             obs = state_to_observation(raw).reshape(1, -1)
             pred = np.asarray(agent.predict_proba(obs), dtype=np.float32).reshape(-1)
             value = 1.0 - float(pred[0])
             reward_head = pred[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
-            reward_vec_inv = 1.0 - np.asarray(reward_head, dtype=np.float32)
-        result.append((i, np.asarray(mv, dtype=np.uint8), float(value), reward_vec_inv))
-    result.sort(key=lambda x: (-x[2], tuple(int(v) for v in x[1].tolist())))
+            reward_vec_swapped = _swap_reward_vector_perspective(reward_head)
+        result.append((i, np.asarray(mv, dtype=np.uint8), float(value), reward_vec_swapped))
+    result.sort(
+        key=lambda x: (
+            -float(np.dot(REWARD_VALUES, np.asarray(x[3], dtype=np.float32))) if x[3] is not None else -x[2],
+            tuple(int(v) for v in x[1].tolist()),
+        )
+    )
     return result
 
 
@@ -242,6 +247,21 @@ def _set_obs_double_state(obs: np.ndarray) -> np.ndarray:
     if x.size >= 1:
         x[-1] = 1.0
     return x
+
+
+def _swap_reward_vector_perspective(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    if arr.size != REWARD_VECTOR_DIM:
+        return arr
+    return arr[::-1].copy()
+
+
+def _reward_vector_for_terminal(reward_for_mover: float) -> np.ndarray:
+    reward_for_opponent = -float(reward_for_mover)
+    idx = int(np.argmin(np.abs(REWARD_VALUES - reward_for_opponent)))
+    out = np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
+    out[idx] = 1.0
+    return out
 
 
 def _format_vec_percent(values: np.ndarray) -> str:
@@ -714,7 +734,7 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
             vec_hint = move_hints[i][3]
             if vec_hint is not None:
                 ev_match = float(np.dot(REWARD_VALUES, np.asarray(vec_hint, dtype=np.float32)))
-                line = f"{line}  1-R6={_format_vec_percent(vec_hint)} EV={ev_match:.3f}"
+                line = f"{line}  revR6={_format_vec_percent(vec_hint)} EV={ev_match:.3f}"
             elif value_hint is not None:
                 line = f"{line}  1-p={value_hint:.4f}"
         draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, color)
