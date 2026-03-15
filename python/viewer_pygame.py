@@ -1,5 +1,6 @@
 import sys
 import json
+import sqlite3
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -105,11 +106,39 @@ OBS_BASE_COVER_OPP = 216
 OBS_POINTS = 24
 
 # Viewer hyperparameters
-agent_mode = "none"  # "none" | "hint" | "play"
+agent_mode = "none"  # "none" | "hint" | "play" | "replay"
 viewer_n_games = -1  # <=0 enables endless mode; >0 is match length (e.g. 5, 7, 11)
 agent_id = "trainable_2"
 agent_epoch = 248
 agent_checkpoint_dir = "training_stats/checkpoints"
+replay_storage_dir = "training_stats/replay"
+replay_match_id = None
+
+
+def load_replay_steps(storage_dir: str, match_id: str) -> list[dict]:
+    db_path = Path(storage_dir) / "replay.sqlite3"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Replay DB not found: {db_path}")
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT step_index, action_meta
+            FROM replay
+            WHERE game_id = ?
+            ORDER BY step_index ASC
+            """,
+            (match_id,),
+        ).fetchall()
+    out = []
+    for step_index, action_meta_json in rows:
+        meta = {}
+        if action_meta_json:
+            try:
+                meta = json.loads(action_meta_json)
+            except Exception:
+                meta = {}
+        out.append({"step_index": int(step_index), "action_meta": meta})
+    return out
 
 
 def _agent_index_from_id(agent_id: str) -> int:
@@ -643,6 +672,15 @@ def main():
     env = bg_env.Env(123, n_games=int(viewer_n_games))
     env.reset()
 
+    replay_steps = []
+    replay_idx = 0
+    if agent_mode == "replay":
+        if not replay_match_id:
+            raise ValueError("For replay mode set replay_match_id")
+        replay_steps = load_replay_steps(replay_storage_dir, str(replay_match_id))
+        if not replay_steps:
+            raise ValueError(f"Replay steps are empty for match_id={replay_match_id}")
+
     agent = None
     if agent_mode in ("hint", "play"):
         agent = load_eval_agent(agent_id, agent_epoch, agent_checkpoint_dir)
@@ -665,7 +703,11 @@ def main():
 
     turn_white = is_white_turn_from_env()
     mode_label = f"endless (n_games={viewer_n_games})" if int(viewer_n_games) <= 0 else f"match to {int(viewer_n_games)}"
-    info_lines = [f"Started. Mode: {mode_label}. Click points (or bar) to move checkers."]
+    if agent_mode == "replay":
+        mode_label = f"replay match {replay_match_id}"
+        info_lines = [f"Started. Mode: {mode_label}. Press SPACE to play next recorded action."]
+    else:
+        info_lines = [f"Started. Mode: {mode_label}. Click points (or bar) to move checkers."]
     endless_white_score = 0
     endless_black_score = 0
     endless_game_number = 1
@@ -785,6 +827,53 @@ def main():
         start_turn()
         macro_pending_submit = False
 
+    def apply_replay_step():
+        nonlocal replay_idx, turn_white, turn_start_state, dice_values, used_dice, required_dice, dice_rolled, cube_move_anim, cube_owner_visual
+        if replay_idx >= len(replay_steps):
+            info_lines.append("Replay finished.")
+            return
+        meta = replay_steps[replay_idx].get("action_meta", {})
+        raw_state = np.asarray(meta.get("raw_state", []), dtype=np.int16)
+        if raw_state.size >= 58:
+            if hasattr(env, "set_state_full") and raw_state.size >= 66:
+                set_env_state(raw_state)
+            else:
+                set_env_state(raw_state[:58])
+        turn_white = is_white_turn_from_env()
+        turn_start_state = get_env_state()
+
+        dice = list(meta.get("dice", []))
+        if len(dice) == 2:
+            env.set_dice(np.asarray(dice, dtype=np.uint8))
+            if dice[0] == dice[1]:
+                dice_values = [int(dice[0]), int(dice[1])]
+                required_dice = [2, 2]
+            else:
+                dice_values = sorted([int(dice[0]), int(dice[1])], reverse=True)
+                required_dice = [1, 1]
+            used_dice = [0] * len(dice_values)
+            dice_rolled = True
+
+        move = np.asarray(meta.get("move", [255] * 8), dtype=np.uint8)
+        apply_double = int(meta.get("apply_double", 0))
+        accept_double = int(meta.get("accept_double", 1))
+        if apply_double:
+            start_pos = cube_center_for_owner(cube_owner_visual)
+            end_pos = cube_center_for_owner(not turn_white)
+            cube_owner_visual = (not turn_white)
+            cube_move_anim = {
+                "start": start_pos,
+                "end": end_pos,
+                "start_time": pygame.time.get_ticks() / 1000.0,
+                "t": 0.0,
+            }
+
+        info_lines.append(f"Replay step {replay_idx + 1}/{len(replay_steps)}: dice={dice} move={move_to_str(move, turn_white)}")
+        start_macro_animation(move, None, auto_commit=False)
+        reward, dave_after, accepted, done_code = env.step_move(move, apply_double=apply_double, accept_double=accept_double)
+        info_lines.append(f"Replay result: r={reward} dave={dave_after} accepted={accepted} done={done_code}")
+        replay_idx += 1
+
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
     selected_die_idx = 0
     selected_hint_idx = 0
@@ -800,8 +889,23 @@ def main():
     cube_shake_anim = None
     cube_move_anim = None
     turn_move_hints = []
-    start_turn()
-    info_lines.append(f"First turn: {'white' if turn_white else 'black'}")
+    if agent_mode == "replay":
+        first_meta = replay_steps[0].get("action_meta", {}) if replay_steps else {}
+        first_raw = np.asarray(first_meta.get("raw_state", []), dtype=np.int16)
+        if first_raw.size >= 58:
+            set_env_state(first_raw[:66] if first_raw.size >= 66 else first_raw[:58])
+            turn_white = is_white_turn_from_env()
+            turn_start_state = get_env_state()
+        first_dice = list(first_meta.get("dice", []))
+        if len(first_dice) == 2:
+            dice_values = [int(first_dice[0]), int(first_dice[1])] if first_dice[0] == first_dice[1] else sorted([int(first_dice[0]), int(first_dice[1])], reverse=True)
+            required_dice = [2, 2] if first_dice[0] == first_dice[1] else [1, 1]
+            used_dice = [0] * len(dice_values)
+            dice_rolled = True
+        info_lines.append(f"Loaded replay start. Steps: {len(replay_steps)}")
+    else:
+        start_turn()
+        info_lines.append(f"First turn: {'white' if turn_white else 'black'}")
 
     piece_anim = None
     shake_anim = None
@@ -1008,7 +1112,7 @@ def main():
                     running = False
                 elif macro_anim_steps:
                     continue
-                elif event.key == pygame.K_n:
+                elif event.key == pygame.K_n and agent_mode != "replay":
                     env.reset()
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None
@@ -1018,7 +1122,7 @@ def main():
                     cube_move_anim = None
                     start_turn()
                     info_lines.append(f"Reset env. First turn: {'white' if turn_white else 'black'}")
-                elif event.key == pygame.K_r:
+                elif event.key == pygame.K_r and agent_mode != "replay":
                     if show_roll_button:
                         roll_current_dice()
                     else:
@@ -1031,7 +1135,9 @@ def main():
                 elif event.key == pygame.K_DOWN:
                     selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1)
                 elif event.key == pygame.K_SPACE:
-                    if is_opponent_turn and can_submit:
+                    if agent_mode == "replay":
+                        apply_replay_step()
+                    elif is_opponent_turn and can_submit:
                         if len(move_hints) > 0:
                             _, chosen_mv, chosen_v = move_hints[0]
                             value_suffix = f" | v={chosen_v:.4f}" if chosen_v is not None else ""
