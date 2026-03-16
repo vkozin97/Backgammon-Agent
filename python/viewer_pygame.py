@@ -104,6 +104,9 @@ OBS_BASE_COVER_SELF = 168
 OBS_BASE_HIT_OPP = 192
 OBS_BASE_COVER_OPP = 216
 OBS_POINTS = 24
+MATCH_VECTOR_DIM = 12
+REWARD_VECTOR_DIM = 6
+REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 
 # Viewer hyperparameters
 agent_mode = "none"  # "none" | "hint" | "play" | "replay"
@@ -179,7 +182,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
 
     if agent is None:
         return [
-            (i, np.asarray(mv, dtype=np.uint8), None)
+            (i, np.asarray(mv, dtype=np.uint8), None, None)
             for i, mv in enumerate(sorted_moves_for_panel(moves, turn_white=turn_white))
         ]
 
@@ -197,23 +200,93 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
             scored.append((i, np.asarray(mv, dtype=np.uint8), score))
 
         scored.sort(key=lambda x: (tuple(-v for v in x[2]), tuple(int(v) for v in x[1].tolist())))
-        return [(i, mv, None) for i, mv, _ in scored]
+        return [(i, mv, None, None) for i, mv, _ in scored]
 
     sim = bg_env.Env(0)
     state0 = snapshot(env)
     result = []
     for i, mv in enumerate(moves):
         restore(sim, state0)
-        _, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
+        reward, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
         if done:
             value = 1.0
+            reward_vec_swapped = _reward_vector_for_terminal(float(reward))
         else:
             raw = np.asarray(sim.get_state_raw(), dtype=np.float32)
             obs = state_to_observation(raw).reshape(1, -1)
-            value = 1.0 - float(agent.predict_proba(obs).reshape(-1)[0])
-        result.append((i, np.asarray(mv, dtype=np.uint8), float(value)))
-    result.sort(key=lambda x: (-x[2], tuple(int(v) for v in x[1].tolist())))
+            pred = np.asarray(agent.predict_proba(obs), dtype=np.float32).reshape(-1)
+            value = 1.0 - float(pred[0])
+            reward_head = pred[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+            reward_vec_swapped = _swap_reward_vector_perspective(reward_head)
+        result.append((i, np.asarray(mv, dtype=np.uint8), float(value), reward_vec_swapped))
+    result.sort(
+        key=lambda x: (
+            -float(np.dot(REWARD_VALUES, np.asarray(x[3], dtype=np.float32))) if x[3] is not None else -x[2],
+            tuple(int(v) for v in x[1].tolist()),
+        )
+    )
     return result
+
+
+def _reward_expectation_from_probs_row(probs_row: np.ndarray) -> float:
+    p = np.asarray(probs_row, dtype=np.float32).reshape(-1)
+    reward_head = p[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    if reward_head.size != REWARD_VECTOR_DIM:
+        return 0.0
+    return float(np.dot(REWARD_VALUES, reward_head))
+
+
+def _set_obs_double_state(obs: np.ndarray) -> np.ndarray:
+    x = np.asarray(obs, dtype=np.float32).copy()
+    if x.size >= 7:
+        x[-7] = x[-7] * 2.0
+    if x.size >= 4:
+        x[-4] = 0.0
+    if x.size >= 3:
+        x[-3] = 1.0
+    if x.size >= 1:
+        x[-1] = 1.0
+    return x
+
+
+def _swap_reward_vector_perspective(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    if arr.size != REWARD_VECTOR_DIM:
+        return arr
+    return arr[::-1].copy()
+
+
+def _reward_vector_for_terminal(reward_for_mover: float) -> np.ndarray:
+    reward_for_opponent = -float(reward_for_mover)
+    idx = int(np.argmin(np.abs(REWARD_VALUES - reward_for_opponent)))
+    out = np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
+    out[idx] = 1.0
+    return out
+
+
+def _format_vec_percent(values: np.ndarray) -> str:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    return "[" + ", ".join(f"{(float(v) * 100.0):.1f}" for v in arr.tolist()) + "]"
+
+
+def _agent_hint_lines(agent, raw_state: np.ndarray) -> list[str]:
+    if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
+        return []
+
+    obs_now = state_to_observation(np.asarray(raw_state, dtype=np.float32)).reshape(1, -1)
+    probs_now = np.asarray(agent.predict_proba(obs_now), dtype=np.float32).reshape(-1)
+    reward_vec = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    p_accept = float(np.clip(probs_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+
+    obs_double = _set_obs_double_state(obs_now.reshape(-1)).reshape(1, -1)
+    probs_double = np.asarray(agent.predict_proba(obs_double), dtype=np.float32).reshape(-1)
+
+    ev_no_double = _reward_expectation_from_probs_row(probs_now)
+    ev_double_accepted = 2.0 * _reward_expectation_from_probs_row(probs_double)
+
+    line1 = f"R6={_format_vec_percent(reward_vec)}"
+    line2 = f"EV(noD)={ev_no_double:.3f} | EV(D+acc)={ev_double_accepted:.3f} | P(acc)={(p_accept * 100.0):.1f}%"
+    return [line1, line2]
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -618,7 +691,7 @@ def _format_prob_row(label: str, values: list[int]) -> str:
     return f"{label:>2} " + " ".join(f"{v:>2d}" for v in values)
 
 
-def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines):
+def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines, hint_lines):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -631,6 +704,14 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
     y += 24
     draw_text(surface, small_font, f"Manual: {' | '.join(f'{a}->{b}' for a,b in manual_steps) or '(empty)'}", x, y, ACCENT)
 
+    if hint_lines:
+        y += 24
+        draw_text(surface, small_font, "Hint:", x, y, (25, 25, 25))
+        y += 20
+        for line in hint_lines:
+            draw_text(surface, small_font, line, x, y, (35, 35, 35))
+            y += 18
+
     y += 28
     for line in prob_table_lines:
         draw_text(surface, tiny_font, line, x, y, (45, 45, 45))
@@ -639,7 +720,7 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
     y += 10
     max_lines = (H - y - 150) // 18
     if move_hints:
-        panel_moves = [mv for _, mv, _ in move_hints]
+        panel_moves = [mv for _, mv, _, _ in move_hints]
     else:
         panel_moves = sorted_moves_for_panel(moves, turn_white)
     for i in range(min(len(panel_moves), max_lines)):
@@ -648,8 +729,14 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
         color = (45, 45, 45)
         if i == selected_hint_idx:
             color = (220, 180, 0)
-        if move_hints and i < len(move_hints) and move_hints[i][2] is not None:
-            line = f"{line}  1-p={move_hints[i][2]:.4f}"
+        if move_hints and i < len(move_hints):
+            value_hint = move_hints[i][2]
+            vec_hint = move_hints[i][3]
+            if vec_hint is not None:
+                ev_match = float(np.dot(REWARD_VALUES, np.asarray(vec_hint, dtype=np.float32)))
+                line = f"{line}  revR6={_format_vec_percent(vec_hint)} EV={ev_match:.3f}"
+            elif value_hint is not None:
+                line = f"{line}  1-p={value_hint:.4f}"
         draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, color)
         y += 18
 
@@ -1089,6 +1176,7 @@ def main():
             _format_prob_row("OH", oh),
             _format_prob_row("OC", oc),
         ]
+        hint_lines = _agent_hint_lines(agent, raw) if agent_mode == "hint" else []
         draw_panel(
             screen,
             font,
@@ -1101,6 +1189,7 @@ def main():
             move_hints,
             selected_hint_idx,
             prob_table_lines,
+            hint_lines,
         )
         pygame.display.flip()
 
@@ -1137,9 +1226,12 @@ def main():
                 elif event.key == pygame.K_SPACE:
                     if agent_mode == "replay":
                         apply_replay_step()
+                    elif show_roll_button and agent_mode != "replay":
+                        roll_current_dice()
+                        info_lines.append(f"Roll: {dice_values}")
                     elif is_opponent_turn and can_submit:
                         if len(move_hints) > 0:
-                            _, chosen_mv, chosen_v = move_hints[0]
+                            _, chosen_mv, chosen_v, _ = move_hints[0]
                             value_suffix = f" | v={chosen_v:.4f}" if chosen_v is not None else ""
                             info_lines.append(f"Agent({agent_id}) black: {move_to_str(chosen_mv, turn_white=False)}{value_suffix}")
                             start_macro_animation(chosen_mv, chosen_v)
@@ -1154,12 +1246,12 @@ def main():
                                 chosen_mv = np.asarray(macro_anim_move, dtype=np.uint8)
                                 chosen_v = macro_anim_value
                             elif len(move_hints) > 0:
-                                _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
+                                _, chosen_mv, chosen_v, _ = move_hints[selected_hint_idx]
                             else:
                                 chosen_mv, chosen_v = np.full((8,), 255, dtype=np.uint8), None
                             apply_committed_move(np.asarray(chosen_mv, dtype=np.uint8), chosen_v, use_current_state=(len(history) > 0))
                         elif len(history) == 0 and len(move_hints) > 0:
-                            _, chosen_mv, chosen_v = move_hints[selected_hint_idx]
+                            _, chosen_mv, chosen_v, _ = move_hints[selected_hint_idx]
                             start_macro_animation(chosen_mv, chosen_v, auto_commit=False)
             if macro_anim_steps:
                 continue
@@ -1249,7 +1341,7 @@ def main():
                 if ok_rect.collidepoint(mx, my) and can_submit:
                     if is_opponent_turn:
                         if len(move_hints) > 0:
-                            _, chosen_mv, chosen_v = move_hints[0]
+                            _, chosen_mv, chosen_v, _ = move_hints[0]
                             value_suffix = f" | v={chosen_v:.4f}" if chosen_v is not None else ""
                             info_lines.append(f"Agent({agent_id}) black: {move_to_str(chosen_mv, turn_white=False)}{value_suffix}")
                             start_macro_animation(chosen_mv, chosen_v)
@@ -1272,7 +1364,7 @@ def main():
                         chosen_mv = np.asarray(moves[idx], dtype=np.uint8)
                         if move_hints and move_hints[0][2] is not None:
                             matched_set = set(matched)
-                            for move_i, _, value in move_hints:
+                            for move_i, _, value, _ in move_hints:
                                 if move_i in matched_set:
                                     chosen_value = value
                                     break
