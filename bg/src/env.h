@@ -24,8 +24,8 @@ namespace bg {
 		void swap_perspective();
 		bool apply_micro_step(uint8_t from, uint8_t to, uint8_t die = 0);
 		void commit_turn();
-		void set_state_raw(const int16_t* in /*len>=58*/);
-		void set_state_full(const int16_t* in /*len=66*/);
+		void set_state_raw(const int16_t* in /*len=69*/);
+		void set_state_full(const int16_t* in /*len=69*/);
 		// TODO: ïîëíîöåííûé step ñ ïðîâåðêîé âàëèäíîñòè.
 		// Ñåé÷àñ ïðèìåíÿåò Move "êàê åñòü" ìèíèìàëüíî áåçîïàñíî.
 		std::tuple<float, int, uint8_t, uint8_t> step_apply(uint8_t apply_double, const Move& actions, uint8_t accept_double);

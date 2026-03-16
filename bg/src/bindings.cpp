@@ -43,17 +43,11 @@ PYBIND11_MODULE(bg_env, m) {
         })
         .def("set_state_raw", [](bg::BackgammonEnv& self,
                                  py::array_t<int16_t, py::array::c_style | py::array::forcecast> st) {
-            if (st.ndim() != 1 || (st.shape(0) != 58 && st.shape(0) != 69)) throw std::runtime_error("set_state_raw: expected (58,) or (69,)");
+            if (st.ndim() != 1 || st.shape(0) != 69) throw std::runtime_error("set_state_raw: expected (69,)");
             auto a = st.unchecked<1>();
-            if (st.shape(0) == 58) {
-                int16_t tmp[58];
-                for (int i = 0; i < 58; ++i) tmp[i] = a(i);
-                self.set_state_raw(tmp);
-            } else {
-                int16_t tmp[69];
-                for (int i = 0; i < 69; ++i) tmp[i] = a(i);
-                self.set_state_full(tmp);
-            }
+            int16_t tmp[69];
+            for (int i = 0; i < 69; ++i) tmp[i] = a(i);
+            self.set_state_full(tmp);
         })
         .def("get_state_full", [](bg::BackgammonEnv& self) {
             py::array_t<int16_t> arr({69});

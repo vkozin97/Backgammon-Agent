@@ -126,20 +126,14 @@ public:
     }
 
     void set_states_raw(py::array_t<int16_t, py::array::c_style | py::array::forcecast> states) {
-        if (states.ndim() != 2 || states.shape(0) != (py::ssize_t)envs_.size() || (states.shape(1) != 58 && states.shape(1) != 69)) {
-            throw std::runtime_error("set_states_raw: expected int16 array with shape (N, 58) or (N, 69)");
+        if (states.ndim() != 2 || states.shape(0) != (py::ssize_t)envs_.size() || states.shape(1) != 69) {
+            throw std::runtime_error("set_states_raw: expected int16 array with shape (N, 69)");
         }
         auto a = states.unchecked<2>();
         for (py::ssize_t i = 0; i < (py::ssize_t)envs_.size(); ++i) {
-            if (states.shape(1) == 58) {
-                int16_t tmp58[58];
-                for (int j = 0; j < 58; ++j) tmp58[j] = a(i, j);
-                envs_[i].set_state_raw(tmp58);
-            } else {
-                int16_t tmp69[69];
-                for (int j = 0; j < 69; ++j) tmp69[j] = a(i, j);
-                envs_[i].set_state_full(tmp69);
-            }
+            int16_t tmp69[69];
+            for (int j = 0; j < 69; ++j) tmp69[j] = a(i, j);
+            envs_[i].set_state_full(tmp69);
         }
     }
 

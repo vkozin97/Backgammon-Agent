@@ -117,30 +117,14 @@ agent_checkpoint_dir = "training_stats/checkpoints"
 replay_storage_dir = "training_stats/replay"
 replay_match_id = None
 
-RAW_STATE_BASE_DIM = 58
-RAW_STATE_LEGACY_FULL_DIM = 66
 RAW_STATE_FULL_DIM = 69
 
 
-def _normalize_state_for_full_api(state: np.ndarray) -> np.ndarray:
+def _require_full_state69(state: np.ndarray) -> np.ndarray:
     a = np.asarray(state, dtype=np.int16).reshape(-1)
-    if a.size >= RAW_STATE_FULL_DIM:
-        return a[:RAW_STATE_FULL_DIM].copy()
-    if a.size >= RAW_STATE_LEGACY_FULL_DIM:
-        out = np.zeros((RAW_STATE_FULL_DIM,), dtype=np.int16)
-        out[:RAW_STATE_LEGACY_FULL_DIM] = a[:RAW_STATE_LEGACY_FULL_DIM]
-        # Derive new service fields from legacy full-state info.
-        white_to_move = int(out[61]) != 0
-        cube_owner = int(out[63])
-        out[66] = np.int16(1 if (cube_owner < 0 or (white_to_move and cube_owner == 0) or ((not white_to_move) and cube_owner == 1)) else 0)
-        out[67] = np.int16(1 if (cube_owner < 0 or (white_to_move and cube_owner == 1) or ((not white_to_move) and cube_owner == 0)) else 0)
-        out[68] = np.int16(0)
-        return out
-    if a.size >= RAW_STATE_BASE_DIM:
-        out = np.zeros((RAW_STATE_FULL_DIM,), dtype=np.int16)
-        out[:RAW_STATE_BASE_DIM] = a[:RAW_STATE_BASE_DIM]
-        return out
-    raise ValueError(f"State length {a.size} is too short; expected at least {RAW_STATE_BASE_DIM}")
+    if a.size != RAW_STATE_FULL_DIM:
+        raise ValueError(f"Expected full state length {RAW_STATE_FULL_DIM}, got {a.size}")
+    return a
 
 
 def load_replay_steps(storage_dir: str, match_id: str) -> list[dict]:
@@ -216,10 +200,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
 
     def restore(e, state):
         a = np.asarray(state, dtype=np.int16).reshape(-1)
-        if hasattr(e, "set_state_full"):
-            e.set_state_full(_normalize_state_for_full_api(a))
-        else:
-            e.set_state_raw(a[:RAW_STATE_BASE_DIM])
+        e.set_state_full(_require_full_state69(a))
 
     if agent is None:
         return [
@@ -800,10 +781,7 @@ def main():
 
     def set_env_state(state: np.ndarray):
         a = np.asarray(state, dtype=np.int16).reshape(-1)
-        if hasattr(env, "set_state_full"):
-            env.set_state_full(_normalize_state_for_full_api(a))
-        else:
-            env.set_state_raw(a[:RAW_STATE_BASE_DIM])
+        env.set_state_full(_require_full_state69(a))
 
 
     turn_white = is_white_turn_from_env()
@@ -973,8 +951,9 @@ def main():
             return
         meta = replay_steps[replay_idx].get("action_meta", {})
         raw_state = np.asarray(meta.get("raw_state", []), dtype=np.int16)
-        if raw_state.size >= RAW_STATE_BASE_DIM:
-            set_env_state(raw_state)
+        if raw_state.size != RAW_STATE_FULL_DIM:
+            raise ValueError(f"Replay state has invalid length {raw_state.size}; expected {RAW_STATE_FULL_DIM}")
+        set_env_state(raw_state)
         turn_white = is_white_turn_from_env()
         turn_start_state = get_env_state()
 
@@ -1043,10 +1022,11 @@ def main():
     if agent_mode == "replay":
         first_meta = replay_steps[0].get("action_meta", {}) if replay_steps else {}
         first_raw = np.asarray(first_meta.get("raw_state", []), dtype=np.int16)
-        if first_raw.size >= RAW_STATE_BASE_DIM:
-            set_env_state(first_raw)
-            turn_white = is_white_turn_from_env()
-            turn_start_state = get_env_state()
+        if first_raw.size != RAW_STATE_FULL_DIM:
+            raise ValueError(f"Replay initial state has invalid length {first_raw.size}; expected {RAW_STATE_FULL_DIM}")
+        set_env_state(first_raw)
+        turn_white = is_white_turn_from_env()
+        turn_start_state = get_env_state()
         first_dice = list(first_meta.get("dice", []))
         dice_values, used_dice, required_dice, dice_rolled = _set_ui_dice_from_values(first_dice)
         info_lines.append(f"Loaded replay start. Steps: {len(replay_steps)}")
