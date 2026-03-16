@@ -144,6 +144,20 @@ def load_replay_steps(storage_dir: str, match_id: str) -> list[dict]:
     return out
 
 
+
+
+def _set_ui_dice_from_values(dice: list[int]):
+    d = [int(x) for x in dice]
+    if len(d) != 2:
+        return [], [], [], False
+    if d[0] == d[1]:
+        values = [d[0], d[1]]
+        required = [2, 2]
+    else:
+        values = sorted(d, reverse=True)
+        required = [1, 1]
+    used = [0] * len(values)
+    return values, used, required, True
 def _agent_index_from_id(agent_id: str) -> int:
     if not agent_id.startswith("trainable_"):
         raise ValueError(f"Unsupported trainable agent_id={agent_id!r}. Expected trainable_N.")
@@ -901,14 +915,14 @@ def main():
         apply_double: int = 0,
         accept_double: int = 1,
     ):
-        nonlocal turn_white, macro_pending_submit
+        nonlocal turn_white, macro_pending_submit, dice_rolled, moves, selected_hint_idx
         mover_was_white = bool(turn_white)
         mv = np.asarray(chosen_mv, dtype=np.uint8)
         if use_current_state:
             mv = np.full((8,), 255, dtype=np.uint8)
         else:
             set_env_state(turn_start_state)
-        reward, dave_after, _accepted, done_code = env.step_move(
+        reward, dave_after, accepted, done_code = env.step_move(
             mv,
             apply_double=int(apply_double),
             accept_double=int(accept_double),
@@ -917,11 +931,32 @@ def main():
             scored_points = int(round(float(reward))) * int(dave_after)
             on_endless_game_finished(mover_was_white, scored_points)
         value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
-        info_lines.append(f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} done={done_code}{value_suffix}")
+        info_lines.append(
+            f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} dave={dave_after} acc={int(accepted)} done={done_code}{value_suffix}"
+        )
+        if int(apply_double) and int(accept_double) == 0:
+            info_lines.append(f"Double was rejected. Match/game finished with r={reward}, dave={dave_after}, done={done_code}.")
         if done_code == 2:
             env.reset()
         turn_white = is_white_turn_from_env()
-        start_turn()
+        if agent_mode == "replay":
+            sync_cube_visual_from_env()
+            manual_steps.clear()
+            history.clear()
+            if 0 <= replay_idx < len(replay_steps):
+                next_meta = replay_steps[replay_idx].get("action_meta", {})
+                dice_values[:], used_dice[:], required_dice[:], next_rolled = _set_ui_dice_from_values(list(next_meta.get("dice", [])))
+                dice_rolled = bool(next_rolled)
+            else:
+                dice_values[:] = []
+                used_dice[:] = []
+                required_dice[:] = []
+                dice_rolled = False
+            moves = np.empty((0, 8), dtype=np.uint8)
+            turn_move_hints.clear()
+            selected_hint_idx = 0
+        else:
+            start_turn()
         macro_pending_submit = False
 
     def apply_replay_step():
@@ -943,21 +978,14 @@ def main():
         turn_start_state = get_env_state()
 
         dice = list(meta.get("dice", []))
-        if len(dice) == 2:
+        dice_values, used_dice, required_dice, dice_rolled = _set_ui_dice_from_values(dice)
+        if dice_rolled:
             env.set_dice(np.asarray(dice, dtype=np.uint8))
-            if dice[0] == dice[1]:
-                dice_values = [int(dice[0]), int(dice[1])]
-                required_dice = [2, 2]
-            else:
-                dice_values = sorted([int(dice[0]), int(dice[1])], reverse=True)
-                required_dice = [1, 1]
-            used_dice = [0] * len(dice_values)
-            dice_rolled = True
 
         move = np.asarray(meta.get("move", [255] * 8), dtype=np.uint8)
         apply_double = int(meta.get("apply_double", 0))
         accept_double = int(meta.get("accept_double", 1))
-        if apply_double:
+        if apply_double and accept_double:
             start_pos = cube_center_for_owner(cube_owner_visual)
             end_pos = cube_center_for_owner(not turn_white)
             cube_owner_visual = (not turn_white)
@@ -967,6 +995,10 @@ def main():
                 "start_time": pygame.time.get_ticks() / 1000.0,
                 "t": 0.0,
             }
+        elif apply_double and not accept_double:
+            rej_reward = meta.get("reward", None)
+            rej_done = meta.get("done_code", None)
+            info_lines.append(f"Replay: double was offered and rejected (reward={rej_reward}, done={rej_done}).")
 
         info_lines.append(f"Replay step {replay_idx + 1}/{len(replay_steps)}: dice={dice} move={move_to_str(move, turn_white)}")
         start_macro_animation(
@@ -1001,11 +1033,7 @@ def main():
             turn_white = is_white_turn_from_env()
             turn_start_state = get_env_state()
         first_dice = list(first_meta.get("dice", []))
-        if len(first_dice) == 2:
-            dice_values = [int(first_dice[0]), int(first_dice[1])] if first_dice[0] == first_dice[1] else sorted([int(first_dice[0]), int(first_dice[1])], reverse=True)
-            required_dice = [2, 2] if first_dice[0] == first_dice[1] else [1, 1]
-            used_dice = [0] * len(dice_values)
-            dice_rolled = True
+        dice_values, used_dice, required_dice, dice_rolled = _set_ui_dice_from_values(first_dice)
         info_lines.append(f"Loaded replay start. Steps: {len(replay_steps)}")
     else:
         start_turn()
@@ -1071,7 +1099,15 @@ def main():
             return
         prev_state = get_env_state()
         env_from, env_to = macro_anim_steps[macro_anim_idx]
-        ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+        die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
+        die_value = int(dice_values[die_idx]) if die_idx >= 0 and die_idx < len(dice_values) else 0
+        if die_value > 0:
+            ok, _ = env.apply_micro_step(int(env_from), int(env_to), die_value)
+        else:
+            ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+        if not ok:
+            set_env_state(prev_state)
+            ok, _ = env.apply_micro_step(int(env_from), int(env_to))
         if not ok:
             macro_anim_steps = []
             info_lines.append("Failed to animate selected macro-step.")
@@ -1079,7 +1115,6 @@ def main():
         post_state = get_env_state()
         from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
         to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
-        die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
         if die_idx >= 0:
             macro_anim_used_dice[die_idx] += 1
         macro_anim_manual_steps.append((from_disp, to_disp))
@@ -1117,7 +1152,7 @@ def main():
         required_steps = max_micro_steps_in_moves(moves, turn_white) if dice_rolled else 0
         is_opponent_turn = agent_mode == "play" and not turn_white
         can_submit = dice_rolled and (is_opponent_turn or len(moves) == 0 or len(manual_steps) == required_steps)
-        show_roll_button = (not dice_rolled) and (not cube_offer_pending)
+        show_roll_button = (agent_mode != "replay") and (not dice_rolled) and (not cube_offer_pending)
         cube_clickable = (not dice_rolled) and (not cube_deactivated_for_turn) and bool(double_possible) and (not cube_offer_pending) and (not is_opponent_turn)
         move_hints = turn_move_hints
         if move_hints:
@@ -1155,7 +1190,15 @@ def main():
             if macro_anim_idx < len(macro_anim_steps):
                 prev_state = get_env_state()
                 env_from, env_to = macro_anim_steps[macro_anim_idx]
-                ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+                die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
+                die_value = int(dice_values[die_idx]) if die_idx >= 0 and die_idx < len(dice_values) else 0
+                if die_value > 0:
+                    ok, _ = env.apply_micro_step(int(env_from), int(env_to), die_value)
+                else:
+                    ok, _ = env.apply_micro_step(int(env_from), int(env_to))
+                if not ok:
+                    set_env_state(prev_state)
+                    ok, _ = env.apply_micro_step(int(env_from), int(env_to))
                 if not ok:
                     info_lines.append("Failed to animate selected macro-step.")
                     macro_anim_steps = []
@@ -1163,7 +1206,6 @@ def main():
                     post_state = get_env_state()
                     from_disp = "BAR" if env_from == 30 else transform_point_for_display(env_from, macro_anim_turn_white)
                     to_disp = "OFF" if env_to == 25 else transform_point_for_display(env_to, macro_anim_turn_white)
-                    die_idx = infer_die_index_for_step(env_from, env_to, macro_anim_used_dice)
                     if die_idx >= 0:
                         macro_anim_used_dice[die_idx] += 1
                     macro_anim_manual_steps.append((from_disp, to_disp))
