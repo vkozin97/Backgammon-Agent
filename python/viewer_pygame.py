@@ -894,7 +894,13 @@ def main():
             cube_y = BOTTOM - CUBE_SIZE // 2 - 24 if owner_white else TOP + CUBE_SIZE // 2 + 24
         return cube_x, cube_y
 
-    def apply_committed_move(chosen_mv: np.ndarray, value_hint=None, use_current_state: bool = False):
+    def apply_committed_move(
+        chosen_mv: np.ndarray,
+        value_hint=None,
+        use_current_state: bool = False,
+        apply_double: int = 0,
+        accept_double: int = 1,
+    ):
         nonlocal turn_white, macro_pending_submit
         mover_was_white = bool(turn_white)
         mv = np.asarray(chosen_mv, dtype=np.uint8)
@@ -902,7 +908,11 @@ def main():
             mv = np.full((8,), 255, dtype=np.uint8)
         else:
             set_env_state(turn_start_state)
-        reward, dave_after, _accepted, done_code = env.step_move(mv, apply_double=0, accept_double=1)
+        reward, dave_after, _accepted, done_code = env.step_move(
+            mv,
+            apply_double=int(apply_double),
+            accept_double=int(accept_double),
+        )
         if int(n_games) <= 0 and agent_mode == "none" and int(done_code) in (1, 2):
             scored_points = int(round(float(reward))) * int(dave_after)
             on_endless_game_finished(mover_was_white, scored_points)
@@ -918,6 +928,9 @@ def main():
         nonlocal replay_idx, turn_white, turn_start_state, dice_values, used_dice, required_dice, dice_rolled, cube_move_anim, cube_owner_visual
         if replay_idx >= len(replay_steps):
             info_lines.append("Replay finished.")
+            return
+        if piece_anim is not None or macro_anim_steps:
+            info_lines.append("Replay animation in progress. Wait until it finishes.")
             return
         meta = replay_steps[replay_idx].get("action_meta", {})
         raw_state = np.asarray(meta.get("raw_state", []), dtype=np.int16)
@@ -956,9 +969,13 @@ def main():
             }
 
         info_lines.append(f"Replay step {replay_idx + 1}/{len(replay_steps)}: dice={dice} move={move_to_str(move, turn_white)}")
-        start_macro_animation(move, None, auto_commit=False)
-        reward, dave_after, accepted, done_code = env.step_move(move, apply_double=apply_double, accept_double=accept_double)
-        info_lines.append(f"Replay result: r={reward} dave={dave_after} accepted={accepted} done={done_code}")
+        start_macro_animation(
+            move,
+            None,
+            auto_commit=True,
+            commit_apply_double=apply_double,
+            commit_accept_double=accept_double,
+        )
         replay_idx += 1
 
     dice_values, used_dice, required_dice, manual_steps, history = [], [], [], [], []
@@ -1006,9 +1023,17 @@ def main():
     macro_anim_history = []
     macro_anim_manual_steps = []
     macro_anim_used_dice = []
+    macro_anim_commit_apply_double = 0
+    macro_anim_commit_accept_double = 1
 
-    def start_macro_animation(chosen_mv: np.ndarray, chosen_value, auto_commit: bool = True):
-        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim, macro_anim_auto_commit, macro_pending_submit, manual_steps, history, used_dice, macro_anim_history, macro_anim_manual_steps, macro_anim_used_dice
+    def start_macro_animation(
+        chosen_mv: np.ndarray,
+        chosen_value,
+        auto_commit: bool = True,
+        commit_apply_double: int = 0,
+        commit_accept_double: int = 1,
+    ):
+        nonlocal macro_anim_steps, macro_anim_idx, macro_anim_turn_white, macro_anim_value, macro_anim_move, piece_anim, macro_anim_auto_commit, macro_pending_submit, manual_steps, history, used_dice, macro_anim_history, macro_anim_manual_steps, macro_anim_used_dice, macro_anim_commit_apply_double, macro_anim_commit_accept_double
         mv = np.asarray(chosen_mv, dtype=np.uint8)
         steps = []
         for k in range(4):
@@ -1027,12 +1052,22 @@ def main():
         macro_anim_history = []
         macro_anim_manual_steps = []
         macro_anim_used_dice = [0] * len(dice_values)
+        macro_anim_commit_apply_double = int(commit_apply_double)
+        macro_anim_commit_accept_double = int(commit_accept_double)
         if not auto_commit:
             manual_steps = []
             history = []
             used_dice = [0] * len(dice_values)
         set_env_state(turn_start_state)
         if not macro_anim_steps:
+            if auto_commit:
+                apply_committed_move(
+                    np.asarray(macro_anim_move, dtype=np.uint8),
+                    macro_anim_value,
+                    use_current_state=False,
+                    apply_double=macro_anim_commit_apply_double,
+                    accept_double=macro_anim_commit_accept_double,
+                )
             return
         prev_state = get_env_state()
         env_from, env_to = macro_anim_steps[macro_anim_idx]
@@ -1150,7 +1185,13 @@ def main():
                     history = list(macro_anim_history)
                     used_dice = list(macro_anim_used_dice)
                 else:
-                    apply_committed_move(np.asarray(macro_anim_move, dtype=np.uint8), macro_anim_value, use_current_state=True)
+                    apply_committed_move(
+                        np.asarray(macro_anim_move, dtype=np.uint8),
+                        macro_anim_value,
+                        use_current_state=True,
+                        apply_double=macro_anim_commit_apply_double,
+                        accept_double=macro_anim_commit_accept_double,
+                    )
                 macro_anim_steps = []
 
         point_rects, bar_rect, dice_rects, undo_rect, ok_rect, cube_rect, roll_rect, accept_rect, reject_rect = draw_board(
