@@ -574,7 +574,7 @@ class LeagueController:
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
                 if _is_endless_state(states[owner]):
-                    exp_keep = -_reward_expectation(p_row)
+                    exp_keep = -1.0
                     exp_double = -2.0 * _reward_expectation(p_row)
                     accept_doubles[owner] = int(exp_double >= exp_keep)
                 else:
@@ -790,7 +790,7 @@ class LeagueController:
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
                 if _is_endless_state(states[owner]):
-                    exp_keep = -_reward_expectation(p_row)
+                    exp_keep = -1.0
                     exp_double = -2.0 * _reward_expectation(p_row)
                     accept_doubles[owner] = int(exp_double >= exp_keep)
                 else:
