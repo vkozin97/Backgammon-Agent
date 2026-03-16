@@ -181,7 +181,7 @@ def plot_metrics_history(
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
     decision_dir = out_dir / "decision_temperature"
-    replay_dir = out_dir / "graphs" / "replay"
+    replay_dir = out_dir / "replay"
     games_stats_dir = out_dir / "games_stats"
     step_t0 = time.perf_counter()
     winrates_dir.mkdir(parents=True, exist_ok=True)
