@@ -374,3 +374,49 @@ def test_play_game_respects_max_steps_per_game():
     result = league.play_game(RandomAgent(), RandomAgent(), game_id="g_cap", epoch=0)
     assert result.max_steps_reached is True
     assert result.turns == 2
+
+
+def test_terminal_outcome_accept_target_uses_pending_accept():
+    step = {
+        "agent_id": "a",
+        "player_index": 0,
+        "state_vector": np.zeros((263,), dtype=np.float32),
+        "accept_double_opponent": False,
+        "action_meta": {"raw_state": [0] * 65 + [1]},
+    }
+    game = GameResult(
+        game_id="g",
+        steps=[step],
+        winner="a",
+        turns=1,
+        player_1_id="a",
+        player_2_id="b",
+        winner_player_index=0,
+        points_won=1,
+        reward_value=1,
+    )
+    out = _terminal_outcome_for_step(game, step)
+    assert out[24] == 1.0
+
+
+
+from training.observation import state_to_observation
+
+
+def test_state_to_observation_uses_cube_scalars_from_state_raw():
+    raw = np.zeros((69,), dtype=np.float32)
+    raw[53] = 2
+    raw[54] = 1
+    raw[55] = 4
+    raw[56] = 7
+    raw[59] = 1
+    raw[66] = 1
+    raw[67] = 0
+    raw[68] = 1
+    obs = state_to_observation(raw)
+    # match scalars are the last 9 values; cube flags are at positions 5,6,7,8 in that block
+    ms = obs[-9:]
+    assert ms[5] == 1.0
+    assert ms[6] == 0.0
+    assert ms[7] == 1.0
+    assert ms[8] == 1.0

@@ -7,7 +7,7 @@ import numpy as np
 import pygame
 
 import bg_env  # pybind11 module
-from training.agents import build_trainable_agents
+from training.agents import build_trainable_agents, get_double_hint_metrics
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
 from training.observation import state_to_observation
@@ -244,27 +244,6 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     return result
 
 
-def _reward_expectation_from_probs_row(probs_row: np.ndarray) -> float:
-    p = np.asarray(probs_row, dtype=np.float32).reshape(-1)
-    reward_head = p[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
-    if reward_head.size != REWARD_VECTOR_DIM:
-        return 0.0
-    return float(np.dot(REWARD_VALUES, reward_head))
-
-
-def _set_obs_double_state(obs: np.ndarray) -> np.ndarray:
-    x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 7:
-        x[-7] = x[-7] * 2.0
-    if x.size >= 4:
-        x[-4] = 0.0
-    if x.size >= 3:
-        x[-3] = 1.0
-    if x.size >= 1:
-        x[-1] = 1.0
-    return x
-
-
 def _swap_reward_vector_perspective(values: np.ndarray) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float32).reshape(-1)
     if arr.size != REWARD_VECTOR_DIM:
@@ -285,24 +264,19 @@ def _format_vec_percent(values: np.ndarray) -> str:
     return "[" + ", ".join(f"{(float(v) * 100.0):.1f}" for v in arr.tolist()) + "]"
 
 
-def _agent_hint_lines(agent, raw_state: np.ndarray) -> list[str]:
+def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.ndarray, dice_values: list[int]) -> list[str]:
     if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
         return []
 
-    obs_now = state_to_observation(np.asarray(raw_state, dtype=np.float32)).reshape(1, -1)
-    probs_now = np.asarray(agent.predict_proba(obs_now), dtype=np.float32).reshape(-1)
-    reward_vec = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
-    p_accept = float(np.clip(probs_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
-
-    obs_double = _set_obs_double_state(obs_now.reshape(-1)).reshape(1, -1)
-    probs_double = np.asarray(agent.predict_proba(obs_double), dtype=np.float32).reshape(-1)
-
-    ev_no_double = _reward_expectation_from_probs_row(probs_now)
-    ev_double_accepted = 2.0 * _reward_expectation_from_probs_row(probs_double)
-
-    line1 = f"R6={_format_vec_percent(reward_vec)}"
-    line2 = f"EV(noD)={ev_no_double:.3f} | EV(D+acc)={ev_double_accepted:.3f} | P(acc)={(p_accept * 100.0):.1f}%"
-    return [line1, line2]
+    endless = int(np.asarray(raw_state, dtype=np.int16).reshape(-1)[56]) < 0 if np.asarray(raw_state).size > 56 else False
+    obs_now = state_to_observation(np.asarray(raw_state, dtype=np.float32))
+    obs_after = state_to_observation(np.asarray(raw_after_selected_move, dtype=np.float32))
+    m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
+    line0 = f"Кубики: {dice_values if dice_values else '-'}"
+    line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
+    line2 = f"revR6={_format_vec_percent(m.reward_vec_reversed)} | EV(keep)={m.exp_keep:.3f} | EV(acc)={m.exp_accept:.3f}"
+    line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if m.accept_double else 'Нет'}"
+    return [line0, line1, line2, line3]
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -707,7 +681,7 @@ def _format_prob_row(label: str, values: list[int]) -> str:
     return f"{label:>2} " + " ".join(f"{v:>2d}" for v in values)
 
 
-def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines, hint_lines):
+def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines, hint_lines, agent_thinking=False):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -735,7 +709,9 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
 
     y += 10
     max_lines = (H - y - 150) // 18
-    if move_hints:
+    if agent_thinking:
+        panel_moves = []
+    elif move_hints:
         panel_moves = [mv for _, mv, _, _ in move_hints]
     else:
         panel_moves = sorted_moves_for_panel(moves, turn_white)
@@ -836,7 +812,7 @@ def main():
         return int(double_possible), mv
 
     def roll_current_dice():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, dice_rolled, cube_deactivated_for_turn
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, dice_rolled, cube_deactivated_for_turn, hint_pending, hint_pending_started
         d = list(map(int, env.roll_dice()))
         if d[0] == d[1]:
             dice_values = [d[0], d[1]]
@@ -867,7 +843,7 @@ def main():
             cube_owner_visual = None if owner < 0 else bool(owner == 0)
 
     def start_turn():
-        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn
+        nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn, hint_pending, hint_pending_started
         manual_steps = []
         history = []
         selected_die_idx = 0
@@ -883,6 +859,8 @@ def main():
             macro_pending_submit = False
             dice_rolled = False
             cube_deactivated_for_turn = False
+            hint_pending = True
+            hint_pending_started = False
         else:
             roll_current_dice()
 
@@ -1036,6 +1014,10 @@ def main():
     cube_shake_anim = None
     cube_move_anim = None
     turn_move_hints = []
+    hint_lines_cache = []
+    hint_key_prev = None
+    hint_pending = True
+    hint_pending_started = False
     if agent_mode == "replay":
         first_meta = replay_steps[0].get("action_meta", {}) if replay_steps else {}
         first_raw = np.asarray(first_meta.get("raw_state", []), dtype=np.int16)
@@ -1270,7 +1252,36 @@ def main():
             _format_prob_row("OH", oh),
             _format_prob_row("OC", oc),
         ]
-        hint_lines = _agent_hint_lines(agent, raw) if agent_mode == "hint" else []
+        agent_thinking = False
+        hint_lines = []
+        if agent_mode == "hint":
+            key = (bytes(np.asarray(raw, dtype=np.int16).tobytes()), int(selected_hint_idx), len(history), bool(can_submit), tuple(int(x) for x in dice_values))
+            if key != hint_key_prev:
+                hint_key_prev = key
+                hint_pending = True
+                hint_pending_started = False
+            if hint_pending and not hint_pending_started:
+                hint_pending_started = True
+                agent_thinking = True
+                hint_lines = ["Агент думает..."]
+            elif hint_pending:
+                raw_after_selected = np.asarray(raw, dtype=np.int16)
+                if can_submit and len(history) > 0:
+                    raw_after_selected = np.asarray(raw, dtype=np.int16)
+                elif len(move_hints) > 0:
+                    sim_hint = bg_env.Env(0)
+                    sim_hint.set_state_raw(np.asarray(turn_start_state, dtype=np.int16))
+                    try:
+                        sim_hint.step_move(np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8), 0, 1)
+                    except TypeError:
+                        sim_hint.step_move(np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8))
+                    raw_after_selected = np.asarray(sim_hint.get_state_raw(), dtype=np.int16)
+                hint_lines_cache = _agent_hint_lines(agent, raw, raw_after_selected, dice_values)
+                hint_pending = False
+                hint_pending_started = False
+                hint_lines = hint_lines_cache
+            else:
+                hint_lines = hint_lines_cache
         draw_panel(
             screen,
             font,
@@ -1280,10 +1291,11 @@ def main():
             info_lines,
             manual_steps,
             turn_white,
-            move_hints,
+            ([] if agent_thinking else move_hints),
             selected_hint_idx,
             prob_table_lines,
             hint_lines,
+            agent_thinking=agent_thinking,
         )
         pygame.display.flip()
 
@@ -1312,11 +1324,11 @@ def main():
                         start_turn()
                     info_lines.append(f"Reroll: {dice_values}")
                 elif pygame.K_0 <= event.key <= pygame.K_9:
-                    selected_hint_idx = min(event.key - pygame.K_0, max(0, len(move_hints) - 1))
+                    selected_hint_idx = min(event.key - pygame.K_0, max(0, len(move_hints) - 1)); hint_pending = True; hint_pending_started = False
                 elif event.key == pygame.K_UP:
-                    selected_hint_idx = max(0, selected_hint_idx - 1)
+                    selected_hint_idx = max(0, selected_hint_idx - 1); hint_pending = True; hint_pending_started = False
                 elif event.key == pygame.K_DOWN:
-                    selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1)
+                    selected_hint_idx = min(max(0, len(move_hints) - 1), selected_hint_idx + 1); hint_pending = True; hint_pending_started = False
                 elif event.key == pygame.K_SPACE:
                     if agent_mode == "replay":
                         apply_replay_step()

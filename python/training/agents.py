@@ -8,12 +8,203 @@ from torch import nn
 
 from .config import ModelConfig, TrainConfig
 from .observation import POINTS_DIM, VECTOR_CHANNELS
+from match_win_probs import get_match_win_probs
 
 
 MATCH_VECTOR_DIM = 12
 REWARD_VECTOR_DIM = 6
 ACCEPT_HEAD_DIM = 1
 TOTAL_OUTPUT_DIM = MATCH_VECTOR_DIM * 2 + ACCEPT_HEAD_DIM + REWARD_VECTOR_DIM
+REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
+MET_TABLE = np.asarray(get_match_win_probs(MATCH_VECTOR_DIM - 1), dtype=np.float32)
+
+
+@dataclass
+class DoubleHintMetrics:
+    reward_vec: np.ndarray
+    exp_no_double: float
+    exp_double: float
+    p_accept: float
+    reward_vec_reversed: np.ndarray
+    exp_keep: float
+    exp_accept: float
+    apply_double: int
+    accept_double: int
+
+
+def reward_expectation(probs_row: np.ndarray) -> float:
+    p = np.asarray(probs_row, dtype=np.float32).reshape(-1)
+    reward_head = p[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    if reward_head.size != REWARD_VECTOR_DIM:
+        return 0.0
+    return float(np.dot(REWARD_VALUES, reward_head))
+
+
+def extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
+    v = np.asarray(obs, dtype=np.float32).reshape(-1)
+    my_left = int(np.clip(np.round(float(v[-6])) if v.size >= 6 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(v[-5])) if v.size >= 5 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    dave_val = int(max(1, round(float(v[-7])))) if v.size >= 7 else 1
+    my_double_avail = int(round(float(v[-4]))) if v.size >= 4 else 0
+    opp_double_avail = int(round(float(v[-3]))) if v.size >= 3 else 0
+    return my_left, opp_left, dave_val, my_double_avail, opp_double_avail
+
+
+def set_obs_double_state(obs: np.ndarray) -> np.ndarray:
+    x = np.asarray(obs, dtype=np.float32).copy()
+    if x.size >= 7:
+        x[-7] = x[-7] * 2.0
+    if x.size >= 4:
+        x[-4] = 0.0
+    if x.size >= 3:
+        x[-3] = 1.0
+    if x.size >= 1:
+        x[-1] = 1.0
+    return x
+
+
+def set_obs_opponent_double_offer(obs: np.ndarray) -> np.ndarray:
+    x = np.asarray(obs, dtype=np.float32).copy()
+    if x.size >= 7:
+        x[-7] = x[-7] * 2.0
+    if x.size >= 4:
+        x[-4] = 1.0
+    if x.size >= 3:
+        x[-3] = 0.0
+    if x.size >= 1:
+        x[-1] = 1.0
+    return x
+
+
+def _mask_and_normalize_head(head_probs: np.ndarray, left_to_win: int) -> np.ndarray:
+    h = np.asarray(head_probs, dtype=np.float32).copy()
+    left = int(np.clip(left_to_win, 0, MATCH_VECTOR_DIM - 1))
+    for i in range(MATCH_VECTOR_DIM):
+        if i > left:
+            h[i] = 0.0
+    total = float(np.sum(h))
+    if total <= 0.0:
+        h.fill(0.0)
+        h[left] = 1.0
+        return h
+    return h / total
+
+
+def _mask_eval_outputs(probs_row: np.ndarray, obs: np.ndarray) -> np.ndarray:
+    out = np.asarray(probs_row, dtype=np.float32).copy()
+    my_left, opp_left, _, _, _ = extract_obs_controls(obs)
+    out[:MATCH_VECTOR_DIM] = _mask_and_normalize_head(out[:MATCH_VECTOR_DIM], my_left)
+    out[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2] = _mask_and_normalize_head(out[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2], opp_left)
+    out[MATCH_VECTOR_DIM * 2] = float(np.clip(out[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    return out
+
+
+def _redistribute_forbidden_stay_mass(my_probs: np.ndarray, opp_probs: np.ndarray, my_left: int, opp_left: int) -> tuple[np.ndarray, np.ndarray]:
+    my = np.asarray(my_probs, dtype=np.float32).copy()
+    opp = np.asarray(opp_probs, dtype=np.float32).copy()
+    my_left = int(np.clip(my_left, 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(opp_left, 0, MATCH_VECTOR_DIM - 1))
+
+    stay_mass = float(my[my_left] + opp[opp_left])
+    my[my_left] = 0.0
+    opp[opp_left] = 0.0
+
+    my_rest = float(np.sum(my))
+    opp_rest = float(np.sum(opp))
+    rest_total = my_rest + opp_rest
+    if stay_mass <= 0.0 or rest_total <= 1e-8:
+        return my, opp
+
+    my_add = stay_mass * (my_rest / rest_total)
+    opp_add = stay_mass * (opp_rest / rest_total)
+
+    if my_rest > 1e-8:
+        my *= (my_rest + my_add) / my_rest
+    if opp_rest > 1e-8:
+        opp *= (opp_rest + opp_add) / opp_rest
+    return my, opp
+
+
+def _expected_match_win_prob(my_probs: np.ndarray, opp_probs: np.ndarray) -> float:
+    my = np.asarray(my_probs, dtype=np.float32).reshape(-1)
+    opp = np.asarray(opp_probs, dtype=np.float32).reshape(-1)
+    met_view = MET_TABLE[: my.shape[0], : opp.shape[0]]
+    return float(my @ met_view @ opp)
+
+
+def head_win_eval(probs_row: np.ndarray, obs_row: np.ndarray) -> float:
+    masked = _mask_eval_outputs(probs_row, obs_row)
+    my_left, opp_left, _, _, _ = extract_obs_controls(obs_row)
+    my = masked[:MATCH_VECTOR_DIM]
+    opp = masked[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
+    my_r, opp_r = _redistribute_forbidden_stay_mass(my, opp, my_left, opp_left)
+    return _expected_match_win_prob(my_r, opp_r)
+
+
+def decide_apply_double_from_probs(probs_now: np.ndarray, probs_after_double: np.ndarray, obs_now: np.ndarray, endless: bool = False) -> int:
+    if endless:
+        p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+        exp_no_double = reward_expectation(probs_now)
+        exp_double = p_accept * 2.0 * reward_expectation(probs_after_double) + (1.0 - p_accept) * 1.0
+        return int(exp_double > exp_no_double)
+
+    my_left, opp_left, dave_val, my_double_avail, _ = extract_obs_controls(obs_now)
+    if my_double_avail <= 0:
+        return 0
+    p_win = head_win_eval(probs_now, obs_now)
+    my_after_reject = max(my_left - int(max(dave_val, 1)), 0)
+    p_win_rejected = float(MET_TABLE[my_after_reject, opp_left])
+    p_win_accepted = head_win_eval(probs_after_double, set_obs_double_state(obs_now))
+    p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    p_win_double = p_accept * p_win_accepted + (1.0 - p_accept) * p_win_rejected
+    return int(p_win_double > p_win)
+
+
+def decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: np.ndarray, endless: bool = False) -> int:
+    if endless:
+        exp_keep = -1.0
+        exp_accept = -2.0 * reward_expectation(probs_if_opp_doubles)
+        return int(exp_accept >= exp_keep)
+
+    my_left, opp_left, dave_val, _, opp_double_avail = extract_obs_controls(obs_now)
+    if opp_double_avail <= 0:
+        return 0
+    p_accept = head_win_eval(probs_if_opp_doubles, set_obs_opponent_double_offer(obs_now))
+    opp_after = max(opp_left - int(max(dave_val, 1)), 0)
+    p_reject = float(MET_TABLE[my_left, opp_after])
+    return int(p_accept >= p_reject)
+
+
+def get_double_hint_metrics(agent: "ValueAgent", obs_now: np.ndarray, obs_after_selected_move: np.ndarray, endless: bool = False) -> DoubleHintMetrics:
+    obs_now_2d = np.asarray(obs_now, dtype=np.float32).reshape(1, -1)
+    probs_now = np.asarray(agent.predict_proba(obs_now_2d), dtype=np.float32).reshape(-1)
+    probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now).reshape(1, -1)), dtype=np.float32).reshape(-1)
+
+    reward_vec = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    p_accept = float(np.clip(probs_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    exp_no_double = reward_expectation(probs_now)
+    exp_double = p_accept * (2.0 * reward_expectation(probs_double_now)) + (1.0 - p_accept) * 1.0
+    apply_double = decide_apply_double_from_probs(probs_now, probs_double_now, obs_now, endless=endless)
+
+    obs_post = np.asarray(obs_after_selected_move, dtype=np.float32).reshape(-1)
+    probs_keep = np.asarray(agent.predict_proba(obs_post.reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_offer = np.asarray(agent.predict_proba(set_obs_opponent_double_offer(obs_post).reshape(1, -1)), dtype=np.float32).reshape(-1)
+    reward_vec_rev = probs_keep[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM][::-1].copy()
+    exp_keep = -1.0 if endless else head_win_eval(probs_keep, obs_post)
+    exp_accept = -2.0 * reward_expectation(probs_offer) if endless else head_win_eval(probs_offer, set_obs_opponent_double_offer(obs_post))
+    accept_double = decide_accept_double_from_probs(probs_offer, obs_post, endless=endless)
+
+    return DoubleHintMetrics(
+        reward_vec=reward_vec,
+        exp_no_double=float(exp_no_double),
+        exp_double=float(exp_double),
+        p_accept=float(p_accept),
+        reward_vec_reversed=reward_vec_rev,
+        exp_keep=float(exp_keep),
+        exp_accept=float(exp_accept),
+        apply_double=int(apply_double),
+        accept_double=int(accept_double),
+    )
 
 
 def _activation(name: str) -> nn.Module:

@@ -7,9 +7,17 @@ import time
 import numpy as np
 import torch
 
-from match_win_probs import get_match_win_probs
-from .agents import ValueAgent
-from .observation import state_to_observation
+from .agents import (
+    ValueAgent,
+    decide_apply_double_from_probs,
+    decide_accept_double_from_probs,
+    extract_obs_controls,
+    head_win_eval,
+    reward_expectation,
+    set_obs_double_state,
+    set_obs_opponent_double_offer,
+)
+from .observation import OBSERVATION_DIM, state_to_observation
 
 try:
     from torch.func import functional_call, stack_module_state, vmap
@@ -32,163 +40,10 @@ except Exception:  # pragma: no cover
 MATCH_VECTOR_DIM = 12
 MODEL_OUTPUT_DIM = 31
 
-REWARD_VECTOR_DIM = 6
-REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
-
-def _reward_expectation(probs_row: np.ndarray) -> float:
-    p = np.asarray(probs_row, dtype=np.float32)
-    reward_head = p[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
-    if reward_head.size != REWARD_VECTOR_DIM:
-        return 0.0
-    return float(np.dot(REWARD_VALUES, reward_head))
-
-
-def _mask_and_normalize_head(head_probs: np.ndarray, left_to_win: int) -> np.ndarray:
-    h = np.asarray(head_probs, dtype=np.float32).copy()
-    left = int(np.clip(left_to_win, 0, MATCH_VECTOR_DIM - 1))
-    for i in range(MATCH_VECTOR_DIM):
-        if i > left:
-            h[i] = 0.0
-    total = float(np.sum(h))
-    if total <= 0.0:
-        h.fill(0.0)
-        h[left] = 1.0
-        return h
-    return h / total
-
-
-def _mask_eval_outputs(probs_row: np.ndarray, obs: np.ndarray) -> np.ndarray:
-    out = np.asarray(probs_row, dtype=np.float32).copy()
-    my_left = int(np.clip(np.round(float(obs[-6])) if obs.size >= 6 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(obs[-5])) if obs.size >= 5 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    out[:MATCH_VECTOR_DIM] = _mask_and_normalize_head(out[:MATCH_VECTOR_DIM], my_left)
-    out[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2] = _mask_and_normalize_head(out[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2], opp_left)
-    out[MATCH_VECTOR_DIM * 2] = float(np.clip(out[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
-    return out
-
-
-def _match_win_probability(masked_probs_row: np.ndarray) -> float:
-    return float(np.asarray(masked_probs_row, dtype=np.float32)[0])
-
-# MET is immutable and shared across all self-play calls.
-# Keep one float32 table in memory and reuse it in all evaluations.
-MET_TABLE = np.asarray(get_match_win_probs(MATCH_VECTOR_DIM - 1), dtype=np.float32)
-
-
-def _redistribute_forbidden_stay_mass(my_probs: np.ndarray, opp_probs: np.ndarray, my_left: int, opp_left: int) -> tuple[np.ndarray, np.ndarray]:
-    my = np.asarray(my_probs, dtype=np.float32).copy()
-    opp = np.asarray(opp_probs, dtype=np.float32).copy()
-    my_left = int(np.clip(my_left, 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(opp_left, 0, MATCH_VECTOR_DIM - 1))
-
-    stay_mass = float(my[my_left] + opp[opp_left])
-    my[my_left] = 0.0
-    opp[opp_left] = 0.0
-
-    my_rest = float(np.sum(my))
-    opp_rest = float(np.sum(opp))
-    rest_total = my_rest + opp_rest
-    if stay_mass <= 0.0 or rest_total <= 1e-8:
-        return my, opp
-
-    my_add = stay_mass * (my_rest / rest_total)
-    opp_add = stay_mass * (opp_rest / rest_total)
-
-    if my_rest > 1e-8:
-        my *= (my_rest + my_add) / my_rest
-    if opp_rest > 1e-8:
-        opp *= (opp_rest + opp_add) / opp_rest
-    return my, opp
-
-
-def _expected_match_win_prob(my_probs: np.ndarray, opp_probs: np.ndarray) -> float:
-    my = np.asarray(my_probs, dtype=np.float32).reshape(-1)
-    opp = np.asarray(opp_probs, dtype=np.float32).reshape(-1)
-    met_view = MET_TABLE[: my.shape[0], : opp.shape[0]]
-    # Avoid temporary outer-product allocations in hot self-play path.
-    return float(my @ met_view @ opp)
-
-
-def _extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
-    v = np.asarray(obs, dtype=np.float32).reshape(-1)
-    my_left = int(np.clip(np.round(float(v[-6])) if v.size >= 6 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(v[-5])) if v.size >= 5 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    dave_val = int(max(1, round(float(v[-7])))) if v.size >= 7 else 1
-    my_double_avail = int(round(float(v[-4]))) if v.size >= 4 else 0
-    opp_double_avail = int(round(float(v[-3]))) if v.size >= 3 else 0
-    return my_left, opp_left, dave_val, my_double_avail, opp_double_avail
-
-
-def _set_obs_double_state(obs: np.ndarray) -> np.ndarray:
-    x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 7:
-        x[-7] = x[-7] * 2.0
-    if x.size >= 4:
-        x[-4] = 0.0
-    if x.size >= 3:
-        x[-3] = 1.0
-    if x.size >= 1:
-        x[-1] = 1.0
-    return x
-
-
-def _head_win_eval(probs_row: np.ndarray, obs_row: np.ndarray) -> float:
-    masked = _mask_eval_outputs(probs_row, obs_row)
-    my_left, opp_left, _, _, _ = _extract_obs_controls(obs_row)
-    my = masked[:MATCH_VECTOR_DIM]
-    opp = masked[MATCH_VECTOR_DIM: MATCH_VECTOR_DIM * 2]
-    my_r, opp_r = _redistribute_forbidden_stay_mass(my, opp, my_left, opp_left)
-    return _expected_match_win_prob(my_r, opp_r)
-
-
-def _decide_apply_double(probs_now: np.ndarray, probs_after_double: np.ndarray, obs_now: np.ndarray) -> int:
-    my_left, opp_left, dave_val, my_double_avail, _ = _extract_obs_controls(obs_now)
-    if my_double_avail <= 0:
-        return 0
-
-    p_win = _head_win_eval(probs_now, obs_now)
-
-    my_after_reject = max(my_left - int(max(dave_val, 1)), 0)
-    p_win_rejected = float(MET_TABLE[my_after_reject, opp_left])
-
-    obs_double = _set_obs_double_state(obs_now)
-    p_win_accepted = _head_win_eval(probs_after_double, obs_double)
-
-    p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
-    p_win_double = p_accept * p_win_accepted + (1.0 - p_accept) * p_win_rejected
-    return int(p_win_double > p_win)
-
-
-def _set_obs_opponent_double_offer(obs: np.ndarray) -> np.ndarray:
-    x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 7:
-        x[-7] = x[-7] * 2.0
-    if x.size >= 4:
-        x[-4] = 1.0
-    if x.size >= 3:
-        x[-3] = 0.0
-    if x.size >= 1:
-        x[-1] = 1.0
-    return x
-
-
-def _reject_double_match_win_prob(obs_now: np.ndarray) -> float:
-    my_left, opp_left, dave_val, _, _ = _extract_obs_controls(obs_now)
-    opp_after = max(opp_left - int(max(dave_val, 1)), 0)
-    return float(MET_TABLE[my_left, opp_after])
-
 
 def _is_endless_state(raw_state: np.ndarray) -> bool:
     rs = np.asarray(raw_state, dtype=np.int16).reshape(-1)
     return rs.size > 56 and int(rs[56]) < 0
-
-def _decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: np.ndarray) -> int:
-    my_left, opp_left, _, _, opp_double_avail = _extract_obs_controls(obs_now)
-    if opp_double_avail <= 0:
-        return 0
-    p_accept = _head_win_eval(probs_if_opp_doubles, _set_obs_opponent_double_offer(obs_now))
-    p_reject = _reject_double_match_win_prob(obs_now)
-    return int(p_accept >= p_reject)
 
 class _FallbackEnv:
     def __init__(self, seed: int = 0):
@@ -533,16 +388,15 @@ class LeagueController:
 
         eval_agents = [evaluator for _ in range(n)]
         probs_now = self._predict_probs_single_cuda_call(eval_agents, np.stack(base_obs).astype(np.float32))
-        obs_double_batch = np.stack([_set_obs_double_state(x) for x in base_obs]).astype(np.float32)
+        obs_double_batch = np.stack([set_obs_double_state(x) for x in base_obs]).astype(np.float32)
         probs_double = self._predict_probs_single_cuda_call(eval_agents, obs_double_batch)
         for i in range(n):
-            if _is_endless_state(states[i]):
-                p_accept = float(np.clip(probs_now[i][MATCH_VECTOR_DIM * 2], 0.0, 1.0))
-                exp_no_double = _reward_expectation(probs_now[i])
-                exp_double = p_accept * 2.0 * _reward_expectation(probs_double[i]) + (1.0 - p_accept) * 1.0
-                apply_doubles[i] = int(exp_double > exp_no_double)
-            else:
-                apply_doubles[i] = _decide_apply_double(probs_now[i], probs_double[i], base_obs[i])
+            apply_doubles[i] = decide_apply_double_from_probs(
+                probs_now[i],
+                probs_double[i],
+                base_obs[i],
+                endless=_is_endless_state(states[i]),
+            )
 
         accept_eval_obs: list[np.ndarray] = []
         accept_eval_owner: list[int] = []
@@ -557,10 +411,10 @@ class LeagueController:
             except TypeError:
                 sim2.step_move(mv)
             post_obs = self.state_vector(sim2)
-            _, _, _, _, opp_double_avail = _extract_obs_controls(post_obs)
+            _, _, _, _, opp_double_avail = extract_obs_controls(post_obs)
             if opp_double_avail <= 0:
                 continue
-            accept_eval_obs.append(_set_obs_opponent_double_offer(post_obs))
+            accept_eval_obs.append(set_obs_opponent_double_offer(post_obs))
             accept_eval_owner.append(i)
 
         if accept_eval_obs:
@@ -573,12 +427,11 @@ class LeagueController:
                     obs_pre[-4] = 0.0
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
-                if _is_endless_state(states[owner]):
-                    exp_keep = -1.0
-                    exp_double = -2.0 * _reward_expectation(p_row)
-                    accept_doubles[owner] = int(exp_double >= exp_keep)
-                else:
-                    accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
+                accept_doubles[owner] = decide_accept_double_from_probs(
+                    p_row,
+                    obs_pre,
+                    endless=_is_endless_state(states[owner]),
+                )
 
         return apply_doubles, accept_doubles
 
@@ -687,17 +540,16 @@ class LeagueController:
             enabled_actors = [actors[int(i)] for i in enabled_idx]
             enabled_obs = base_obs[enabled_idx]
             probs_now = self._predict_probs_single_cuda_call(enabled_actors, enabled_obs)
-            obs_double_batch = np.stack([_set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
+            obs_double_batch = np.stack([set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
             probs_double = self._predict_probs_single_cuda_call(enabled_actors, obs_double_batch)
             for local_i, i in enumerate(enabled_idx):
                 i = int(i)
-                if _is_endless_state(states[i]):
-                    p_accept = float(np.clip(probs_now[local_i][MATCH_VECTOR_DIM * 2], 0.0, 1.0))
-                    exp_no_double = _reward_expectation(probs_now[local_i])
-                    exp_double = p_accept * 2.0 * _reward_expectation(probs_double[local_i]) + (1.0 - p_accept) * 1.0
-                    apply_doubles[i] = int(exp_double > exp_no_double)
-                else:
-                    apply_doubles[i] = _decide_apply_double(probs_now[local_i], probs_double[local_i], base_obs[i])
+                apply_doubles[i] = decide_apply_double_from_probs(
+                    probs_now[local_i],
+                    probs_double[local_i],
+                    base_obs[i],
+                    endless=_is_endless_state(states[i]),
+                )
 
         candidate_obs: list[np.ndarray] = []
         candidate_done: list[bool] = []
@@ -733,7 +585,7 @@ class LeagueController:
                 if is_done:
                     vals.append(0.0)
                 else:
-                    vals.append(_head_win_eval(p_row, obs_row))
+                    vals.append(head_win_eval(p_row, obs_row))
 
             grouped_vals: dict[int, list[float]] = {}
             for owner, val in zip(candidate_owner, vals):
@@ -743,7 +595,7 @@ class LeagueController:
                     continue
                 values_i = np.asarray(grouped_vals[i], dtype=np.float32)
                 if _is_endless_state(states[i]):
-                    values_i = -np.asarray([_reward_expectation(probs[j]) for j,o in enumerate(candidate_owner) if o==i], dtype=np.float32)
+                    values_i = -np.asarray([reward_expectation(probs[j]) for j,o in enumerate(candidate_owner) if o==i], dtype=np.float32)
                     selected_idx = self._sample_action_index(values_i)
                     self._record_topk_hit(values_i, selected_idx)
                 else:
@@ -766,14 +618,14 @@ class LeagueController:
             except TypeError:
                 sim2.step_move(np.asarray(mv, dtype=np.uint8))
             post_obs = self.state_vector(sim2)
-            _, _, _, _, opp_double_avail = _extract_obs_controls(post_obs)
+            _, _, _, _, opp_double_avail = extract_obs_controls(post_obs)
             if opp_double_avail <= 0:
                 accept_doubles[i] = 0
                 continue
             if i < len(actors) and not enabled_for_double[i]:
                 accept_doubles[i] = 1
                 continue
-            accept_eval_obs.append(_set_obs_opponent_double_offer(post_obs))
+            accept_eval_obs.append(set_obs_opponent_double_offer(post_obs))
             accept_eval_actor.append(actors[i])
             accept_eval_owner.append(i)
 
@@ -789,12 +641,11 @@ class LeagueController:
                     obs_pre[-4] = 0.0
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
-                if _is_endless_state(states[owner]):
-                    exp_keep = -1.0
-                    exp_double = -2.0 * _reward_expectation(p_row)
-                    accept_doubles[owner] = int(exp_double >= exp_keep)
-                else:
-                    accept_doubles[owner] = _decide_accept_double_from_probs(p_row, obs_pre)
+                accept_doubles[owner] = decide_accept_double_from_probs(
+                    p_row,
+                    obs_pre,
+                    endless=_is_endless_state(states[owner]),
+                )
 
         return actions, apply_doubles, accept_doubles
 

@@ -37,6 +37,16 @@ def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list
 
 
 
+
+def _pending_accept_target_from_step(step: dict) -> float:
+    meta = step.get("action_meta", {}) if isinstance(step, dict) else {}
+    raw_state = np.asarray(meta.get("raw_state", []), dtype=np.float32).reshape(-1)
+    if raw_state.size > 65:
+        val = float(raw_state[65])
+        if np.isfinite(val) and val >= 0.0:
+            return float(np.clip(val, 0.0, 1.0))
+    return 1.0 if bool(step.get("accept_double_opponent", False)) else 0.0
+
 def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
     reward_bins = np.zeros((6,), dtype=np.float64)
     # Two signed outcomes per game: winner (+r) and loser (-r).
@@ -123,7 +133,7 @@ def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     my_vec[my_next] = 1.0
     opp_vec[opp_next] = 1.0
 
-    accept_target = np.array([1.0 if bool(step.get("accept_double_opponent", False)) else 0.0], dtype=np.float32)
+    accept_target = np.array([_pending_accept_target_from_step(step)], dtype=np.float32)
 
     reward_value = int(np.clip(getattr(game, "reward_value", 1), 1, 3))
     signed_reward = reward_value if won else -reward_value
@@ -248,6 +258,9 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                     outcome = None
                 if outcome is None:
                     outcome = _terminal_outcome_for_step(game, st)
+                outcome = np.asarray(outcome, dtype=np.float32).copy()
+                if outcome.shape[0] >= MATCH_VECTOR_DIM * 2 + 1:
+                    outcome[MATCH_VECTOR_DIM * 2] = _pending_accept_target_from_step(st)
                 records.append({
                     **st,
                     "terminal_outcome": outcome,
