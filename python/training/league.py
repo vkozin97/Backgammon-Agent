@@ -9,6 +9,7 @@ import torch
 
 from .agents import (
     ValueAgent,
+    REWARD_VECTOR_DIM,
     decide_apply_double_from_probs,
     decide_accept_double_from_probs,
     extract_obs_controls,
