@@ -923,13 +923,14 @@ def main():
             mv = np.full((8,), 255, dtype=np.uint8)
         else:
             set_env_state(turn_start_state)
+        dave_before = int(turn_start_state[55]) if turn_start_state.shape[0] > 55 else 1
         reward, dave_after, accepted, done_code = env.step_move(
             mv,
             apply_double=int(apply_double),
             accept_double=int(accept_double),
         )
-        if int(n_games) <= 0 and agent_mode == "none" and int(done_code) in (1, 2):
-            scored_points = int(round(float(reward))) * int(dave_after)
+        if int(n_games) <= 0 and int(done_code) in (1, 2):
+            scored_points = int(round(float(reward))) * max(1, int(dave_before))
             on_endless_game_finished(mover_was_white, scored_points)
         value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
         info_lines.append(
