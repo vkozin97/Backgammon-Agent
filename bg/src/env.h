@@ -72,6 +72,7 @@ namespace bg {
 		int cube_owner_{-1};
 		int previous_game_loser_{-1};
 		int pending_double_by_{-1};
+		uint8_t accept_double_next_offer_{1};
 		bool double_offered_in_match_{false};
 		bool endless_mode_{false};
 
