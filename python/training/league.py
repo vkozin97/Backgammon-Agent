@@ -59,6 +59,9 @@ class _FallbackEnv:
         self.dice = (int(self.rng.integers(1, 7)), int(self.rng.integers(1, 7)))
         return self.dice
 
+    def current_dice(self):
+        return getattr(self, "dice", (1, 1))
+
     def legal_moves(self):
         return np.array([[0, 1, 0, 0, 0, 0, 0, 0], [1, 2, 0, 0, 0, 0, 0, 0]], dtype=np.uint8)
 

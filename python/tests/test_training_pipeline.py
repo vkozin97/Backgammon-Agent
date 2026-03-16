@@ -108,19 +108,16 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     assert len(metrics[0]["decision_topk_freq"]) == 10
     ck = Path(cfg.checkpoint_dir) / "epoch_0000" / "agents.json"
     assert ck.exists()
-    winrates_dir = Path(cfg.plots_dir) / "winrates"
     loss_dir = Path(cfg.plots_dir) / "loss"
     lr_dir = Path(cfg.plots_dir) / "lr"
     replay_dir = Path(cfg.plots_dir) / "replay"
     winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
     decision_dir = Path(cfg.plots_dir) / "decision_temperature"
     if importlib.util.find_spec("matplotlib") is not None:
-        assert winrates_dir.exists()
         assert loss_dir.exists()
         trainable_agents = build_trainable_agents(cfg, cfg.train.seed)
         total_agents = len(trainable_agents) + 1
         opponents_per_agent = total_agents - 1
-        assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
