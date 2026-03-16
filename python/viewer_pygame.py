@@ -158,6 +158,13 @@ def _set_ui_dice_from_values(dice: list[int]):
         required = [1, 1]
     used = [0] * len(values)
     return values, used, required, True
+
+
+def _extract_dave_from_meta(meta: dict) -> Optional[int]:
+    raw_state = np.asarray(meta.get("raw_state", []), dtype=np.int16)
+    if raw_state.size >= 56:
+        return int(raw_state[55])
+    return None
 def _agent_index_from_id(agent_id: str) -> int:
     if not agent_id.startswith("trainable_"):
         raise ValueError(f"Unsupported trainable agent_id={agent_id!r}. Expected trainable_N.")
@@ -775,6 +782,7 @@ def main():
 
     replay_steps = []
     replay_idx = 0
+    replay_pending_double_by = None
     if agent_mode == "replay":
         if not replay_match_id:
             raise ValueError("For replay mode set replay_match_id")
@@ -862,8 +870,6 @@ def main():
         if st.shape[0] >= 64:
             owner = int(st[63])
             cube_owner_visual = None if owner < 0 else bool(owner == 0)
-        else:
-            cube_owner_visual = None
 
     def start_turn():
         nonlocal dice_values, used_dice, required_dice, manual_steps, history, selected_die_idx, turn_start_state, moves, turn_move_hints, selected_hint_idx, macro_pending_submit, double_possible, dice_rolled, cube_deactivated_for_turn
@@ -940,7 +946,6 @@ def main():
             env.reset()
         turn_white = is_white_turn_from_env()
         if agent_mode == "replay":
-            sync_cube_visual_from_env()
             manual_steps.clear()
             history.clear()
             if 0 <= replay_idx < len(replay_steps):
@@ -960,7 +965,7 @@ def main():
         macro_pending_submit = False
 
     def apply_replay_step():
-        nonlocal replay_idx, turn_white, turn_start_state, dice_values, used_dice, required_dice, dice_rolled, cube_move_anim, cube_owner_visual
+        nonlocal replay_idx, turn_white, turn_start_state, dice_values, used_dice, required_dice, dice_rolled, cube_move_anim, cube_owner_visual, replay_pending_double_by
         if replay_idx >= len(replay_steps):
             info_lines.append("Replay finished.")
             return
@@ -985,20 +990,37 @@ def main():
         move = np.asarray(meta.get("move", [255] * 8), dtype=np.uint8)
         apply_double = int(meta.get("apply_double", 0))
         accept_double = int(meta.get("accept_double", 1))
-        if apply_double and accept_double:
-            start_pos = cube_center_for_owner(cube_owner_visual)
-            end_pos = cube_center_for_owner(not turn_white)
-            cube_owner_visual = (not turn_white)
-            cube_move_anim = {
-                "start": start_pos,
-                "end": end_pos,
-                "start_time": pygame.time.get_ticks() / 1000.0,
-                "t": 0.0,
-            }
-        elif apply_double and not accept_double:
-            rej_reward = meta.get("reward", None)
-            rej_done = meta.get("done_code", None)
-            info_lines.append(f"Replay: double was offered and rejected (reward={rej_reward}, done={rej_done}).")
+
+        if replay_pending_double_by is not None:
+            if accept_double:
+                current_dave = _extract_dave_from_meta(meta)
+                next_meta = replay_steps[replay_idx + 1].get("action_meta", {}) if (replay_idx + 1) < len(replay_steps) else {}
+                next_dave = _extract_dave_from_meta(next_meta)
+                accepted_effective = True
+                if current_dave is not None and next_dave is not None:
+                    accepted_effective = int(next_dave) >= int(current_dave) * 2
+                if accepted_effective:
+                    start_pos = cube_center_for_owner(cube_owner_visual)
+                    end_pos = cube_center_for_owner(turn_white)
+                    cube_owner_visual = bool(turn_white)
+                    cube_move_anim = {
+                        "start": start_pos,
+                        "end": end_pos,
+                        "start_time": pygame.time.get_ticks() / 1000.0,
+                        "t": 0.0,
+                    }
+                    info_lines.append("Replay: pending double accepted by mover.")
+                else:
+                    info_lines.append("Replay: previous double offer appears ignored (cube likely unavailable).")
+            else:
+                rej_reward = meta.get("reward", None)
+                rej_done = meta.get("done_code", None)
+                info_lines.append(f"Replay: pending double rejected (reward={rej_reward}, done={rej_done}).")
+            replay_pending_double_by = None
+
+        if apply_double:
+            replay_pending_double_by = bool(turn_white)
+            info_lines.append("Replay: double offered (resolution will be applied on next step).")
 
         info_lines.append(f"Replay step {replay_idx + 1}/{len(replay_steps)}: dice={dice} move={move_to_str(move, turn_white)}")
         start_macro_animation(
