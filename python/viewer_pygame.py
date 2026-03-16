@@ -128,7 +128,7 @@ def load_replay_steps(storage_dir: str, match_id: str) -> list[dict]:
             SELECT step_index, action_meta
             FROM replay
             WHERE game_id = ?
-            ORDER BY step_index ASC
+            ORDER BY recency_index ASC, step_index ASC
             """,
             (match_id,),
         ).fetchall()
