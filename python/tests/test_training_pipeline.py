@@ -4,7 +4,7 @@ import sqlite3
 import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
-from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game
+from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game, _sigmoid_growth_probability
 from training.agents import build_trainable_agents
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
@@ -417,3 +417,12 @@ def test_state_to_observation_uses_cube_scalars_from_state_raw():
     assert ms[6] == 0.0
     assert ms[7] == 1.0
     assert ms[8] == 1.0
+
+
+def test_sigmoid_growth_probability_schedule():
+    base = 0.2
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10), base)
+    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10)
+    assert base < mid < 1.0
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10), 1.0)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10), 1.0)

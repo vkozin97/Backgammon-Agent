@@ -19,6 +19,26 @@ REWARD_VECTOR_DIM = 6
 MODEL_OUTPUT_DIM = 31
 
 
+def _sigmoid_growth_probability(base_prob: float, epoch: int, start_epoch: int, end_epoch: int) -> float:
+    base = float(np.clip(base_prob, 0.0, 1.0))
+    start = int(start_epoch)
+    end = int(end_epoch)
+    if end <= start:
+        return 1.0 if epoch >= end else base
+    if epoch < start:
+        return base
+    if epoch >= end:
+        return 1.0
+    t = (float(epoch - start) / float(end - start))
+    # smooth transition on [0, 1] using normalized sigmoid over [-6, 6]
+    lo = 1.0 / (1.0 + np.exp(6.0))
+    hi = 1.0 / (1.0 + np.exp(-6.0))
+    raw = 1.0 / (1.0 + np.exp(-(12.0 * t - 6.0)))
+    w = float((raw - lo) / (hi - lo))
+    w = float(np.clip(w, 0.0, 1.0))
+    return float(base + (1.0 - base) * w)
+
+
 def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
     vec = np.asarray(state_vector, dtype=np.float32).reshape(-1)
     if vec.size < 6:
@@ -221,8 +241,6 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
 
     current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
     current_choose_best_probability = float(cfg.league.choose_best_probability)
-    current_conservative_baseline_double_copy_prob = float(cfg.league.conservative_baseline_double_copy_prob)
-    current_agents_double_decision_prob = float(cfg.league.agents_double_decision_prob)
 
     for epoch in range(start_epoch, cfg.train.num_epochs):
         epoch_t0 = time.time()
@@ -231,6 +249,18 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         play_t0 = time.time()
         league.set_decision_temperature(current_temperature)
         league.set_choose_best_probability(current_choose_best_probability)
+        current_conservative_baseline_double_copy_prob = _sigmoid_growth_probability(
+            float(cfg.league.conservative_baseline_double_copy_prob),
+            epoch,
+            int(getattr(cfg.league, "baseline_conservative_double_copy_start_epoch", 0)),
+            int(getattr(cfg.league, "baseline_conservative_double_copy_end_epoch", 0)),
+        )
+        current_agents_double_decision_prob = _sigmoid_growth_probability(
+            float(cfg.league.agents_double_decision_prob),
+            epoch,
+            int(getattr(cfg.league, "agents_double_decision_start_epoch", 0)),
+            int(getattr(cfg.league, "agents_double_decision_end_epoch", 0)),
+        )
         cfg.league.conservative_baseline_double_copy_prob = current_conservative_baseline_double_copy_prob
         cfg.league.agents_double_decision_prob = current_agents_double_decision_prob
         game_results, games_sec = league.run_epoch(agents, epoch)
@@ -422,7 +452,5 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
 
         current_temperature *= float(cfg.league.temperature_decay)
         current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
-        current_conservative_baseline_double_copy_prob = 1.0 - (1.0 - current_conservative_baseline_double_copy_prob) * float(cfg.league.conservative_baseline_double_copy_decay)
-        current_agents_double_decision_prob = 1.0 - (1.0 - current_agents_double_decision_prob) * float(cfg.league.agents_double_decision_decay)
 
     return metrics_history
