@@ -942,7 +942,7 @@ class LeagueController:
                         "dice": [int(rolled_dice[i][0]), int(rolled_dice[i][1])],
                         "move": [int(x) for x in actions[i].tolist()],
                         "apply_double": int(apply_doubles[i]),
-                        "accept_double": int(accept_doubles[i]),
+                        "accept_double_for_next_offer": int(accept_doubles[i]),
                         "raw_state": [int(x) for x in states[i].tolist()],
                     },
                 })
@@ -1087,7 +1087,7 @@ class LeagueController:
                     "dice": [int(rolled_dice[0]), int(rolled_dice[1])],
                     "move": [int(x) for x in np.asarray(move, dtype=np.uint8).tolist()],
                     "apply_double": int(apply_double),
-                    "accept_double": int(accept_double),
+                    "accept_double_for_next_offer": int(accept_double),
                     "raw_state": [int(x) for x in raw_before.tolist()],
                 },
             })
