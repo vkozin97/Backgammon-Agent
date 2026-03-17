@@ -418,6 +418,9 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
         }
     }
 
+    // Store decision for whether this player will accept opponent's next double offer.
+    accept_double_next_offer_ = static_cast<uint8_t>(accept_double ? 1 : 0);
+
     if (s_.off >= 15) {
         const int reward = classify_win_reward();
         const uint8_t done = finish_game_and_maybe_match(current_player_white_ ? 0 : 1, reward);

@@ -163,7 +163,7 @@ def decide_apply_double_from_probs(probs_now: np.ndarray, probs_after_double: np
 def decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: np.ndarray, endless: bool = False) -> int:
     if endless:
         exp_keep = -1.0
-        exp_accept = -2.0 * reward_expectation(probs_if_opp_doubles)
+        exp_accept = 2.0 * reward_expectation(probs_if_opp_doubles)
         return int(exp_accept >= exp_keep)
 
     my_left, opp_left, dave_val, _, opp_double_avail = extract_obs_controls(obs_now)
@@ -191,7 +191,7 @@ def get_double_hint_metrics(agent: "ValueAgent", obs_now: np.ndarray, obs_after_
     probs_offer = np.asarray(agent.predict_proba(set_obs_opponent_double_offer(obs_post).reshape(1, -1)), dtype=np.float32).reshape(-1)
     reward_vec_rev = probs_keep[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM][::-1].copy()
     exp_keep = -1.0 if endless else head_win_eval(probs_keep, obs_post)
-    exp_accept = -2.0 * reward_expectation(probs_offer) if endless else head_win_eval(probs_offer, set_obs_opponent_double_offer(obs_post))
+    exp_accept = 2.0 * reward_expectation(probs_offer) if endless else head_win_eval(probs_offer, set_obs_opponent_double_offer(obs_post))
     accept_double = decide_accept_double_from_probs(probs_offer, obs_post, endless=endless)
 
     return DoubleHintMetrics(

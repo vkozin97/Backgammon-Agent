@@ -5,7 +5,7 @@ import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
 from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game, _sigmoid_growth_probability
-from training.agents import build_trainable_agents
+from training.agents import build_trainable_agents, decide_accept_double_from_probs, MATCH_VECTOR_DIM
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
 
@@ -426,3 +426,12 @@ def test_sigmoid_growth_probability_schedule():
     assert base < mid < 1.0
     assert np.isclose(_sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10), 1.0)
     assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10), 1.0)
+
+
+def test_decide_accept_double_from_probs_endless_sign():
+    probs = np.zeros((31,), dtype=np.float32)
+    # reward head indices 25..30 for [-3,-2,-1,+1,+2,+3]
+    probs[MATCH_VECTOR_DIM * 2 + 1 + 5] = 1.0  # certain +3 for chooser
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-3] = 1.0
+    assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
