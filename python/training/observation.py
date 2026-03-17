@@ -197,12 +197,12 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
     opp_score = float(raw[54]) if raw.shape[0] > 54 else 0.0
     dave_value = float(raw[55]) if raw.shape[0] > 55 else 1.0
     n_games = float(raw[56]) if raw.shape[0] > 56 else 11.0
-    cube_available_mine = 0.0
-    cube_available_opp = 0.0
+    cube_available_mine = float(raw[66]) if raw.shape[0] > 66 else 0.0
+    cube_available_opp = float(raw[67]) if raw.shape[0] > 67 else 0.0
     my_left = 1.0 if n_games < 0 else max(n_games - mine_score, 0.0)
     opp_left = 1.0 if n_games < 0 else max(n_games - opp_score, 0.0)
-    is_crawford_game = float(raw[58]) if raw.shape[0] > 58 else 0.0
-    double_offered = float(raw[59]) if raw.shape[0] > 59 else 0.0
+    is_crawford_game = float(raw[59]) if raw.shape[0] > 59 else 0.0
+    double_offered = float(raw[68]) if raw.shape[0] > 68 else 0.0
     match_scalars = np.array(
         [
             mine_score,

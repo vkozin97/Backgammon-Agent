@@ -105,9 +105,9 @@ def _apply_percent_y_grid(ax) -> None:
 
 
 def _apply_loss_y_grid(ax) -> None:
-    ax.set_ylim(0.0, 1.0)
-    ax.set_yticks(np.arange(0.0, 1.01, 0.1))
-    ax.set_yticks(np.arange(0.0, 1.01, 0.05), minor=True)
+    ax.set_ylim(0.0, 2.0)
+    ax.set_yticks(np.arange(0.0, 2.01, 0.2))
+    ax.set_yticks(np.arange(0.0, 2.01, 0.1), minor=True)
     ax.grid(axis="y", which="major", linestyle="-", linewidth=0.7, alpha=0.35)
     ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.5, alpha=0.25)
 
@@ -176,7 +176,6 @@ def plot_metrics_history(
         print("[plot] matplotlib is unavailable, skip plotting")
         return
     _print_plot_timing("matplotlib import", step_t0, plot_total_t0)
-    winrates_dir = out_dir / "winrates"
     winrates_windowed_dir = out_dir / "winrates_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
@@ -184,7 +183,6 @@ def plot_metrics_history(
     replay_dir = out_dir / "replay"
     games_stats_dir = out_dir / "games_stats"
     step_t0 = time.perf_counter()
-    winrates_dir.mkdir(parents=True, exist_ok=True)
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
@@ -275,21 +273,31 @@ def plot_metrics_history(
     _print_plot_timing("decision-temperature and top-k plots", step_t0, plot_total_t0)
 
     step_t0 = time.perf_counter()
-    reward_labels = ["-3", "-2", "-1", "+1", "+2", "+3"]
-    reward_colors = ["#8b0000", "#d95f02", "#e6ab02", "#66a61e", "#1b9e77", "#1f78b4"]
+    reward_labels = ["1", "2", "3"]
+    reward_colors = ["#66a61e", "#1b9e77", "#1f78b4"]
     signed_reward_probs_series = [np.asarray(m.get("games_stats", {}).get("signed_reward_probs", [np.nan] * 6), dtype=np.float64) for m in metrics_history]
     if signed_reward_probs_series:
-        arr = np.vstack(signed_reward_probs_series)
-        if np.any(np.isfinite(arr)):
+        arr6 = np.vstack(signed_reward_probs_series)
+        if np.any(np.isfinite(arr6)):
+            arr = np.column_stack([arr6[:, 2] + arr6[:, 3], arr6[:, 1] + arr6[:, 4], arr6[:, 0] + arr6[:, 5]])
             plt.figure(figsize=(18, 9))
-            plt.stackplot(xs, [arr[:, i] for i in range(6)], labels=reward_labels, colors=reward_colors, alpha=0.9)
-            plt.title("Signed reward distribution")
+            plt.stackplot(xs, [arr[:, i] * 100.0 for i in range(3)], labels=reward_labels, colors=reward_colors, alpha=0.9)
+            plt.title("Reward distribution")
             plt.xlabel("epoch")
-            plt.ylabel("probability")
-            plt.ylim(0.0, 1.0)
+            plt.ylabel("probability (%)")
+            ax = plt.gca()
+            _apply_percent_y_grid(ax)
+            last = arr[-1]
+            if np.all(np.isfinite(last)):
+                cumulative = np.cumsum(last * 100.0)
+                lower = np.concatenate(([0.0], cumulative[:-1]))
+                mids = (lower + cumulative) / 2.0
+                for lbl, val, ymid in zip(reward_labels, last, mids):
+                    if val > 0.0:
+                        ax.annotate(f"{lbl}: {val * 100.0:.1f}%", (xs[-1], ymid), textcoords="offset points", xytext=(0, 0), ha="center", va="center", fontsize=9, color="white")
             plt.legend(loc="upper right", ncol=3, fontsize=8)
             plt.tight_layout()
-            plt.savefig(games_stats_dir / "signed_reward_distribution.png")
+            plt.savefig(games_stats_dir / "reward_distribution.png")
             plt.close()
 
     ended_natural = [float(m.get("games_stats", {}).get("ended_natural_freq", np.nan)) for m in metrics_history]
@@ -374,8 +382,6 @@ def plot_metrics_history(
         opponents_for_agent = sorted((latest_opponents | fixed_opponents) - {aid})
         xs = [m["epoch"] for m in metrics_history]
 
-        # Winrate graphs: each figure contains all opponent lines,
-        # with one opponent highlighted in the title/line style.
         series_by_opp = {
             opp: [m["agents"][aid]["winrate_vs_opponents"].get(opp, 0.0) * 100.0 for m in metrics_history]
             for opp in opponents_for_agent
@@ -386,22 +392,6 @@ def plot_metrics_history(
         }
 
         for focus_opp in opponents_for_agent:
-            plt.figure(figsize=(18, 9))
-            for opp in opponents_for_agent:
-                lw = 2.4 if opp == focus_opp else 1.0
-                alpha = 1.0 if opp == focus_opp else 0.4
-                plt.plot(xs, series_by_opp[opp], label=opp, linewidth=lw, alpha=alpha)
-            plt.title(f"{aid} winrates (focus: {focus_opp})")
-            plt.xlabel("epoch")
-            plt.ylabel("winrate (%)")
-            ax = plt.gca()
-            _apply_percent_y_grid(ax)
-            _plot_sampling_probability_overlay(plt, xs, sampling_probs)
-            plt.legend(fontsize=6, ncol=2)
-            plt.tight_layout()
-            plt.savefig(winrates_dir / f"{aid}_winrates_focus_{focus_opp}.png")
-            plt.close()
-
             plt.figure(figsize=(18, 9))
             for opp in opponents_for_agent:
                 lw = 2.4 if opp == focus_opp else 1.0
@@ -506,20 +496,6 @@ def plot_metrics_history(
         overall_series[aid] = vals
 
     if overall_series:
-        plt.figure(figsize=(18, 9))
-        for aid in agents:
-            plt.plot(xs, overall_series[aid], label=aid, linewidth=1.4)
-        plt.title("Agents overall average winrate vs all opponents")
-        plt.xlabel("epoch")
-        plt.ylabel("winrate (%)")
-        ax = plt.gca()
-        _apply_percent_y_grid(ax)
-        _plot_sampling_probability_overlay(plt, xs, sampling_probs)
-        plt.legend(fontsize=7, ncol=3)
-        plt.tight_layout()
-        plt.savefig(winrates_dir / "overall_avg_winrates.png")
-        plt.close()
-
         plt.figure(figsize=(18, 9))
         for aid in agents:
             plt.plot(xs, _uniform_windowed(overall_series[aid], winrate_window_size), label=aid, linewidth=1.4)

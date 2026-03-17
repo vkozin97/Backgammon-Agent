@@ -4,8 +4,8 @@ import sqlite3
 import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
-from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game
-from training.agents import build_trainable_agents
+from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game, _sigmoid_growth_probability
+from training.agents import build_trainable_agents, decide_accept_double_from_probs, MATCH_VECTOR_DIM
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
 
@@ -108,19 +108,16 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     assert len(metrics[0]["decision_topk_freq"]) == 10
     ck = Path(cfg.checkpoint_dir) / "epoch_0000" / "agents.json"
     assert ck.exists()
-    winrates_dir = Path(cfg.plots_dir) / "winrates"
     loss_dir = Path(cfg.plots_dir) / "loss"
     lr_dir = Path(cfg.plots_dir) / "lr"
     replay_dir = Path(cfg.plots_dir) / "replay"
     winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
     decision_dir = Path(cfg.plots_dir) / "decision_temperature"
     if importlib.util.find_spec("matplotlib") is not None:
-        assert winrates_dir.exists()
         assert loss_dir.exists()
         trainable_agents = build_trainable_agents(cfg, cfg.train.seed)
         total_agents = len(trainable_agents) + 1
         opponents_per_agent = total_agents - 1
-        assert len(list(winrates_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
@@ -374,3 +371,67 @@ def test_play_game_respects_max_steps_per_game():
     result = league.play_game(RandomAgent(), RandomAgent(), game_id="g_cap", epoch=0)
     assert result.max_steps_reached is True
     assert result.turns == 2
+
+
+def test_terminal_outcome_accept_target_uses_pending_accept():
+    step = {
+        "agent_id": "a",
+        "player_index": 0,
+        "state_vector": np.zeros((263,), dtype=np.float32),
+        "accept_double_opponent": False,
+        "action_meta": {"raw_state": [0] * 65 + [1]},
+    }
+    game = GameResult(
+        game_id="g",
+        steps=[step],
+        winner="a",
+        turns=1,
+        player_1_id="a",
+        player_2_id="b",
+        winner_player_index=0,
+        points_won=1,
+        reward_value=1,
+    )
+    out = _terminal_outcome_for_step(game, step)
+    assert out[24] == 1.0
+
+
+
+from training.observation import state_to_observation
+
+
+def test_state_to_observation_uses_cube_scalars_from_state_raw():
+    raw = np.zeros((69,), dtype=np.float32)
+    raw[53] = 2
+    raw[54] = 1
+    raw[55] = 4
+    raw[56] = 7
+    raw[59] = 1
+    raw[66] = 1
+    raw[67] = 0
+    raw[68] = 1
+    obs = state_to_observation(raw)
+    # match scalars are the last 9 values; cube flags are at positions 5,6,7,8 in that block
+    ms = obs[-9:]
+    assert ms[5] == 1.0
+    assert ms[6] == 0.0
+    assert ms[7] == 1.0
+    assert ms[8] == 1.0
+
+
+def test_sigmoid_growth_probability_schedule():
+    base = 0.2
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10), base)
+    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10)
+    assert base < mid < 1.0
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10), 1.0)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10), 1.0)
+
+
+def test_decide_accept_double_from_probs_endless_sign():
+    probs = np.zeros((31,), dtype=np.float32)
+    # reward head indices 25..30 for [-3,-2,-1,+1,+2,+3]
+    probs[MATCH_VECTOR_DIM * 2 + 1 + 5] = 1.0  # certain +3 for chooser
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-3] = 1.0
+    assert decide_accept_double_from_probs(probs, obs, endless=True) == 1

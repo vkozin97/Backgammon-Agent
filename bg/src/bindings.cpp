@@ -34,44 +34,44 @@ PYBIND11_MODULE(bg_env, m) {
             self.set_dice_raw(tmp);
         })
         .def("get_state_raw", [](bg::BackgammonEnv& self) {
-            py::array_t<int16_t> arr({58});
+            py::array_t<int16_t> arr({69});
             auto buf = arr.mutable_unchecked<1>();
-            int16_t tmp[58];
+            int16_t tmp[69];
             self.get_state_raw(tmp);
-            for (int i = 0; i < 58; ++i) buf(i) = tmp[i];
+            for (int i = 0; i < 69; ++i) buf(i) = tmp[i];
             return arr;
         })
         .def("set_state_raw", [](bg::BackgammonEnv& self,
                                  py::array_t<int16_t, py::array::c_style | py::array::forcecast> st) {
-            if (st.ndim() != 1 || st.shape(0) != 58) throw std::runtime_error("set_state_raw: expected (58,)");
+            if (st.ndim() != 1 || st.shape(0) != 69) throw std::runtime_error("set_state_raw: expected (69,)");
             auto a = st.unchecked<1>();
-            int16_t tmp[58];
-            for (int i = 0; i < 58; ++i) tmp[i] = a(i);
-            self.set_state_raw(tmp);
+            int16_t tmp[69];
+            for (int i = 0; i < 69; ++i) tmp[i] = a(i);
+            self.set_state_full(tmp);
         })
         .def("get_state_full", [](bg::BackgammonEnv& self) {
-            py::array_t<int16_t> arr({66});
+            py::array_t<int16_t> arr({69});
             auto buf = arr.mutable_unchecked<1>();
-            int16_t tmp[66];
+            int16_t tmp[69];
             self.get_state_full(tmp);
-            for (int i = 0; i < 66; ++i) buf(i) = tmp[i];
+            for (int i = 0; i < 69; ++i) buf(i) = tmp[i];
             return arr;
         })
         .def("set_state_full", [](bg::BackgammonEnv& self,
                                   py::array_t<int16_t, py::array::c_style | py::array::forcecast> st) {
-            if (st.ndim() != 1 || st.shape(0) != 66) throw std::runtime_error("set_state_full: expected (66,)");
+            if (st.ndim() != 1 || st.shape(0) != 69) throw std::runtime_error("set_state_full: expected (69,)");
             auto a = st.unchecked<1>();
-            int16_t tmp[66];
-            for (int i = 0; i < 66; ++i) tmp[i] = a(i);
+            int16_t tmp[69];
+            for (int i = 0; i < 69; ++i) tmp[i] = a(i);
             self.set_state_full(tmp);
         })
         .def("apply_micro_step", [](bg::BackgammonEnv& self, uint8_t from, uint8_t to, uint8_t die) {
             bool valid = self.apply_micro_step(from, to, die);
-            py::array_t<int16_t> arr({58});
+            py::array_t<int16_t> arr({69});
             auto buf = arr.mutable_unchecked<1>();
-            int16_t tmp[58];
+            int16_t tmp[69];
             self.get_state_raw(tmp);
-            for (int i = 0; i < 58; ++i) buf(i) = tmp[i];
+            for (int i = 0; i < 69; ++i) buf(i) = tmp[i];
             return py::make_tuple(valid, arr);
         }, py::arg("from"), py::arg("to"), py::arg("die") = 0)
         .def("commit_turn", [](bg::BackgammonEnv& self) { self.commit_turn(); })

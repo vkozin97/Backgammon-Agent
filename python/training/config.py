@@ -26,12 +26,12 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    num_epochs: int = 400
+    num_epochs: int = 600
     updates_per_epoch_per_agent: int = 100
     batch_size: int = 10_000
     optimizer_type: str = "adam"
-    learning_rate: float = 1e-4
-    lr_decay_factor: float = 0.97
+    learning_rate: float = 1e-5
+    lr_decay_factor: float = 0.98
     lr_decay_every_steps: int = 50
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
@@ -42,7 +42,7 @@ class TrainConfig:
     loss_type: str = "bce_with_logits"
     loss_weights: list[float] = field(default_factory=lambda: [1.0])
     target_expansion: str = "repeat"
-    plot_every_k_epochs: int = 5
+    plot_every_k_epochs: int = 20
     winrate_window_size: int = 10
 
 
@@ -58,14 +58,16 @@ class LeagueConfig:
     recency_decay: float = 0.98
     recency_center_mass_ratio: float = 0.9
     batched_obs_threads: int = 1
-    selfplay_temperature: float = 0.01
-    temperature_decay: float = 1
-    choose_best_probability: float = 0.3
-    choose_best_decay: float = 0.9
+    selfplay_temperature: float = 0.1
+    temperature_decay: float = 0.98
+    choose_best_probability: float = 0.0
+    choose_best_decay: float = 0.95
     conservative_baseline_double_copy_prob: float = 0.0
-    conservative_baseline_double_copy_decay: float = 1.0
+    baseline_conservative_double_copy_start_epoch: int = 250
+    baseline_conservative_double_copy_end_epoch: int = 400
     agents_double_decision_prob: float = 0.0
-    agents_double_decision_decay: float = 1.0
+    agents_double_decision_start_epoch: int = 100
+    agents_double_decision_end_epoch: int = 250
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
 
@@ -109,6 +111,12 @@ class ExperimentConfig:
             league_data["matches_per_pair"] = league_data.pop("pages_per_pair")
         if "baseline_conservative_double_copy_prob" in league_data and "conservative_baseline_double_copy_prob" not in league_data:
             league_data["conservative_baseline_double_copy_prob"] = league_data.pop("baseline_conservative_double_copy_prob")
+
+        # Migrate deprecated decay-based schedules to epoch-window schedules.
+        if "conservative_baseline_double_copy_decay" in league_data:
+            league_data.pop("conservative_baseline_double_copy_decay", None)
+        if "agents_double_decision_decay" in league_data:
+            league_data.pop("agents_double_decision_decay", None)
         model_a = dict(data.get("model_group_a", {}))
         model_c = dict(data.get("model_group_c", {}))
         model_d = dict(data.get("model_group_d", {}))

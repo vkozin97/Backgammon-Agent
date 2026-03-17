@@ -115,25 +115,25 @@ public:
         return arr;
     }
     py::array_t<int16_t> get_states_raw() const {
-        py::array_t<int16_t> arr({(py::ssize_t)envs_.size(), (py::ssize_t)58});
+        py::array_t<int16_t> arr({(py::ssize_t)envs_.size(), (py::ssize_t)69});
         auto out = arr.mutable_unchecked<2>();
-        int16_t tmp[58];
+        int16_t tmp[69];
         for (py::ssize_t i = 0; i < (py::ssize_t)envs_.size(); ++i) {
             envs_[i].get_state_raw(tmp);
-            for (int j = 0; j < 58; ++j) out(i, j) = tmp[j];
+            for (int j = 0; j < 69; ++j) out(i, j) = tmp[j];
         }
         return arr;
     }
 
     void set_states_raw(py::array_t<int16_t, py::array::c_style | py::array::forcecast> states) {
-        if (states.ndim() != 2 || states.shape(0) != (py::ssize_t)envs_.size() || states.shape(1) != 58) {
-            throw std::runtime_error("set_states_raw: expected int16 array with shape (N, 58)");
+        if (states.ndim() != 2 || states.shape(0) != (py::ssize_t)envs_.size() || states.shape(1) != 69) {
+            throw std::runtime_error("set_states_raw: expected int16 array with shape (N, 69)");
         }
         auto a = states.unchecked<2>();
-        int16_t tmp[58];
         for (py::ssize_t i = 0; i < (py::ssize_t)envs_.size(); ++i) {
-            for (int j = 0; j < 58; ++j) tmp[j] = a(i, j);
-            envs_[i].set_state_raw(tmp);
+            int16_t tmp69[69];
+            for (int j = 0; j < 69; ++j) tmp69[j] = a(i, j);
+            envs_[i].set_state_full(tmp69);
         }
     }
 

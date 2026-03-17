@@ -418,6 +418,9 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
         }
     }
 
+    // Store decision for whether this player will accept opponent's next double offer.
+    accept_double_next_offer_ = static_cast<uint8_t>(accept_double ? 1 : 0);
+
     if (s_.off >= 15) {
         const int reward = classify_win_reward();
         const uint8_t done = finish_game_and_maybe_match(current_player_white_ ? 0 : 1, reward);
@@ -495,6 +498,7 @@ void BackgammonEnv::set_state_full(const int16_t* in) {
     const int v65 = int(in[65]);
     accept_double_next_offer_ = static_cast<uint8_t>(v65 < 0 ? 1 : (v65 != 0));
     pending_double_by_ = -1;
+    double_offered_in_match_ = in[68] != 0;
 }
 
 bool BackgammonEnv::validate_invariants() const {
@@ -517,10 +521,6 @@ void BackgammonEnv::get_state_raw(int16_t* out) const {
     out[55] = int16_t(dave_value_);
     out[56] = int16_t(endless_mode_ ? -1 : n_games_);
     out[57] = int16_t(current_player_white_ ? 1 : 0);
-}
-
-void BackgammonEnv::get_state_full(int16_t* out) const {
-    get_state_raw(out);
     out[58] = int16_t(crawford_used_ ? 1 : 0);
     out[59] = int16_t(crawford_active_ ? 1 : 0);
     out[60] = int16_t(first_turn_in_game_ ? 1 : 0);
@@ -529,6 +529,13 @@ void BackgammonEnv::get_state_full(int16_t* out) const {
     out[63] = int16_t(cube_owner_);
     out[64] = int16_t(previous_game_loser_);
     out[65] = int16_t(accept_double_next_offer_ ? 1 : 0);
+    out[66] = int16_t(cube_available_mine());
+    out[67] = int16_t(cube_available_opp());
+    out[68] = int16_t(double_offered_in_match_ ? 1 : 0);
+}
+
+void BackgammonEnv::get_state_full(int16_t* out) const {
+    get_state_raw(out);
 }
 
 void BackgammonEnv::get_dice_raw(uint8_t* out) const {
