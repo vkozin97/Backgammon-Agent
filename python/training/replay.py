@@ -92,6 +92,9 @@ class ReplayBuffer:
         rows = self._conn.execute(
             "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id FROM replay ORDER BY recency_index ASC"
         ).fetchall()
+        self._load_rows_into_memory(rows)
+
+    def _load_rows_into_memory(self, rows: list[tuple]) -> None:
         self._recency_indices: list[int] = []
         self._states: list[np.ndarray] = []
         self._outcomes: list[float] = []
@@ -111,7 +114,6 @@ class ReplayBuffer:
 
         self._size = len(self._recency_indices)
         self._next_recency_index = int(self._recency_indices[-1]) + 1 if self._size > 0 else 1
-
         self._recency_weights = build_recency_weights(self._size, self._recency_center_mass_ratio)
 
     def _ensure_optional_columns(self) -> None:
@@ -345,6 +347,15 @@ class ReplayBuffer:
         self._flush_if_needed()
         counter = int(self._next_recency_index)
         return {"size": self._size, "counter": counter, "db_path": str(self.db_path)}
+
+    def delete_from_epoch(self, min_epoch_inclusive: int) -> None:
+        self._flush_if_needed()
+        self._conn.execute("DELETE FROM replay WHERE epoch >= ?", (int(min_epoch_inclusive),))
+        self._conn.commit()
+        rows = self._conn.execute(
+            "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id FROM replay ORDER BY recency_index ASC"
+        ).fetchall()
+        self._load_rows_into_memory(rows)
 
     def close(self) -> None:
         self._flush_if_needed()
