@@ -13,6 +13,7 @@ from .agents import (
     decide_apply_double_from_probs,
     decide_accept_double_from_probs,
     extract_obs_controls,
+    flip_observation_perspective,
     head_win_eval,
     reward_expectation,
     set_obs_double_state,
@@ -457,13 +458,14 @@ class LeagueController:
             except TypeError:
                 sim.step_move(mv_arr)
             post_obs = self.state_vector(sim)
-            _, _, _, _, opp_double_avail = extract_obs_controls(post_obs)
+            current_player_post_obs = flip_observation_perspective(post_obs)
+            _, _, _, _, opp_double_avail = extract_obs_controls(current_player_post_obs)
             if opp_double_avail <= 0:
                 continue
             if enabled_arr is not None and not bool(enabled_arr[i]):
                 accept_doubles[i] = int(accept_if_disabled)
                 continue
-            accept_eval_obs.append(set_obs_opponent_double_offer(post_obs))
+            accept_eval_obs.append(set_obs_opponent_double_offer(current_player_post_obs))
             accept_eval_owner.append(i)
             accept_eval_evaluators.append(evaluators[i])
 
@@ -477,9 +479,11 @@ class LeagueController:
                 if obs_pre.size >= 7:
                     obs_pre[-7] = obs_pre[-7] / 2.0
                 if obs_pre.size >= 4:
-                    obs_pre[-4] = 0.0
+                    obs_pre[-4] = 1.0
                 if obs_pre.size >= 3:
                     obs_pre[-3] = 1.0
+                if obs_pre.size >= 1:
+                    obs_pre[-1] = 0.0
                 accept_doubles[owner] = decide_accept_double_from_probs(
                     p_row,
                     obs_pre,

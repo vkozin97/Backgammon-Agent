@@ -280,7 +280,7 @@ def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.
     m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
-    line2 = f"revR6={_format_vec_percent(m.reward_vec_reversed)} | EV(keep)={m.exp_keep:.3f} | EV(acc)={m.exp_accept:.3f}"
+    line2 = f"postR6={_format_vec_percent(m.reward_vec_after_move)} | EV(rej)={m.exp_reject:.3f} | EV(acc)={m.exp_accept:.3f}"
     line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if m.accept_double else 'Нет'}"
     return [line0, line1, line2, line3]
 

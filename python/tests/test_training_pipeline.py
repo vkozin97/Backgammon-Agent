@@ -13,7 +13,13 @@ from training.pipeline import (
     _sigmoid_growth_probability,
     _learning_rate_for_epoch,
 )
-from training.agents import build_trainable_agents, decide_accept_double_from_probs, MATCH_VECTOR_DIM
+from training.agents import (
+    MATCH_VECTOR_DIM,
+    build_trainable_agents,
+    decide_accept_double_from_probs,
+    flip_observation_perspective,
+    reject_double_equity,
+)
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
 
@@ -579,3 +585,26 @@ def test_decide_accept_double_from_probs_endless_sign():
     obs = np.zeros((263,), dtype=np.float32)
     obs[-3] = 1.0
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
+
+
+def test_flip_observation_perspective_swaps_sides_and_controls():
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[0] = 1.0
+    obs[24 + 5] = 2.0
+    obs[240:254] = np.asarray([1, 2, 3, 4, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=np.float32)
+    obs[254:263] = np.asarray([7, 8, 2, 4, 5, 1, 0, 1, 0], dtype=np.float32)
+
+    flipped = flip_observation_perspective(obs)
+
+    assert flipped[23 - (24 + 5 - 24)] == 2.0
+    assert flipped[24 + 23] == 1.0
+    assert np.allclose(flipped[240:244], np.asarray([3, 4, 1, 2], dtype=np.float32))
+    assert np.allclose(flipped[254:261], np.asarray([8, 7, 2, 5, 4, 0, 1], dtype=np.float32))
+    assert flipped[261] == 1.0
+    assert flipped[262] == 0.0
+
+
+def test_reject_double_equity_endless_is_immediate_loss():
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-3] = 1.0
+    assert reject_double_equity(obs, endless=True) == -1.0
