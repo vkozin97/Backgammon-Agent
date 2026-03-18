@@ -440,6 +440,9 @@ class ValueAgent:
         self.lr_decay_factor = train_cfg.lr_decay_factor
         self.lr_decay_every_steps = train_cfg.lr_decay_every_steps
         self.min_learning_rate = float(train_cfg.min_learning_rate)
+        self.lr_schedule_base = float(train_cfg.learning_rate)
+        self.lr_schedule_step_offset = 0
+        self.output_layer_only_training = False
         self.train_step = 0
 
     def predict_logits(self, x: np.ndarray, training: bool = False) -> np.ndarray:
@@ -470,6 +473,43 @@ class ValueAgent:
         self.model.eval()
         with torch.no_grad():
             return self._probs_from_logits(self.model(x.to(self.device)))
+
+    def _output_parameter_ids(self) -> set[int]:
+        return {id(param) for param in self.model.out.parameters()}
+
+    def set_output_layer_only_training(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        output_param_ids = self._output_parameter_ids()
+        for param in self.model.parameters():
+            param.requires_grad = (id(param) in output_param_ids) if enabled else True
+        self.output_layer_only_training = enabled
+
+    def _scheduled_learning_rate(self) -> float:
+        if int(self.lr_decay_every_steps) <= 0:
+            return float(max(self.lr_schedule_base, self.min_learning_rate))
+        phase_steps = max(int(self.train_step) - int(self.lr_schedule_step_offset), 0)
+        decay_events = phase_steps // int(self.lr_decay_every_steps)
+        lr = float(self.lr_schedule_base) * (float(self.lr_decay_factor) ** int(decay_events))
+        return float(max(lr, self.min_learning_rate))
+
+    def _apply_current_learning_rate(self) -> float:
+        lr = self._scheduled_learning_rate()
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = lr
+        return lr
+
+    def configure_training_phase(
+        self,
+        learning_rate: float,
+        lr_decay_factor: float,
+        schedule_step_offset: int,
+        freeze_to_output_layer: bool,
+    ) -> float:
+        self.lr_schedule_base = float(learning_rate)
+        self.lr_decay_factor = float(lr_decay_factor)
+        self.lr_schedule_step_offset = int(schedule_step_offset)
+        self.set_output_layer_only_training(freeze_to_output_layer)
+        return self._apply_current_learning_rate()
 
     def train_batch(self, x: np.ndarray, y: np.ndarray) -> float:
         x_t = torch.as_tensor(x, dtype=torch.float32, device=self.device)
@@ -510,9 +550,7 @@ class ValueAgent:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
         self.optimizer.step()
         self.train_step += 1
-        if self.lr_decay_every_steps > 0 and self.train_step % self.lr_decay_every_steps == 0:
-            for pg in self.optimizer.param_groups:
-                pg["lr"] = max(float(pg["lr"]) * self.lr_decay_factor, self.min_learning_rate)
+        self._apply_current_learning_rate()
         return float(loss.detach().cpu().item())
 
     def state_dict(self) -> dict:
