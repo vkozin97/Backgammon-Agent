@@ -304,27 +304,26 @@ class TorchDeepConvValueModel(nn.Module):
         kernels = list(cfg.conv_kernel_sizes)
         conv_blocks: list[nn.Module] = []
         cur_len = POINTS_DIM
+        pool_every = max(int(getattr(cfg, "conv_pool_every", 0)), 0)
         for i, k in enumerate(kernels):
-            conv_blocks.append(nn.Conv1d(channels[i], channels[i + 1], kernel_size=k))
+            conv_blocks.append(nn.Conv1d(channels[i], channels[i + 1], kernel_size=k, padding="same"))
             conv_blocks.append(_activation(cfg.conv_activation))
-            cur_len = cur_len - k + 1
-            if i < len(kernels) - 1:
+            if pool_every > 0 and (i + 1) % pool_every == 0:
                 conv_blocks.append(nn.MaxPool1d(kernel_size=2, stride=2))
                 cur_len = max(cur_len // 2, 1)
         self.conv_stack = nn.Sequential(*conv_blocks)
-        self.proj = nn.Linear(channels[-1] * cur_len, cfg.conv_output_dim)
 
         self.scalar_dim = max(int(cfg.input_dim) - VECTOR_CHANNELS * POINTS_DIM, 0)
-        head_in = cfg.conv_output_dim + self.scalar_dim
+        head_in = channels[-1] * cur_len + self.scalar_dim
         self.head = _build_mlp(
             input_dim=head_in,
-            hidden_dims=cfg.hidden_dims,
+            hidden_dims=cfg.head_hidden_dims,
             activation_name=cfg.activation_fn,
             dropout_enabled=cfg.dropout_enabled,
             dropout_layout=cfg.dropout_layout,
             p_dropout=cfg.p_dropout,
         )
-        self.out = nn.Linear(cfg.hidden_dims[-1], cfg.output_dim)
+        self.out = nn.Linear(cfg.head_hidden_dims[-1], cfg.output_dim)
         with torch.no_grad():
             self.out.bias.fill_(cfg.final_bias_init)
 
@@ -336,7 +335,6 @@ class TorchDeepConvValueModel(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         vectors, scalars = self._split(x)
         c = self.conv_stack(vectors).flatten(1)
-        c = self.proj(c)
         feat = torch.cat([scalars, c], dim=1)
         return self.out(self.head(feat))
 

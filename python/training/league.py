@@ -495,6 +495,11 @@ class LeagueController:
                     str(device),
                     int(getattr(cfg0, "input_dim", -1)),
                     int(getattr(cfg0, "output_dim", -1)),
+                    tuple(int(x) for x in getattr(cfg0, "conv_channels", [])),
+                    tuple(int(x) for x in getattr(cfg0, "conv_kernel_sizes", [])),
+                    int(getattr(cfg0, "conv_pool_every", 0)),
+                    tuple(int(x) for x in getattr(cfg0, "hidden_dims", [])),
+                    tuple(int(x) for x in getattr(cfg0, "head_hidden_dims", [])),
                 )
                 base_model = self._ensemble_base_model_cache.get(cache_key)
                 if base_model is None:
