@@ -6,12 +6,6 @@ import time
 
 import numpy as np
 
-from .replay import build_recency_weights
-
-
-SAMPLING_PROBABILITY_TICKS = 1000
-
-
 def _exp_windowed(values: list[float], window_size: int) -> list[float]:
     if not values:
         return []
@@ -44,34 +38,38 @@ def _sampling_probability_series(
     replay_sizes: list[int],
     alpha_recency: float,
     alpha_uniform: float,
-    recency_center_mass_ratio: float,
-    ticks: int = SAMPLING_PROBABILITY_TICKS,
+    recency_decay: float,
+    replay_window_epochs: int,
 ) -> list[float]:
     if not xs:
         return []
 
-    point_count = len(xs)
-    if point_count == 1:
-        normalized_positions = [0.0]
+    additions: list[int] = []
+    prev_size = 0
+    for size in replay_sizes:
+        cur = max(int(size), 0)
+        additions.append(max(cur - prev_size, 0))
+        prev_size = cur
+
+    window = min(max(int(replay_window_epochs), 1), len(xs))
+    start = len(xs) - window
+    total_states = max(int(sum(additions[start:])), 1)
+
+    tail_weights = []
+    for i in range(window):
+        ratio_from_last = (float(window - 1 - i) / float(max(window, 1)))
+        exponent = ratio_from_last * float(replay_window_epochs)
+        weight = float(alpha_uniform) + float(alpha_recency) * (float(recency_decay) ** exponent)
+        tail_weights.append(max(weight, 0.0))
+    weight_sum = float(sum(tail_weights))
+    if weight_sum <= 0.0:
+        tail_probs = [1.0 / float(total_states)] * window
     else:
-        normalized_positions = [i / float(point_count - 1) for i in range(point_count)]
+        tail_probs = [w / weight_sum for w in tail_weights]
 
-    probs: list[float] = []
-    for norm_pos, replay_size in zip(normalized_positions, replay_sizes):
-        full_size = max(int(replay_size), 1)
-        size = min(full_size, max(int(ticks), 1))
-        uniform_prob = 1.0 / float(size)
-
-        recency_weights = build_recency_weights(size, recency_center_mass_ratio)
-        recency_sum = float(np.sum(recency_weights))
-        if recency_sum <= 0.0:
-            recency_prob = uniform_prob
-        else:
-            recency_index = int(round(norm_pos * float(size - 1)))
-            recency_index = min(max(recency_index, 0), size - 1)
-            recency_prob = float(recency_weights[recency_index] / recency_sum)
-
-        probs.append(float(alpha_uniform * uniform_prob + alpha_recency * recency_prob))
+    probs = [float("nan")] * len(xs)
+    for i in range(window):
+        probs[start + i] = float(tail_probs[i])
     return probs
 
 
@@ -165,7 +163,8 @@ def plot_metrics_history(
     winrate_window_size: int,
     alpha_recency: float,
     alpha_uniform: float,
-    recency_center_mass_ratio: float,
+    recency_decay: float,
+    replay_window_epochs: int,
 ) -> None:
     plot_total_t0 = time.perf_counter()
     print(f"[plot] Start plotting for {len(metrics_history)} epochs")
@@ -201,7 +200,8 @@ def plot_metrics_history(
         replay_sizes,
         alpha_recency,
         alpha_uniform,
-        recency_center_mass_ratio,
+        recency_decay,
+        replay_window_epochs,
     )
 
     step_t0 = time.perf_counter()
@@ -512,5 +512,3 @@ def plot_metrics_history(
 
     _print_plot_timing("overall average winrate plots", step_t0, plot_total_t0)
     _print_plot_timing("full plotting stage", plot_total_t0, plot_total_t0)
-
-

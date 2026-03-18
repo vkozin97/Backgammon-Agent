@@ -19,7 +19,13 @@ REWARD_VECTOR_DIM = 6
 MODEL_OUTPUT_DIM = 31
 
 
-def _sigmoid_growth_probability(base_prob: float, epoch: int, start_epoch: int, end_epoch: int) -> float:
+def _sigmoid_growth_probability(
+    base_prob: float,
+    epoch: int,
+    start_epoch: int,
+    end_epoch: int,
+    sigmoid_parameter: float,
+) -> float:
     base = float(np.clip(base_prob, 0.0, 1.0))
     start = int(start_epoch)
     end = int(end_epoch)
@@ -27,16 +33,36 @@ def _sigmoid_growth_probability(base_prob: float, epoch: int, start_epoch: int, 
         return 1.0 if epoch >= end else base
     if epoch < start:
         return base
-    if epoch >= end:
+    if epoch > end:
         return 1.0
-    t = (float(epoch - start) / float(end - start))
-    # smooth transition on [0, 1] using normalized sigmoid over [-6, 6]
-    lo = 1.0 / (1.0 + np.exp(6.0))
-    hi = 1.0 / (1.0 + np.exp(-6.0))
-    raw = 1.0 / (1.0 + np.exp(-(12.0 * t - 6.0)))
-    w = float((raw - lo) / (hi - lo))
-    w = float(np.clip(w, 0.0, 1.0))
-    return float(base + (1.0 - base) * w)
+    center = 0.5 * (float(start) + float(end))
+    steepness = max(float(sigmoid_parameter), 1e-6)
+    raw = 1.0 / (1.0 + np.exp(-steepness * (float(epoch) - center)))
+    raw_start = 1.0 / (1.0 + np.exp(-steepness * (float(start) - center)))
+    raw_end = 1.0 / (1.0 + np.exp(-steepness * (float(end) - center)))
+    denom = max(raw_end - raw_start, 1e-12)
+    normalized = float(np.clip((raw - raw_start) / denom, 0.0, 1.0))
+    low = float(np.clip(base + 0.001, 0.0, 0.999))
+    high = 0.999
+    if low > high:
+        low = high
+    return float(low + (high - low) * normalized)
+
+
+def _learning_rate_for_epoch(
+    base_learning_rate: float,
+    min_learning_rate: float,
+    lr_decay_factor: float,
+    lr_decay_every_steps: int,
+    updates_per_epoch_per_agent: int,
+    epoch: int,
+) -> float:
+    if int(lr_decay_every_steps) <= 0:
+        return float(max(base_learning_rate, min_learning_rate))
+    completed_updates = max(int(epoch), 0) * max(int(updates_per_epoch_per_agent), 0)
+    decay_events = completed_updates // int(lr_decay_every_steps)
+    lr = float(base_learning_rate) * (float(lr_decay_factor) ** int(decay_events))
+    return float(max(lr, float(min_learning_rate)))
 
 
 def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
@@ -219,7 +245,7 @@ def _clear_replay_storage(storage_dir: str) -> None:
             continue
 
 
-def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
+def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning_params: bool = True) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
@@ -229,18 +255,43 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
     replay = ReplayBuffer(
         cfg.league.replay_storage_dir,
         recency_decay=cfg.league.recency_decay,
-        recency_center_mass_ratio=cfg.league.recency_center_mass_ratio,
+        replay_window_epochs=cfg.league.replay_window_epochs,
         clear_existing=fresh_start,
     )
 
     if start_epoch > 0:
+        replay.delete_from_epoch(start_epoch)
         load_checkpoint(cfg, agents, start_epoch - 1)
     metrics_history = load_metrics_history_from_checkpoints(Path(cfg.checkpoint_dir), start_epoch)
 
     all_agent_ids = [x.agent_id for x in agents] + ["conservative_baseline"]
+    base_conservative_double_copy_prob = float(cfg.league.conservative_baseline_double_copy_prob)
+    base_agents_double_decision_prob = float(cfg.league.agents_double_decision_prob)
 
-    current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
-    current_choose_best_probability = float(cfg.league.choose_best_probability)
+    base_learning_rate = float(cfg.train.learning_rate)
+    min_learning_rate = float(cfg.train.min_learning_rate)
+    completed_updates_before_start = max(int(start_epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0)
+    if calculate_learning_params:
+        current_learning_rate = _learning_rate_for_epoch(
+            base_learning_rate=base_learning_rate,
+            min_learning_rate=min_learning_rate,
+            lr_decay_factor=float(cfg.train.lr_decay_factor),
+            lr_decay_every_steps=int(cfg.train.lr_decay_every_steps),
+            updates_per_epoch_per_agent=int(cfg.train.updates_per_epoch_per_agent),
+            epoch=int(start_epoch),
+        )
+        current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
+        current_choose_best_probability = 1.0 - (1.0 - float(cfg.league.choose_best_probability)) * (float(cfg.league.choose_best_decay) ** max(start_epoch, 0))
+    else:
+        current_learning_rate = base_learning_rate
+        current_temperature = float(cfg.league.selfplay_temperature)
+        current_choose_best_probability = float(cfg.league.choose_best_probability)
+
+    for agent in agents:
+        if calculate_learning_params:
+            agent.train_step = int(completed_updates_before_start)
+        for pg in agent.optimizer.param_groups:
+            pg["lr"] = current_learning_rate
 
     for epoch in range(start_epoch, cfg.train.num_epochs):
         epoch_t0 = time.time()
@@ -249,18 +300,24 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
         play_t0 = time.time()
         league.set_decision_temperature(current_temperature)
         league.set_choose_best_probability(current_choose_best_probability)
-        current_conservative_baseline_double_copy_prob = _sigmoid_growth_probability(
-            float(cfg.league.conservative_baseline_double_copy_prob),
-            epoch,
-            int(getattr(cfg.league, "baseline_conservative_double_copy_start_epoch", 0)),
-            int(getattr(cfg.league, "baseline_conservative_double_copy_end_epoch", 0)),
-        )
-        current_agents_double_decision_prob = _sigmoid_growth_probability(
-            float(cfg.league.agents_double_decision_prob),
-            epoch,
-            int(getattr(cfg.league, "agents_double_decision_start_epoch", 0)),
-            int(getattr(cfg.league, "agents_double_decision_end_epoch", 0)),
-        )
+        if calculate_learning_params:
+            current_conservative_baseline_double_copy_prob = _sigmoid_growth_probability(
+                base_conservative_double_copy_prob,
+                epoch,
+                int(getattr(cfg.league, "baseline_conservative_double_copy_start_epoch", 0)),
+                int(getattr(cfg.league, "baseline_conservative_double_copy_end_epoch", 0)),
+                float(getattr(cfg.league, "sigmoid_parameter", 6.0)),
+            )
+            current_agents_double_decision_prob = _sigmoid_growth_probability(
+                base_agents_double_decision_prob,
+                epoch,
+                int(getattr(cfg.league, "agents_double_decision_start_epoch", 0)),
+                int(getattr(cfg.league, "agents_double_decision_end_epoch", 0)),
+                float(getattr(cfg.league, "sigmoid_parameter", 6.0)),
+            )
+        else:
+            current_conservative_baseline_double_copy_prob = float(cfg.league.conservative_baseline_double_copy_prob)
+            current_agents_double_decision_prob = float(cfg.league.agents_double_decision_prob)
         cfg.league.conservative_baseline_double_copy_prob = current_conservative_baseline_double_copy_prob
         cfg.league.agents_double_decision_prob = current_agents_double_decision_prob
         game_results, games_sec = league.run_epoch(agents, epoch)
@@ -330,7 +387,6 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                     batch_by_agent,
                     cfg.league.alpha_recency,
                     cfg.league.alpha_uniform,
-                    cfg.league.recency_window,
                 )
                 replay_sample_time_total += time.time() - sample_t0
                 replay_sample_calls += 1
@@ -444,13 +500,15 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0) -> list[dict]:
                 cfg.train.winrate_window_size,
                 cfg.league.alpha_recency,
                 cfg.league.alpha_uniform,
-                cfg.league.recency_center_mass_ratio,
+                cfg.league.recency_decay,
+                cfg.league.replay_window_epochs,
             )
 
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
 
-        current_temperature *= float(cfg.league.temperature_decay)
-        current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
+        if calculate_learning_params:
+            current_temperature *= float(cfg.league.temperature_decay)
+            current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
 
     return metrics_history

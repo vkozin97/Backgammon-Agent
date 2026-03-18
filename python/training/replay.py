@@ -9,41 +9,12 @@ import time
 import numpy as np
 
 
-def build_recency_weights(size: int, center_mass_ratio: float) -> np.ndarray:
-    n = int(size)
-    if n <= 0:
-        return np.empty(0, dtype=np.float64)
-    if n == 1:
-        return np.array([1.0], dtype=np.float64)
-
-    target_pos = float(np.clip(center_mass_ratio, 0.0, 1.0))
-    target_age = 1.0 - target_pos
-    ages_norm = np.linspace(1.0, 0.0, n, dtype=np.float64)
-
-    def mean_age_for_k(k: float) -> float:
-        w = np.exp(-k * ages_norm)
-        return float(np.dot(ages_norm, w) / np.sum(w))
-
-    lo, hi = 0.0, 256.0
-    for _ in range(60):
-        mid = 0.5 * (lo + hi)
-        if mean_age_for_k(mid) > target_age:
-            lo = mid
-        else:
-            hi = mid
-    k = 0.5 * (lo + hi)
-
-    weights = np.exp(-k * ages_norm)
-    weights /= np.max(weights)
-    return weights.astype(np.float64, copy=False)
-
-
 class ReplayBuffer:
     def __init__(
         self,
         storage_dir: str | None = None,
-        recency_decay: float = 0.98,
-        recency_center_mass_ratio: float = 0.8,
+        recency_decay: float = 0.9,
+        replay_window_epochs: int = 20,
         clear_existing: bool = False,
     ):
         base_dir = Path(storage_dir) if storage_dir else Path(tempfile.gettempdir()) / "backgammon_replay"
@@ -84,21 +55,24 @@ class ReplayBuffer:
 
         self._rng = np.random.default_rng()
         self._recency_decay = float(recency_decay)
-        self._recency_center_mass_ratio = float(recency_center_mass_ratio)
-        self._renorm_every = 2048
+        self._replay_window_epochs = max(int(replay_window_epochs), 1)
         self._commit_every = 256
         self._pending_rows: list[tuple] = []
 
         rows = self._conn.execute(
-            "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id FROM replay ORDER BY recency_index ASC"
+            "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id, epoch FROM replay ORDER BY recency_index ASC"
         ).fetchall()
+        self._load_rows_into_memory(rows)
+
+    def _load_rows_into_memory(self, rows: list[tuple]) -> None:
         self._recency_indices: list[int] = []
         self._states: list[np.ndarray] = []
-        self._outcomes: list[float] = []
+        self._outcomes: list[np.ndarray] = []
         self._agent_ids: list[str] = []
+        self._epochs: list[int] = []
         self._agent_to_positions: dict[str, list[int]] = {}
         self._id_to_pos: dict[int, int] = {}
-        for recency_index, state_blob, terminal_outcome_blob, terminal_outcome_dim, agent_id in rows:
+        for recency_index, state_blob, terminal_outcome_blob, terminal_outcome_dim, agent_id, epoch in rows:
             rid = int(recency_index)
             pos = len(self._recency_indices)
             self._recency_indices.append(rid)
@@ -106,13 +80,12 @@ class ReplayBuffer:
             self._outcomes.append(np.frombuffer(terminal_outcome_blob, dtype=np.float32, count=int(terminal_outcome_dim)).copy())
             aid = str(agent_id)
             self._agent_ids.append(aid)
+            self._epochs.append(int(epoch))
             self._agent_to_positions.setdefault(aid, []).append(pos)
             self._id_to_pos[rid] = pos
 
         self._size = len(self._recency_indices)
         self._next_recency_index = int(self._recency_indices[-1]) + 1 if self._size > 0 else 1
-
-        self._recency_weights = build_recency_weights(self._size, self._recency_center_mass_ratio)
 
     def _ensure_optional_columns(self) -> None:
         existing = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(replay)").fetchall()}
@@ -133,19 +106,15 @@ class ReplayBuffer:
         if altered:
             self._conn.commit()
 
-    def _normalize_weights(self, force: bool = False) -> None:
-        if self._recency_weights.size == 0:
-            return
-        if not force and self._size % self._renorm_every != 0:
-            return
-        max_w = float(np.max(self._recency_weights))
-        if max_w > 0.0:
-            self._recency_weights /= max_w
-
-    def _refresh_recency_weights(self) -> None:
-        if self._recency_weights.size == self._size:
-            return
-        self._recency_weights = build_recency_weights(self._size, self._recency_center_mass_ratio)
+    def _window_positions(self) -> np.ndarray:
+        if self._size == 0:
+            return np.empty((0,), dtype=np.int64)
+        max_epoch = max(self._epochs)
+        min_epoch = int(max_epoch - self._replay_window_epochs + 1)
+        positions = [i for i, epoch in enumerate(self._epochs) if int(epoch) >= min_epoch]
+        if not positions:
+            return np.arange(self._size, dtype=np.int64)
+        return np.asarray(positions, dtype=np.int64)
 
     def _insert_pending_rows(self) -> None:
         if not self._pending_rows:
@@ -174,6 +143,7 @@ class ReplayBuffer:
         self._outcomes.append(terminal_outcome)
         agent_id = str(kwargs["agent_id"])
         self._agent_ids.append(agent_id)
+        self._epochs.append(int(kwargs["epoch"]))
         self._agent_to_positions.setdefault(agent_id, []).append(self._size)
 
         self._pending_rows.append(
@@ -200,8 +170,6 @@ class ReplayBuffer:
 
     def add(self, **kwargs) -> None:
         self._add_single(**kwargs)
-        self._recency_weights = np.empty(0, dtype=np.float64)
-
         if len(self._pending_rows) >= self._commit_every:
             self._insert_pending_rows()
 
@@ -211,8 +179,6 @@ class ReplayBuffer:
 
         for rec in records:
             self._add_single(**rec)
-        self._recency_weights = np.empty(0, dtype=np.float64)
-
         if len(self._pending_rows) >= self._commit_every:
             self._insert_pending_rows()
 
@@ -222,57 +188,44 @@ class ReplayBuffer:
     def _flush_if_needed(self) -> None:
         self._insert_pending_rows()
 
-
     def _sample_positions(
         self,
         batch_size: int,
         alpha_recency: float,
         alpha_uniform: float,
-        recency_window: int,
     ) -> np.ndarray:
-        del recency_window
         if self._size == 0:
             return np.empty((0,), dtype=np.int64)
 
-        recency_n = max(int(batch_size * alpha_recency), 0)
-        uniform_n = max(int(batch_size * alpha_uniform), 0)
+        candidate_positions = self._window_positions()
+        total_states = int(candidate_positions.size)
+        if total_states <= 0:
+            return np.empty((0,), dtype=np.int64)
 
-        selected_pos: list[np.ndarray] = []
-
-        if recency_n > 0:
-            self._refresh_recency_weights()
-            probs = self._recency_weights / np.sum(self._recency_weights)
-            recency_pos = self._rng.choice(self._size, size=recency_n, replace=True, p=probs)
-            selected_pos.append(recency_pos)
-
-        if uniform_n > 0:
-            uniform_pos = self._rng.integers(0, self._size, size=uniform_n)
-            selected_pos.append(uniform_pos)
-
-        if selected_pos:
-            sampled_pos = np.concatenate(selected_pos)
+        local_idx = np.arange(total_states, dtype=np.float64)
+        age_ratio = (float(total_states - 1) - local_idx) / float(max(total_states, 1))
+        exponent = age_ratio * float(self._replay_window_epochs)
+        weights = float(alpha_uniform) + float(alpha_recency) * (float(self._recency_decay) ** exponent)
+        weights = np.clip(weights, 0.0, None)
+        if float(np.sum(weights)) <= 0.0:
+            probs = np.full((total_states,), 1.0 / float(total_states), dtype=np.float64)
         else:
-            sampled_pos = self._rng.integers(0, self._size, size=batch_size)
-
-        if sampled_pos.size < batch_size:
-            extra = self._rng.integers(0, self._size, size=batch_size - sampled_pos.size)
-            sampled_pos = np.concatenate([sampled_pos, extra])
-
-        return sampled_pos[:batch_size].astype(np.int64, copy=False)
+            probs = weights / np.sum(weights)
+        sampled_local = self._rng.choice(total_states, size=int(batch_size), replace=True, p=probs)
+        return candidate_positions[sampled_local].astype(np.int64, copy=False)
 
     def sample_with_agent_ids(
         self,
         batch_size: int,
         alpha_recency: float,
         alpha_uniform: float,
-        recency_window: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        sampled_pos = self._sample_positions(batch_size, alpha_recency, alpha_uniform, recency_window)
+        sampled_pos = self._sample_positions(batch_size, alpha_recency, alpha_uniform)
         if sampled_pos.size == 0:
             return (
                 np.empty((0, 0), dtype=np.float32),
                 np.empty((0, 0), dtype=np.float32),
-                np.empty((0,), dtype='<U1'),
+                np.empty((0,), dtype="<U1"),
             )
 
         states = np.stack([self._states[ix] for ix in sampled_pos]).astype(np.float32)
@@ -285,7 +238,6 @@ class ReplayBuffer:
         batch_sizes_by_agent: dict[str, int],
         alpha_recency: float,
         alpha_uniform: float,
-        recency_window: int,
     ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         result: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         if self._size == 0:
@@ -298,7 +250,7 @@ class ReplayBuffer:
             }
 
         total_required = sum(max(int(v), 0) for v in batch_sizes_by_agent.values())
-        pooled_pos = self._sample_positions(total_required, alpha_recency, alpha_uniform, recency_window)
+        pooled_pos = self._sample_positions(total_required, alpha_recency, alpha_uniform)
         pooled_agent_ids = np.array([self._agent_ids[ix] for ix in pooled_pos], dtype=np.str_)
 
         for agent_id, batch_size in batch_sizes_by_agent.items():
@@ -331,13 +283,11 @@ class ReplayBuffer:
         batch_size: int,
         alpha_recency: float,
         alpha_uniform: float,
-        recency_window: int,
     ) -> tuple[np.ndarray, np.ndarray]:
         states, outcomes, _ = self.sample_with_agent_ids(
             batch_size,
             alpha_recency,
             alpha_uniform,
-            recency_window,
         )
         return states, outcomes
 
@@ -345,6 +295,15 @@ class ReplayBuffer:
         self._flush_if_needed()
         counter = int(self._next_recency_index)
         return {"size": self._size, "counter": counter, "db_path": str(self.db_path)}
+
+    def delete_from_epoch(self, min_epoch_inclusive: int) -> None:
+        self._flush_if_needed()
+        self._conn.execute("DELETE FROM replay WHERE epoch >= ?", (int(min_epoch_inclusive),))
+        self._conn.commit()
+        rows = self._conn.execute(
+            "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id, epoch FROM replay ORDER BY recency_index ASC"
+        ).fetchall()
+        self._load_rows_into_memory(rows)
 
     def close(self) -> None:
         self._flush_if_needed()

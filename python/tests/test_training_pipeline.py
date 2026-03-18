@@ -4,7 +4,15 @@ import sqlite3
 import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
-from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game, _sigmoid_growth_probability
+from training.pipeline import (
+    run_training,
+    load_checkpoint,
+    _games_for_pair,
+    _terminal_outcome_for_step,
+    _bootstrap_outcomes_for_unfinished_game,
+    _sigmoid_growth_probability,
+    _learning_rate_for_epoch,
+)
 from training.agents import build_trainable_agents, decide_accept_double_from_probs, MATCH_VECTOR_DIM
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
@@ -37,7 +45,7 @@ def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
             terminal_outcome=_outcome_vec(1.0 if aid == "trainable_0" else 0.0),
         )
 
-    x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2, recency_window=2)
+    x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2)
     replay.close()
 
     assert x.shape[0] == 64
@@ -66,7 +74,6 @@ def test_replay_sample_stratified_with_agent_ids_returns_requested_counts(tmp_pa
         {"trainable_0": 32, "trainable_1": 24, "unknown": 16},
         alpha_recency=0.8,
         alpha_uniform=0.2,
-        recency_window=2,
     )
     replay.close()
 
@@ -80,6 +87,30 @@ def test_replay_sample_stratified_with_agent_ids_returns_requested_counts(tmp_pa
     assert y1.shape == (24, 26)
     assert xu.shape[0] == 0
     assert yu.shape == (0, 0)
+
+
+
+def test_replay_delete_from_epoch_keeps_only_older_rows(tmp_path: Path):
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(tmp_path / "replay"))
+    for i in range(6):
+        replay.add(
+            state_vector=[float(i), 0.0],
+            agent_id="trainable_0",
+            opponent_id="opp",
+            game_id=f"g_{i}",
+            step_index=i,
+            epoch=i // 2,
+            terminal_outcome=_outcome_vec(1.0),
+        )
+
+    replay.delete_from_epoch(2)
+    meta = replay.get_meta()
+    replay.close()
+
+    assert int(meta["size"]) == 4
+
 
 def test_config_roundtrip(tmp_path: Path):
     cfg = ExperimentConfig()
@@ -270,6 +301,83 @@ def test_terminal_outcome_uses_player_index_for_same_agent_ids():
     assert int(np.argmax(out_p1[:12])) != int(np.argmax(out_p2[:12]))
 
 
+
+
+def test_run_training_resume_drops_replay_rows_from_start_epoch(tmp_path: Path):
+    replay_dir = tmp_path / "replay"
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(replay_dir))
+    for i in range(6):
+        replay.add(
+            state_vector=[float(i), 0.0],
+            agent_id="trainable_0",
+            opponent_id="opp",
+            game_id=f"g_{i}",
+            step_index=i,
+            epoch=i,
+            terminal_outcome=_outcome_vec(1.0),
+        )
+    replay.close()
+
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 3
+    cfg.league.replay_storage_dir = str(replay_dir)
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+
+    agents = build_trainable_agents(cfg, cfg.train.seed)
+    ckpt = Path(cfg.checkpoint_dir) / "epoch_0002"
+    ckpt.mkdir(parents=True, exist_ok=True)
+    ckpt_agents = __import__("json").dumps([a.state_dict() for a in agents])
+    (ckpt / "agents.json").write_text(ckpt_agents, encoding="utf-8")
+
+    run_training(cfg, start_epoch=3)
+
+    conn = sqlite3.connect(replay_dir / "replay.sqlite3")
+    remaining = conn.execute("SELECT COUNT(*) FROM replay WHERE epoch >= 3").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM replay").fetchone()[0]
+    conn.close()
+
+    assert remaining == 0
+    assert total == 3
+
+
+def test_run_training_uses_config_params_when_calculation_disabled(tmp_path: Path):
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 3
+    cfg.train.updates_per_epoch_per_agent = 1
+    cfg.train.batch_size = 4
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 1000
+    cfg.league.matches_per_pair = 1
+    cfg.league.min_replay_size_to_train = 1
+    cfg.league.selfplay_temperature = 0.7
+    cfg.league.temperature_decay = 0.1
+    cfg.league.choose_best_probability = 0.2
+    cfg.league.choose_best_decay = 0.3
+    cfg.league.conservative_baseline_double_copy_prob = 0.15
+    cfg.league.agents_double_decision_prob = 0.35
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    run_training(cfg, start_epoch=0)
+    metrics = run_training(cfg, start_epoch=2, calculate_learning_params=False)
+
+    assert len(metrics) == 3
+    resumed = metrics[-1]
+    assert resumed["epoch"] == 2
+    assert np.isclose(resumed["decision_temperature"], cfg.league.selfplay_temperature)
+    assert np.isclose(resumed["choose_best_probability"], cfg.league.choose_best_probability)
+    assert np.isclose(resumed["conservative_baseline_double_copy_prob"], cfg.league.conservative_baseline_double_copy_prob)
+    assert np.isclose(resumed["agents_double_decision_prob"], cfg.league.agents_double_decision_prob)
+    for aid, stats in resumed["agents"].items():
+        assert stats["learning_rate_steps_epoch"]
+        assert np.isclose(stats["learning_rate_steps_epoch"][0], cfg.train.learning_rate)
+
+
 def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 1
@@ -421,11 +529,26 @@ def test_state_to_observation_uses_cube_scalars_from_state_raw():
 
 def test_sigmoid_growth_probability_schedule():
     base = 0.2
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10), base)
-    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10)
-    assert base < mid < 1.0
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10), 1.0)
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10), 1.0)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0), base)
+    at_start = _sigmoid_growth_probability(base, epoch=5, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    at_end = _sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    assert np.isclose(at_start, base + 0.001)
+    assert at_start < mid < at_end
+    assert np.isclose(at_end, 0.999)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0), 1.0)
+
+
+def test_learning_rate_for_epoch_accounts_for_updates_and_decay_steps():
+    lr = _learning_rate_for_epoch(
+        base_learning_rate=1e-3,
+        min_learning_rate=1e-7,
+        lr_decay_factor=0.5,
+        lr_decay_every_steps=50,
+        updates_per_epoch_per_agent=100,
+        epoch=3,
+    )
+    assert np.isclose(lr, 1e-3 * (0.5 ** 6))
 
 
 def test_decide_accept_double_from_probs_endless_sign():

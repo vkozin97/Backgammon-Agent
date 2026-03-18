@@ -15,5 +15,5 @@ if __name__ == "__main__":
     cfg.league.replay_storage_dir = str(experiment_dir_path / "replay")
 
     start_epoch = 0 if epoch in (None, 0) else int(epoch)
-    run_training(cfg, start_epoch=start_epoch)
+    run_training(cfg, start_epoch=start_epoch, calculate_learning_params=True)
     print("training finished")
