@@ -376,6 +376,31 @@ def test_run_training_resume_drops_replay_rows_from_start_epoch(tmp_path: Path):
     assert total == 3
 
 
+def test_run_training_deletes_stale_checkpoints_from_start_epoch(tmp_path: Path):
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 2
+    cfg.train.updates_per_epoch_per_agent = 0
+    cfg.league.matches_per_pair = 1
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    agents = build_trainable_agents(cfg, cfg.train.seed)
+    ckpt_root = Path(cfg.checkpoint_dir)
+    for epoch in range(4):
+        ckpt = ckpt_root / f"epoch_{epoch:04d}"
+        ckpt.mkdir(parents=True, exist_ok=True)
+        ckpt_agents = __import__("json").dumps([a.state_dict() for a in agents])
+        (ckpt / "agents.json").write_text(ckpt_agents, encoding="utf-8")
+        (ckpt / "metrics.json").write_text(__import__("json").dumps({"epoch": epoch}), encoding="utf-8")
+
+    run_training(cfg, start_epoch=2)
+
+    assert (ckpt_root / "epoch_0000").exists()
+    assert (ckpt_root / "epoch_0001").exists()
+    assert not (ckpt_root / "epoch_0003").exists()
+
+
 def test_run_training_uses_config_params_when_calculation_disabled(tmp_path: Path):
     cfg = ExperimentConfig()
     cfg.train.num_epochs = 3

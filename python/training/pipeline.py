@@ -245,11 +245,35 @@ def _clear_replay_storage(storage_dir: str) -> None:
             continue
 
 
+def _delete_checkpoints_from_epoch(checkpoint_dir: str, start_epoch: int) -> None:
+    root = Path(checkpoint_dir)
+    if not root.exists():
+        return
+
+    epoch_prefix = "epoch_"
+    for p in root.iterdir():
+        if not p.is_dir() or not p.name.startswith(epoch_prefix):
+            continue
+        try:
+            epoch = int(p.name[len(epoch_prefix):])
+        except ValueError:
+            continue
+        if epoch < int(start_epoch):
+            continue
+        for child in sorted(p.rglob("*"), reverse=True):
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        p.rmdir()
+
+
 def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning_params: bool = True) -> list[dict]:
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)
     fresh_start = start_epoch <= 0
+    _delete_checkpoints_from_epoch(cfg.checkpoint_dir, start_epoch)
     if fresh_start:
         _clear_replay_storage(cfg.league.replay_storage_dir)
     replay = ReplayBuffer(
