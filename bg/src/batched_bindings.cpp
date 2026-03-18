@@ -15,28 +15,49 @@ namespace {
 
 class BatchedBackgammonEnv {
 public:
-    BatchedBackgammonEnv(size_t n_matches, py::object n_games, uint64_t seed = 0) {
+    BatchedBackgammonEnv(size_t n_matches, py::object n_games, py::object endless_mode, uint64_t seed = 0) {
         envs_.reserve(n_matches);
 
-        if (py::isinstance<py::int_>(n_games)) {
-            const int match_size = n_games.cast<int>();
-            for (size_t i = 0; i < n_matches; ++i) {
-                envs_.emplace_back(seed + static_cast<uint64_t>(i), match_size);
+        auto cast_ints = [&](py::object value, const char* name) -> std::vector<int> {
+            std::vector<int> out;
+            if (py::isinstance<py::int_>(value)) {
+                out.assign(n_matches, value.cast<int>());
+                return out;
             }
-            return;
-        }
+            if (!py::isinstance<py::sequence>(value)) {
+                throw std::runtime_error(std::string(name) + " must be int or sequence[int]");
+            }
+            py::sequence seq = value.cast<py::sequence>();
+            if (static_cast<size_t>(seq.size()) != n_matches) {
+                throw std::runtime_error(std::string(name) + " sequence length must be equal to n_matches");
+            }
+            out.reserve(n_matches);
+            for (size_t i = 0; i < n_matches; ++i) out.push_back(seq[i].cast<int>());
+            return out;
+        };
 
-        if (!py::isinstance<py::sequence>(n_games)) {
-            throw std::runtime_error("n_games must be int or sequence[int]");
-        }
+        auto cast_bools = [&](py::object value, const char* name) -> std::vector<bool> {
+            std::vector<bool> out;
+            if (py::isinstance<py::bool_>(value)) {
+                out.assign(n_matches, value.cast<bool>());
+                return out;
+            }
+            if (!py::isinstance<py::sequence>(value)) {
+                throw std::runtime_error(std::string(name) + " must be bool or sequence[bool]");
+            }
+            py::sequence seq = value.cast<py::sequence>();
+            if (static_cast<size_t>(seq.size()) != n_matches) {
+                throw std::runtime_error(std::string(name) + " sequence length must be equal to n_matches");
+            }
+            out.reserve(n_matches);
+            for (size_t i = 0; i < n_matches; ++i) out.push_back(seq[i].cast<bool>());
+            return out;
+        };
 
-        py::sequence n_games_seq = n_games.cast<py::sequence>();
-        if (static_cast<size_t>(n_games_seq.size()) != n_matches) {
-            throw std::runtime_error("n_games sequence length must be equal to n_matches");
-        }
-
+        const std::vector<int> n_games_vec = cast_ints(n_games, "n_games");
+        const std::vector<bool> endless_mode_vec = cast_bools(endless_mode, "endless_mode");
         for (size_t i = 0; i < n_matches; ++i) {
-            envs_.emplace_back(seed + static_cast<uint64_t>(i), n_games_seq[i].cast<int>());
+            envs_.emplace_back(seed + static_cast<uint64_t>(i), n_games_vec[i], endless_mode_vec[i]);
         }
     }
 
@@ -185,7 +206,7 @@ PYBIND11_MODULE(batched_bg_env, m) {
     m.doc() = "Batched Backgammon C++ env (pybind11)";
 
     py::class_<BatchedBackgammonEnv>(m, "Env")
-        .def(py::init<size_t, py::object, uint64_t>(), py::arg("n_matches"), py::arg("n_games"), py::arg("seed") = 0)
+        .def(py::init<size_t, py::object, py::object, uint64_t>(), py::arg("n_matches"), py::arg("n_games"), py::arg("endless_mode") = false, py::arg("seed") = 0)
         .def("size", &BatchedBackgammonEnv::size)
         .def("reset", &BatchedBackgammonEnv::reset)
         .def("roll_dice", &BatchedBackgammonEnv::roll_dice)

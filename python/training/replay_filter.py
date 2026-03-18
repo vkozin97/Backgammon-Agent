@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Optional
 
 
+ReplayGameRef = tuple[str, int]
+
+
 def filter_replay_matches(
     replay_storage_dir: str,
     *,
@@ -14,7 +17,7 @@ def filter_replay_matches(
     agent_2_id: Optional[str] = None,
     final_dave_value: Optional[int] = None,
     final_reward_value: Optional[int] = None,
-) -> list[str]:
+) -> list[ReplayGameRef]:
     db_path = Path(replay_storage_dir) / "replay.sqlite3"
     if not db_path.exists():
         return []
@@ -45,11 +48,12 @@ def filter_replay_matches(
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             f"""
-            SELECT DISTINCT game_id
+            SELECT game_id, COALESCE(game_number_in_match, 1) AS game_number_in_match, MIN(recency_index) AS first_recency_index
             FROM replay
             WHERE {where}
-            ORDER BY game_id
+            GROUP BY game_id, COALESCE(game_number_in_match, 1)
+            ORDER BY first_recency_index ASC, game_id ASC, game_number_in_match ASC
             """,
             params,
         ).fetchall()
-    return [str(r[0]) for r in rows]
+    return [(str(game_id), int(game_number_in_match)) for game_id, game_number_in_match, _ in rows]

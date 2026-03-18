@@ -51,7 +51,8 @@ class TrainConfig:
 @dataclass
 class LeagueConfig:
     matches_per_pair: int = 5
-    games_in_match: int = -1
+    n_games_per_match: int = 5
+    endless_mode: bool = False
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 0.8
@@ -117,7 +118,18 @@ class ExperimentConfig:
         league_data = dict(data.get("league", {}))
         # Backward compatibility with old checkpoints/configs.
         league_data.pop("max_turns_per_game", None)
-        league_data.pop("n_games_per_match", None)
+        if "games_in_match" in league_data:
+            legacy_games_in_match = int(league_data.pop("games_in_match"))
+            if "endless_mode" not in league_data:
+                league_data["endless_mode"] = legacy_games_in_match < 0
+            if "n_games_per_match" not in league_data:
+                if legacy_games_in_match < 0:
+                    legacy_matches = max(1, int(league_data.get("matches_per_pair", 1)))
+                    league_data["n_games_per_match"] = legacy_matches
+                    if "matches_per_pair" in league_data:
+                        league_data["matches_per_pair"] = 1
+                else:
+                    league_data["n_games_per_match"] = max(1, legacy_games_in_match)
         if "games_per_pair" in league_data and "matches_per_pair" not in league_data:
             league_data["matches_per_pair"] = league_data.pop("games_per_pair")
         if "pages_per_pair" in league_data and "matches_per_pair" not in league_data:

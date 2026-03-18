@@ -9,7 +9,7 @@ namespace bg {
 
 	class BackgammonEnv {
 	public:
-		explicit BackgammonEnv(uint64_t seed = 0, int n_games = 5);
+		explicit BackgammonEnv(uint64_t seed = 0, int n_games = 5, bool endless_mode = false);
 
 		void reset_standard();            // ñòàíäàðòíàÿ ðàññòàíîâêà (ïîêà êàê â backgammon)
 		const State& state() const { return s_; }
@@ -48,7 +48,7 @@ namespace bg {
 		int mine_score() const { return current_player_white_ ? white_score_ : black_score_; }
 		int opp_score() const { return current_player_white_ ? black_score_ : white_score_; }
 		int dave_value() const { return dave_value_; }
-		int n_games() const { return endless_mode_ ? -1 : n_games_; }
+		int n_games() const { return endless_mode_ ? -n_games_ : n_games_; }
 		uint8_t cube_available_mine() const;
 		uint8_t cube_available_opp() const;
 		uint8_t is_crawford_game() const { return crawford_active_ ? 1 : 0; }
@@ -77,6 +77,7 @@ namespace bg {
 		uint8_t accept_double_next_offer_{1};
 		bool double_offered_in_match_{false};
 		bool endless_mode_{false};
+		int games_played_in_match_{0};
 
 		void start_new_game(bool first_game);
 		uint8_t double_possible_for_current() const;
