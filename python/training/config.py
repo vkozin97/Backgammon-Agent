@@ -50,9 +50,9 @@ class TrainConfig:
 
 @dataclass
 class LeagueConfig:
-    matches_per_pair: int = 5
-    n_games_per_match: int = 5
-    endless_mode: bool = False
+    matches_per_pair: int = 3
+    n_games_per_match: int = 4
+    endless_mode: bool = True
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 0.8
@@ -66,11 +66,11 @@ class LeagueConfig:
     choose_best_probability: float = 0.0
     choose_best_decay: float = 0.95
     conservative_baseline_double_copy_prob: float = 0.0
-    baseline_conservative_double_copy_start_epoch: int = 250
+    baseline_conservative_double_copy_start_epoch: int = 300
     baseline_conservative_double_copy_end_epoch: int = 400
     agents_double_decision_prob: float = 0.0
-    agents_double_decision_start_epoch: int = 100
-    agents_double_decision_end_epoch: int = 250
+    agents_double_decision_start_epoch: int = 200
+    agents_double_decision_end_epoch: int = 300
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
 
