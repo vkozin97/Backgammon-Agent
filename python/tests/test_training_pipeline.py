@@ -224,6 +224,27 @@ def test_sampling_concentrates_on_best_value_when_temperature_goes_to_zero():
     assert top1_cool / n > top1_warm / n
     assert top1_cool / n > 0.99
 
+
+def test_ensemble_cache_key_separates_conv_architectures():
+    import training.league as league_module
+    from training.league import LeagueController
+
+    if league_module.functional_call is None or league_module.stack_module_state is None or league_module.vmap is None:
+        return
+
+    cfg = ExperimentConfig()
+    agents = build_trainable_agents(cfg, cfg.train.seed)
+    league = LeagueController(cfg.league, seed=11)
+
+    x = np.zeros((2, cfg.model_group_c.input_dim), dtype=np.float32)
+    league._predict_probs_single_cuda_call([agents[3], agents[4]], x)
+    league._predict_probs_single_cuda_call([agents[5], agents[6]], x)
+
+    assert len(league._ensemble_base_model_cache) == 2
+    cached_channels = {tuple(getattr(model.cfg, "conv_channels", [])) for model in league._ensemble_base_model_cache.values()}
+    assert tuple(cfg.model_group_c.conv_channels) in cached_channels
+    assert tuple(cfg.model_group_d.conv_channels) in cached_channels
+
 def test_run_training_clears_replay_db_on_fresh_start(tmp_path: Path):
     replay_dir = tmp_path / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)

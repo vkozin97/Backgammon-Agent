@@ -11,17 +11,18 @@ class ModelConfig:
     input_dim: int = 263
     output_dim: int = 31
     activation_fn: str = "relu"
-    dropout_enabled: bool = True
+    dropout_enabled: bool = False
     p_dropout: float = 0.1
-    dropout_layout: list[int] = field(default_factory=lambda: [1, 2])
+    dropout_layout: list[int] = field(default_factory=list)
     hidden_dims: list[int] = field(default_factory=lambda: [128, 128])
     final_bias_init: float = 0.0
     conv_channels: list[int] = field(default_factory=lambda: [8, 16])
     conv_kernel_sizes: list[int] = field(default_factory=lambda: [3, 3])
+    conv_pool_every: int = 0
     conv_activation: str = "relu"
-    head_hidden_dims: list[int] = field(default_factory=lambda: [128, 64, 32])
+    head_hidden_dims: list[int] = field(default_factory=lambda: [64, 32])
     conv_out_channels: int = 64
-    conv_output_dim: int = 512
+    conv_output_dim: int = 0
 
 
 @dataclass
@@ -75,22 +76,33 @@ class LeagueConfig:
 
 @dataclass
 class ExperimentConfig:
-    model_group_a: ModelConfig = field(default_factory=lambda: ModelConfig(hidden_dims=[128, 64], p_dropout=0.10, dropout_layout=[1, 2]))
-    model_group_c: ModelConfig = field(default_factory=lambda: ModelConfig(
-        p_dropout=0.10,
-        dropout_layout=[1, 2],
+    model_group_a: ModelConfig = field(default_factory=lambda: ModelConfig(
         hidden_dims=[128, 64],
-        conv_channels=[64, 64, 64],
-        conv_kernel_sizes=[2, 2, 2],
-        conv_output_dim=256,
+        dropout_enabled=False,
+        p_dropout=0.0,
+        dropout_layout=[],
+    ))
+    model_group_c: ModelConfig = field(default_factory=lambda: ModelConfig(
+        dropout_enabled=False,
+        p_dropout=0.0,
+        dropout_layout=[],
+        hidden_dims=[64, 32],
+        conv_channels=[32, 16, 32, 16, 32, 16],
+        conv_kernel_sizes=[3, 3, 3, 3, 3, 3],
+        conv_pool_every=2,
+        head_hidden_dims=[64, 32],
+        conv_output_dim=0,
     ))
     model_group_d: ModelConfig = field(default_factory=lambda: ModelConfig(
-        p_dropout=0.10,
-        dropout_layout=[1, 2],
-        hidden_dims=[128, 64],
-        conv_channels=[64, 64, 64],
-        conv_kernel_sizes=[3, 3, 3],
-        conv_output_dim=256,
+        dropout_enabled=False,
+        p_dropout=0.0,
+        dropout_layout=[],
+        hidden_dims=[64, 32],
+        conv_channels=[32, 16, 16, 8],
+        conv_kernel_sizes=[6, 3, 6, 3],
+        conv_pool_every=2,
+        head_hidden_dims=[64, 32],
+        conv_output_dim=0,
     ))
     train: TrainConfig = field(default_factory=TrainConfig)
     league: LeagueConfig = field(default_factory=LeagueConfig)
