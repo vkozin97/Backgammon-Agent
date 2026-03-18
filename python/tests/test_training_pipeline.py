@@ -12,9 +12,11 @@ from training.pipeline import (
     _bootstrap_outcomes_for_unfinished_game,
     _sigmoid_growth_probability,
     _learning_rate_for_epoch,
+    _epoch_uses_output_freeze,
 )
 from training.agents import (
     MATCH_VECTOR_DIM,
+    ValueAgent,
     build_trainable_agents,
     decide_accept_double_from_probs,
     flip_observation_perspective,
@@ -646,3 +648,121 @@ def test_reject_double_equity_endless_is_immediate_loss():
     obs = np.zeros((263,), dtype=np.float32)
     obs[-3] = 1.0
     assert reject_double_equity(obs, endless=True) == -1.0
+
+
+def test_learning_rate_for_epoch_can_restart_decay_from_freeze_start_epoch():
+    lr = _learning_rate_for_epoch(
+        base_learning_rate=1e-5,
+        min_learning_rate=1e-7,
+        lr_decay_factor=0.98,
+        lr_decay_every_steps=50,
+        updates_per_epoch_per_agent=100,
+        epoch=251,
+        start_epoch=250,
+    )
+    assert np.isclose(lr, 1e-5 * (0.98 ** 2))
+
+
+def test_epoch_uses_output_freeze_is_inclusive():
+    assert not _epoch_uses_output_freeze(epoch=249, freeze_from_epoch=250, freeze_till_epoch=400)
+    assert _epoch_uses_output_freeze(epoch=250, freeze_from_epoch=250, freeze_till_epoch=400)
+    assert _epoch_uses_output_freeze(epoch=400, freeze_from_epoch=250, freeze_till_epoch=400)
+    assert not _epoch_uses_output_freeze(epoch=401, freeze_from_epoch=250, freeze_till_epoch=400)
+
+
+def test_value_agent_can_freeze_all_but_output_layer():
+    cfg = ExperimentConfig()
+    agent = ValueAgent("trainable_0", "A", cfg.model_group_a, cfg.train, seed=0)
+
+    agent.set_output_layer_only_training(True)
+
+    frozen = [name for name, param in agent.model.named_parameters() if not name.startswith("out.") and not param.requires_grad]
+    trainable = [name for name, param in agent.model.named_parameters() if param.requires_grad]
+    assert frozen
+    assert trainable
+    assert all(name.startswith("out.") for name in trainable)
+
+    agent.set_output_layer_only_training(False)
+    assert all(param.requires_grad for _, param in agent.model.named_parameters())
+
+
+def test_run_training_switches_lr_policy_during_freeze_and_restores_regular_schedule(tmp_path: Path, monkeypatch):
+    import training.pipeline as pipeline_mod
+
+    class FakeAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+            self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
+            self.train_step = 0
+            self.phase_history: list[tuple[float, float, int, bool]] = []
+
+        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+            self.phase_history.append((learning_rate, lr_decay_factor, schedule_step_offset, freeze_to_output_layer))
+            self.optimizer.param_groups[0]["lr"] = float(learning_rate)
+            return float(learning_rate)
+
+        def state_dict(self) -> dict:
+            return {"agent_id": self.agent_id, "group": "A", "model": {}}
+
+    class FakeLeague:
+        def __init__(self, *_args, **_kwargs):
+            self._decision_stats = {"decision_count": 0, "topk_freq": [0.0] * 10}
+
+        def set_decision_temperature(self, _value: float) -> None:
+            return None
+
+        def set_choose_best_probability(self, _value: float) -> None:
+            return None
+
+        def run_epoch(self, _agents, _epoch: int):
+            return [], 0.0
+
+        def get_decision_stats(self) -> dict:
+            return self._decision_stats
+
+    class FakeReplay:
+        def __init__(self, *_args, **_kwargs):
+            self.size = 0
+
+        def __len__(self) -> int:
+            return self.size
+
+        def add_many(self, _records) -> None:
+            return None
+
+        def get_meta(self) -> dict:
+            return {"size": self.size}
+
+    fake_agents = [FakeAgent("trainable_0"), FakeAgent("trainable_1")]
+    monkeypatch.setattr(pipeline_mod, "build_trainable_agents", lambda cfg, seed: fake_agents)
+    monkeypatch.setattr(pipeline_mod, "LeagueController", FakeLeague)
+    monkeypatch.setattr(pipeline_mod, "ReplayBuffer", FakeReplay)
+    monkeypatch.setattr(pipeline_mod, "load_metrics_history_from_checkpoints", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(pipeline_mod, "plot_metrics_history", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
+
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 3
+    cfg.train.updates_per_epoch_per_agent = 1
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 1
+    cfg.train.freeze_weights_from_epoch = 1
+    cfg.train.freeze_weights_till_epoch = 1
+    cfg.train.lr_during_freeze = 5e-4
+    cfg.train.lr_decay_during_freeze = 0.1
+    cfg.league.min_replay_size_to_train = 10**9
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    metrics = run_training(cfg)
+
+    assert len(metrics) == 3
+    first_agent_id = "trainable_0"
+    assert np.isclose(metrics[0]["agents"][first_agent_id]["learning_rate"], 1e-3)
+    assert not metrics[0]["freeze_output_layer_only"]
+    assert np.isclose(metrics[1]["agents"][first_agent_id]["learning_rate"], 5e-4)
+    assert metrics[1]["freeze_output_layer_only"]
+    assert np.isclose(metrics[2]["agents"][first_agent_id]["learning_rate"], 1e-3 * (0.5 ** 2))
+    assert not metrics[2]["freeze_output_layer_only"]

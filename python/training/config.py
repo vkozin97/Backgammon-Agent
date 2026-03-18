@@ -35,6 +35,10 @@ class TrainConfig:
     min_learning_rate: float = 1e-7
     lr_decay_factor: float = 0.98
     lr_decay_every_steps: int = 50
+    freeze_weights_from_epoch: int = 250
+    freeze_weights_till_epoch: int = 400
+    lr_during_freeze: float = 1e-5
+    lr_decay_during_freeze: float = 0.98
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
