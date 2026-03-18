@@ -176,9 +176,9 @@ def test_fixed_agents_support_empty_legal_moves():
 
 def test_pair_matching_uses_participants_not_game_id():
     games = [
-        GameResult("opaque_1", [], "trainable_0", 7, "trainable_0", "trainable_1"),
-        GameResult("opaque_2", [], "trainable_1", 7, "trainable_1", "trainable_2"),
-        GameResult("opaque_3", [], "random", 7, "trainable_0", "random"),
+        GameResult("opaque_1", "opaque_1", 0, 1, [], "trainable_0", 7, "trainable_0", "trainable_1"),
+        GameResult("opaque_2", "opaque_2", 0, 1, [], "trainable_1", 7, "trainable_1", "trainable_2"),
+        GameResult("opaque_3", "opaque_3", 0, 1, [], "random", 7, "trainable_0", "random"),
     ]
     pair = _games_for_pair(games, "trainable_0", "trainable_1")
     assert len(pair) == 1
@@ -302,11 +302,17 @@ def test_league_run_epoch_includes_self_mirror_games():
 
     assert captured_specs
     assert any(spec.p1.agent_id == spec.p2.agent_id for spec in captured_specs)
+    assert all("trainable" not in spec.match_id for spec in captured_specs)
+    assert all("conservative_baseline" not in spec.match_id for spec in captured_specs)
+    assert any("_b_" in spec.match_id for spec in captured_specs)
 
 
 def test_terminal_outcome_uses_player_index_for_same_agent_ids():
     game = GameResult(
         game_id="g_same",
+        match_id="g_same",
+        match_number=0,
+        game_number_in_match=1,
         steps=[],
         winner="trainable_0",
         turns=2,
@@ -319,8 +325,8 @@ def test_terminal_outcome_uses_player_index_for_same_agent_ids():
 
     out_p1 = _terminal_outcome_for_step(game, {**step_p1, "state_vector": np.array([0.0, 0.0, 5.0, 5.0], dtype=np.float32)})
     out_p2 = _terminal_outcome_for_step(game, {**step_p2, "state_vector": np.array([0.0, 0.0, 5.0, 5.0], dtype=np.float32)})
-    assert out_p1.shape == (26,)
-    assert out_p2.shape == (26,)
+    assert out_p1.shape == (31,)
+    assert out_p2.shape == (31,)
     assert np.isclose(np.sum(out_p1[:12]), 1.0)
     assert np.isclose(np.sum(out_p1[12:24]), 1.0)
     assert np.isclose(np.sum(out_p2[:12]), 1.0)
@@ -476,6 +482,9 @@ def test_bootstrap_outcomes_for_unfinished_game_uses_last_step_per_player():
 
     game = GameResult(
         game_id="g_truncated",
+        match_id="g_truncated",
+        match_number=0,
+        game_number_in_match=1,
         steps=[
             {"player_index": 0, "step_index": 0, "agent_id": "a0", "state_vector": np.array([1.0, 0.0], dtype=np.float32)},
             {"player_index": 1, "step_index": 1, "agent_id": "a1", "state_vector": np.array([2.0, 0.0], dtype=np.float32)},
@@ -504,8 +513,9 @@ def test_play_game_respects_max_steps_per_game():
     league = LeagueController(cfg, seed=1)
 
     result = league.play_game(RandomAgent(), RandomAgent(), game_id="g_cap", epoch=0)
-    assert result.max_steps_reached is True
-    assert result.turns == 2
+    assert len(result) == 1
+    assert result[0].max_steps_reached is True
+    assert result[0].turns == 2
 
 
 def test_terminal_outcome_accept_target_uses_pending_accept():
@@ -518,6 +528,9 @@ def test_terminal_outcome_accept_target_uses_pending_accept():
     }
     game = GameResult(
         game_id="g",
+        match_id="g",
+        match_number=0,
+        game_number_in_match=1,
         steps=[step],
         winner="a",
         turns=1,

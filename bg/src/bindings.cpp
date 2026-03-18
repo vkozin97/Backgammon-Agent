@@ -16,7 +16,7 @@ PYBIND11_MODULE(bg_env, m) {
         .def_readwrite("to", &bg::Move::to);
 
     py::class_<bg::BackgammonEnv>(m, "Env")
-        .def(py::init<uint64_t, int>(), py::arg("seed") = 0, py::arg("n_games") = 5)
+        .def(py::init<uint64_t, int, bool>(), py::arg("seed") = 0, py::arg("n_games") = 5, py::arg("endless_mode") = false)
         .def("reset", [](bg::BackgammonEnv& self) { self.reset_standard(); })
         .def("roll_dice", [](bg::BackgammonEnv& self) {
             auto d = self.roll_dice();

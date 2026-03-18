@@ -47,6 +47,14 @@ def _is_endless_state(raw_state: np.ndarray) -> bool:
     rs = np.asarray(raw_state, dtype=np.int16).reshape(-1)
     return rs.size > 56 and int(rs[56]) < 0
 
+
+def _compact_agent_token(agent_id: str) -> str:
+    if agent_id.startswith("trainable_"):
+        return f"t{agent_id.split('_', 1)[1]}"
+    if agent_id == "conservative_baseline":
+        return "b"
+    return agent_id
+
 class _FallbackEnv:
     def __init__(self, seed: int = 0):
         self.rng = np.random.default_rng(seed)
@@ -87,6 +95,9 @@ class _FallbackEnv:
 @dataclass
 class GameResult:
     game_id: str
+    match_id: str
+    match_number: int
+    game_number_in_match: int
     steps: list[dict]
     winner: str
     turns: int
@@ -102,7 +113,8 @@ class GameResult:
 
 @dataclass
 class _GameSpec:
-    game_id: str
+    match_id: str
+    match_number: int
     p1: object
     p2: object
 
@@ -266,7 +278,7 @@ class LeagueController:
         )
         if bg_env is not None:
             try:
-                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(self.cfg, "games_in_match", 11)))
+                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(self.cfg, "n_games_per_match", 11)), endless_mode=bool(getattr(self.cfg, "endless_mode", False)))
             except TypeError:
                 try:
                     self._obs_probe_env = bg_env.Env(int(seed))
@@ -657,12 +669,13 @@ class LeagueController:
 
     def _play_all_games_batched(self, game_specs: list[_GameSpec], epoch: int) -> list[GameResult]:
         if batched_bg_env is None:
-            return [self.play_game(spec.p1, spec.p2, spec.game_id, epoch) for spec in game_specs]
+            return [result for spec in game_specs for result in self.play_game(spec.p1, spec.p2, spec.match_id, epoch, spec.match_number)]
 
         n_games = len(game_specs)
         env = batched_bg_env.Env(
             n_matches=n_games,
-            n_games=int(getattr(self.cfg, "games_in_match", 11)),
+            n_games=int(getattr(self.cfg, "n_games_per_match", 11)),
+            endless_mode=bool(getattr(self.cfg, "endless_mode", False)),
             seed=self.seed + epoch * 100_000,
         )
         env.reset()
@@ -673,8 +686,7 @@ class LeagueController:
         game_results: list[GameResult] = []
         done = np.zeros((n_games,), dtype=bool)
 
-        cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
-        target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
+        target_games_in_match = max(1, int(getattr(self.cfg, "n_games_per_match", 1)))
         max_steps_per_game = max(1, int(getattr(self.cfg, "max_steps_per_game", 200)))
 
         turn = 0
@@ -787,7 +799,10 @@ class LeagueController:
                     "state_vector": state_vector,
                     "agent_id": actor.agent_id,
                     "opponent_id": opp.agent_id,
-                    "game_id": spec.game_id,
+                    "game_id": spec.match_id,
+                    "match_id": spec.match_id,
+                    "match_number": int(spec.match_number),
+                    "game_number_in_match": int(finished_games[i] + 1),
                     "step_index": turns[i],
                     "player_index": actor_player_index,
                     "epoch": epoch,
@@ -820,7 +835,10 @@ class LeagueController:
                     ended_by_double_reject = bool(states[i][65] >= 0 and int(accept_doubles[i]) == 0 and game_finished) if states.shape[1] > 65 else False
                     game_results.append(
                         GameResult(
-                            game_id=f"{spec.game_id}_g{finished_games[i]}",
+                            game_id=f"{spec.match_id}_g{finished_games[i]}",
+                            match_id=spec.match_id,
+                            match_number=int(spec.match_number),
+                            game_number_in_match=int(finished_games[i]),
                             steps=histories[i],
                             winner=winner,
                             turns=turns[i],
@@ -858,26 +876,27 @@ class LeagueController:
 
         return game_results
 
-    def play_game(self, p1, p2, game_id: str, epoch: int):
+    def play_game(self, p1, p2, game_id: str, epoch: int, match_number: int = 0) -> list[GameResult]:
         env = (
-            bg_env.Env(self.seed + hash(game_id) % 100000, n_games=int(getattr(self.cfg, "games_in_match", 11)))
+            bg_env.Env(
+                self.seed + hash(game_id) % 100000,
+                n_games=int(getattr(self.cfg, "n_games_per_match", 11)),
+                endless_mode=bool(getattr(self.cfg, "endless_mode", False)),
+            )
             if bg_env is not None
             else _FallbackEnv(self.seed + hash(game_id) % 100000)
         )
         env.reset()
-        history = []
         players = [p1, p2]
         turn = 0
         done = False
-        winner = players[0].agent_id
-        winner_player_index = 0
-        points_won = 1
-        reward_value = 1
-        cfg_games_in_match = int(getattr(self.cfg, "games_in_match", 11))
-        target_games_in_match = int(self.cfg.matches_per_pair) if cfg_games_in_match < 0 else max(1, cfg_games_in_match)
+        target_games_in_match = max(1, int(getattr(self.cfg, "n_games_per_match", 1)))
         max_steps_per_game = max(1, int(getattr(self.cfg, "max_steps_per_game", 200)))
         finished_games = 0
-        max_steps_reached = False
+        current_game_turns = 0
+        history: list[dict] = []
+        results: list[GameResult] = []
+
         while not done:
             env.roll_dice()
             rolled_dice = np.asarray(env.current_dice(), dtype=np.uint8)
@@ -921,19 +940,25 @@ class LeagueController:
                 move = self._score_random(local_moves)
                 apply_double = 0
                 accept_double = 0
+
             raw_before = np.asarray(env.get_state_raw(), dtype=np.int16)
             dave_value = int(raw_before[55]) if raw_before.shape[0] > 55 else 1
             try:
-                reward, _dave_after, accepted, done = env.step_move(move, apply_double=apply_double, accept_double=accept_double)
+                reward, _dave_after, accepted, done_code = env.step_move(move, apply_double=apply_double, accept_double=accept_double)
             except TypeError:
-                reward, done = env.step_move(move)
+                reward, done_code = env.step_move(move)
                 accepted = 0
+
+            current_game_number = finished_games + 1
             history.append({
                 "state_vector": state,
                 "agent_id": actor.agent_id,
                 "opponent_id": opp.agent_id,
                 "game_id": game_id,
-                "step_index": turn,
+                "match_id": game_id,
+                "match_number": int(match_number),
+                "game_number_in_match": int(current_game_number),
+                "step_index": current_game_turns,
                 "player_index": actor_player_index,
                 "epoch": epoch,
                 "double_offered_by_agent": bool(apply_double),
@@ -949,38 +974,67 @@ class LeagueController:
                 },
             })
             history[-1]["action_meta"]["reward"] = float(reward)
-            history[-1]["action_meta"]["done_code"] = int(done)
+            history[-1]["action_meta"]["done_code"] = int(done_code)
             history[-1]["action_meta"]["double_was_accepted"] = int(accepted)
-            game_finished = int(done) in (1, 2)
+
+            turn += 1
+            current_game_turns += 1
+            game_finished = int(done_code) in (1, 2)
             if game_finished:
                 winner = actor.agent_id if reward > 0 else opp.agent_id
                 winner_player_index = actor_player_index if reward > 0 else (1 - actor_player_index)
                 reward_value = max(1, int(round(abs(float(reward)))))
                 points_won = max(1, int(round(abs(float(reward)) * max(dave_value, 1))))
                 finished_games += 1
-                done = bool(int(done) == 2 or finished_games >= target_games_in_match)
+                raw_after = np.asarray(env.get_state_raw(), dtype=np.int16)
+                ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done_code) in (1, 2)) if raw_before.shape[0] > 65 else False
+                results.append(
+                    GameResult(
+                        game_id=f"{game_id}_g{finished_games}",
+                        match_id=game_id,
+                        match_number=int(match_number),
+                        game_number_in_match=int(finished_games),
+                        steps=history,
+                        winner=winner,
+                        turns=current_game_turns,
+                        player_1_id=p1.agent_id,
+                        player_2_id=p2.agent_id,
+                        winner_player_index=winner_player_index,
+                        points_won=points_won,
+                        reward_value=reward_value,
+                        final_dave_value=int(raw_after[55]) if raw_after.shape[0] > 55 else 1,
+                        ended_by_double_reject=ended_by_double_reject,
+                        max_steps_reached=False,
+                    )
+                )
+                history = []
+                current_game_turns = 0
+                done = bool(int(done_code) == 2 or finished_games >= target_games_in_match)
+            elif current_game_turns >= max_steps_per_game:
+                results.append(
+                    GameResult(
+                        game_id=f"{game_id}_g{current_game_number}",
+                        match_id=game_id,
+                        match_number=int(match_number),
+                        game_number_in_match=int(current_game_number),
+                        steps=history,
+                        winner=actor.agent_id,
+                        turns=current_game_turns,
+                        player_1_id=p1.agent_id,
+                        player_2_id=p2.agent_id,
+                        winner_player_index=actor_player_index,
+                        points_won=1,
+                        reward_value=1,
+                        final_dave_value=int(raw_before[55]) if raw_before.shape[0] > 55 else 1,
+                        ended_by_double_reject=False,
+                        max_steps_reached=True,
+                    )
+                )
+                done = True
             else:
                 done = False
-            turn += 1
-            if not done and turn >= max_steps_per_game:
-                max_steps_reached = True
-                done = True
-        ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done) in (1, 2)) if raw_before.shape[0] > 65 else False
-        raw_after = np.asarray(env.get_state_raw(), dtype=np.int16)
-        return GameResult(
-            game_id=game_id,
-            steps=history,
-            winner=winner,
-            turns=turn,
-            player_1_id=p1.agent_id,
-            player_2_id=p2.agent_id,
-            winner_player_index=winner_player_index,
-            points_won=points_won,
-            reward_value=reward_value,
-            final_dave_value=int(raw_after[55]) if raw_after.shape[0] > 55 else 1,
-            ended_by_double_reject=ended_by_double_reject,
-            max_steps_reached=max_steps_reached,
-        )
+
+        return results
 
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
         t0 = time.time()
@@ -999,17 +1053,18 @@ class LeagueController:
         opponents = [self.conservative_baseline]
         specs: list[_GameSpec] = []
 
-        endless_mode = int(getattr(self.cfg, "games_in_match", 11)) < 0
-        matches_per_pair = 1 if endless_mode else int(self.cfg.matches_per_pair)
+        matches_per_pair = max(1, int(getattr(self.cfg, "matches_per_pair", 1)))
 
         for i, a in enumerate(trainable_agents):
             for j in range(i, len(trainable_agents)):
                 b = trainable_agents[j]
-                for g in range(matches_per_pair):
-                    specs.append(_GameSpec(game_id=f"e{epoch}_t{i}_{b.agent_id}_{g}", p1=a, p2=b))
+                pair_token = f"{_compact_agent_token(a.agent_id)}_{_compact_agent_token(b.agent_id)}"
+                for match_number in range(matches_per_pair):
+                    specs.append(_GameSpec(match_id=f"e{epoch}_{pair_token}_m{match_number}", match_number=match_number, p1=a, p2=b))
             for opp in opponents:
-                for g in range(matches_per_pair):
-                    specs.append(_GameSpec(game_id=f"e{epoch}_{a.agent_id}_{opp.agent_id}_{g}", p1=a, p2=opp))
+                pair_token = f"{_compact_agent_token(a.agent_id)}_{_compact_agent_token(opp.agent_id)}"
+                for match_number in range(matches_per_pair):
+                    specs.append(_GameSpec(match_id=f"e{epoch}_{pair_token}_m{match_number}", match_number=match_number, p1=a, p2=opp))
 
         results = self._play_all_games_batched(specs, epoch)
         dt = max(time.time() - t0, 1e-6)

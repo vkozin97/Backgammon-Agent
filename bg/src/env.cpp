@@ -90,10 +90,11 @@ bool apply_single_checked(State& s, uint8_t from, uint8_t to, uint8_t die) {
 
 }  // namespace
 
-BackgammonEnv::BackgammonEnv(uint64_t seed, int n_games)
+BackgammonEnv::BackgammonEnv(uint64_t seed, int n_games, bool endless_mode)
     : rng_(seed ? seed : std::random_device{}()) {
-    endless_mode_ = (n_games < 0);
-    n_games_ = endless_mode_ ? 1 : std::max(1, n_games);
+    endless_mode_ = endless_mode;
+    n_games_ = std::max(1, n_games);
+    games_played_in_match_ = 0;
 }
 
 void BackgammonEnv::start_new_game(bool first_game) {
@@ -129,6 +130,7 @@ void BackgammonEnv::reset_standard() {
     crawford_used_ = false;
     previous_game_loser_ = -1;
     double_offered_in_match_ = false;
+    games_played_in_match_ = 0;
     s_.ply = 0;
     start_new_game(true);
 }
@@ -349,9 +351,19 @@ int BackgammonEnv::classify_win_reward() const {
 
 uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_points) {
     int points = reward_points * dave_value_;
-    if (winner_color == 0) { if (!endless_mode_) white_score_ += points; previous_game_loser_ = 1; }
-    else { if (!endless_mode_) black_score_ += points; previous_game_loser_ = 0; }
-    if (!endless_mode_ && (white_score_ >= n_games_ || black_score_ >= n_games_)) return 2;
+    if (winner_color == 0) {
+        if (!endless_mode_) white_score_ += points;
+        previous_game_loser_ = 1;
+    } else {
+        if (!endless_mode_) black_score_ += points;
+        previous_game_loser_ = 0;
+    }
+
+    games_played_in_match_ += 1;
+    const bool match_finished = endless_mode_
+        ? (games_played_in_match_ >= n_games_)
+        : (white_score_ >= n_games_ || black_score_ >= n_games_);
+    if (match_finished) return 2;
 
     s_.ply++;
     start_new_game(false);
@@ -479,8 +491,9 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     white_score_ = std::max(0, int(in[53]));
     black_score_ = std::max(0, int(in[54]));
     dave_value_ = std::max(1, int(in[55]));
-    n_games_ = std::max(1, int(in[56]));
-    endless_mode_ = (int(in[56]) < 0);
+    const int encoded_n_games = int(in[56]);
+    endless_mode_ = encoded_n_games < 0;
+    n_games_ = std::max(1, std::abs(encoded_n_games));
     current_player_white_ = in[57] != 0;
     crawford_active_ = !endless_mode_ && !crawford_used_ && (white_score_ == n_games_ - 1 || black_score_ == n_games_ - 1);
     if (crawford_active_) crawford_used_ = true;

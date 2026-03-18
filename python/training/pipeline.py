@@ -354,6 +354,8 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                     "match_length": int(getattr(game, "turns", 0)),
                     "match_agent_1_id": getattr(game, "player_1_id", ""),
                     "match_agent_2_id": getattr(game, "player_2_id", ""),
+                    "match_number": int(getattr(game, "match_number", 0)),
+                    "game_number_in_match": int(getattr(game, "game_number_in_match", 1)),
                     "final_dave_value": int(getattr(game, "final_dave_value", 1)),
                     "final_reward_value": int(getattr(game, "reward_value", 1)),
                 })

@@ -40,6 +40,8 @@ class ReplayBuffer:
                 match_length INTEGER,
                 match_agent_1_id TEXT,
                 match_agent_2_id TEXT,
+                match_number INTEGER,
+                game_number_in_match INTEGER,
                 final_dave_value INTEGER,
                 final_reward_value INTEGER,
                 timestamp REAL NOT NULL
@@ -94,6 +96,8 @@ class ReplayBuffer:
             "match_length": "INTEGER",
             "match_agent_1_id": "TEXT",
             "match_agent_2_id": "TEXT",
+            "match_number": "INTEGER",
+            "game_number_in_match": "INTEGER",
             "final_dave_value": "INTEGER",
             "final_reward_value": "INTEGER",
         }
@@ -123,8 +127,8 @@ class ReplayBuffer:
             """
             INSERT INTO replay (
                 state_vector, state_dim, agent_id, opponent_id, game_id, step_index, epoch, terminal_outcome, terminal_outcome_dim,
-                action_meta, match_length, match_agent_1_id, match_agent_2_id, final_dave_value, final_reward_value, timestamp
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                action_meta, match_length, match_agent_1_id, match_agent_2_id, match_number, game_number_in_match, final_dave_value, final_reward_value, timestamp
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._pending_rows,
         )
@@ -161,6 +165,8 @@ class ReplayBuffer:
                 kwargs.get("match_length"),
                 kwargs.get("match_agent_1_id"),
                 kwargs.get("match_agent_2_id"),
+                kwargs.get("match_number"),
+                kwargs.get("game_number_in_match"),
                 kwargs.get("final_dave_value"),
                 kwargs.get("final_reward_value"),
                 time.time(),

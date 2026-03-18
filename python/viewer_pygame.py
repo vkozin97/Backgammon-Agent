@@ -110,12 +110,14 @@ REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 
 # Viewer hyperparameters
 agent_mode = "none"  # "none" | "hint" | "play" | "replay"
-viewer_n_games = -1  # <=0 enables endless mode; >0 is match length (e.g. 5, 7, 11)
+viewer_n_games = 5  # number of games in endless mode or points to win the match in regular mode
+viewer_endless_mode = False
 agent_id = "trainable_2"
 agent_epoch = 248
 agent_checkpoint_dir = "training_stats/checkpoints"
 replay_storage_dir = "training_stats/replay"
 replay_match_id = None
+replay_game_number_in_match = None
 
 RAW_STATE_FULL_DIM = 69
 
@@ -127,7 +129,7 @@ def _require_full_state69(state: np.ndarray) -> np.ndarray:
     return a
 
 
-def load_replay_steps(storage_dir: str, match_id: str) -> list[dict]:
+def load_replay_steps(storage_dir: str, match_id: str, game_number_in_match: int) -> list[dict]:
     db_path = Path(storage_dir) / "replay.sqlite3"
     if not db_path.exists():
         raise FileNotFoundError(f"Replay DB not found: {db_path}")
@@ -136,10 +138,10 @@ def load_replay_steps(storage_dir: str, match_id: str) -> list[dict]:
             """
             SELECT step_index, action_meta
             FROM replay
-            WHERE game_id = ?
+            WHERE game_id = ? AND COALESCE(game_number_in_match, 1) = ?
             ORDER BY recency_index ASC, step_index ASC
             """,
-            (match_id,),
+            (match_id, int(game_number_in_match)),
         ).fetchall()
     out = []
     for step_index, action_meta_json in rows:
@@ -754,18 +756,18 @@ def main():
     tiny = pygame.font.Font(FONT_NAME, 13)
     clock = pygame.time.Clock()
 
-    env = bg_env.Env(123, n_games=int(viewer_n_games))
+    env = bg_env.Env(123, n_games=int(viewer_n_games), endless_mode=bool(viewer_endless_mode))
     env.reset()
 
     replay_steps = []
     replay_idx = 0
     replay_accept_for_next_offer = 1
     if agent_mode == "replay":
-        if not replay_match_id:
-            raise ValueError("For replay mode set replay_match_id")
-        replay_steps = load_replay_steps(replay_storage_dir, str(replay_match_id))
+        if not replay_match_id or replay_game_number_in_match is None:
+            raise ValueError("For replay mode set replay_match_id and replay_game_number_in_match")
+        replay_steps = load_replay_steps(replay_storage_dir, str(replay_match_id), int(replay_game_number_in_match))
         if not replay_steps:
-            raise ValueError(f"Replay steps are empty for match_id={replay_match_id}")
+            raise ValueError(f"Replay steps are empty for match_id={replay_match_id}, game_number_in_match={replay_game_number_in_match}")
 
     agent = None
     if agent_mode in ("hint", "play"):
@@ -785,9 +787,9 @@ def main():
 
 
     turn_white = is_white_turn_from_env()
-    mode_label = f"endless (n_games={viewer_n_games})" if int(viewer_n_games) <= 0 else f"match to {int(viewer_n_games)}"
+    mode_label = f"endless ({int(viewer_n_games)} games)" if bool(viewer_endless_mode) else f"match to {int(viewer_n_games)}"
     if agent_mode == "replay":
-        mode_label = f"replay match {replay_match_id}"
+        mode_label = f"replay match {replay_match_id}, game {replay_game_number_in_match}"
         info_lines = [f"Started. Mode: {mode_label}. Press SPACE to play next recorded action."]
     else:
         info_lines = [f"Started. Mode: {mode_label}. Click points (or bar) to move checkers."]
@@ -1127,7 +1129,7 @@ def main():
         clock.tick(FPS)
         raw = get_env_state()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
-        endless_mode = int(n_games) <= 0
+        endless_mode = int(n_games) < 0
         dave_value_ui = int(dave_value)
 
         if turn_white:
