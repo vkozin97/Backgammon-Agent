@@ -4,7 +4,15 @@ import sqlite3
 import numpy as np
 
 from training.config import ExperimentConfig, save_config, load_config
-from training.pipeline import run_training, load_checkpoint, _games_for_pair, _terminal_outcome_for_step, _bootstrap_outcomes_for_unfinished_game, _sigmoid_growth_probability
+from training.pipeline import (
+    run_training,
+    load_checkpoint,
+    _games_for_pair,
+    _terminal_outcome_for_step,
+    _bootstrap_outcomes_for_unfinished_game,
+    _sigmoid_growth_probability,
+    _learning_rate_for_epoch,
+)
 from training.agents import build_trainable_agents, decide_accept_double_from_probs, MATCH_VECTOR_DIM
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
@@ -37,7 +45,7 @@ def test_replay_sample_with_agent_ids_returns_agent_labels(tmp_path: Path):
             terminal_outcome=_outcome_vec(1.0 if aid == "trainable_0" else 0.0),
         )
 
-    x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2, recency_window=2)
+    x, y, a = replay.sample_with_agent_ids(64, alpha_recency=0.8, alpha_uniform=0.2)
     replay.close()
 
     assert x.shape[0] == 64
@@ -66,7 +74,6 @@ def test_replay_sample_stratified_with_agent_ids_returns_requested_counts(tmp_pa
         {"trainable_0": 32, "trainable_1": 24, "unknown": 16},
         alpha_recency=0.8,
         alpha_uniform=0.2,
-        recency_window=2,
     )
     replay.close()
 
@@ -522,11 +529,26 @@ def test_state_to_observation_uses_cube_scalars_from_state_raw():
 
 def test_sigmoid_growth_probability_schedule():
     base = 0.2
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10), base)
-    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10)
-    assert base < mid < 1.0
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10), 1.0)
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10), 1.0)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0), base)
+    at_start = _sigmoid_growth_probability(base, epoch=5, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    at_end = _sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    assert np.isclose(at_start, base + 0.001)
+    assert at_start < mid < at_end
+    assert np.isclose(at_end, 0.999)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0), 1.0)
+
+
+def test_learning_rate_for_epoch_accounts_for_updates_and_decay_steps():
+    lr = _learning_rate_for_epoch(
+        base_learning_rate=1e-3,
+        min_learning_rate=1e-7,
+        lr_decay_factor=0.5,
+        lr_decay_every_steps=50,
+        updates_per_epoch_per_agent=100,
+        epoch=3,
+    )
+    assert np.isclose(lr, 1e-3 * (0.5 ** 6))
 
 
 def test_decide_accept_double_from_probs_endless_sign():

@@ -31,6 +31,7 @@ class TrainConfig:
     batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-5
+    min_learning_rate: float = 1e-7
     lr_decay_factor: float = 0.98
     lr_decay_every_steps: int = 50
     weight_decay: float = 0.0
@@ -52,11 +53,11 @@ class LeagueConfig:
     games_in_match: int = -1
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
-    alpha_recency: float = 1.0
-    alpha_uniform: float = 0.0
-    recency_window: int = 2
-    recency_decay: float = 0.98
-    recency_center_mass_ratio: float = 0.9
+    alpha_recency: float = 0.8
+    alpha_uniform: float = 0.2
+    recency_decay: float = 0.9
+    replay_window_epochs: int = 20
+    sigmoid_parameter: float = 6.0
     batched_obs_threads: int = 1
     selfplay_temperature: float = 0.1
     temperature_decay: float = 0.98
@@ -111,6 +112,8 @@ class ExperimentConfig:
             league_data["matches_per_pair"] = league_data.pop("pages_per_pair")
         if "baseline_conservative_double_copy_prob" in league_data and "conservative_baseline_double_copy_prob" not in league_data:
             league_data["conservative_baseline_double_copy_prob"] = league_data.pop("baseline_conservative_double_copy_prob")
+        league_data.pop("recency_window", None)
+        league_data.pop("recency_center_mass_ratio", None)
 
         # Migrate deprecated decay-based schedules to epoch-window schedules.
         if "conservative_baseline_double_copy_decay" in league_data:

@@ -41,7 +41,8 @@ def main() -> int:
         cfg.train.winrate_window_size,
         cfg.league.alpha_recency,
         cfg.league.alpha_uniform,
-        cfg.league.recency_center_mass_ratio,
+        cfg.league.recency_decay,
+        cfg.league.replay_window_epochs,
     )
     print(f"Rendered plots for {len(metrics_history)} epochs into {cfg.plots_dir}")
     return 0

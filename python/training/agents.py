@@ -375,6 +375,7 @@ class ValueAgent:
         self.grad_clip_norm = train_cfg.grad_clip_norm
         self.lr_decay_factor = train_cfg.lr_decay_factor
         self.lr_decay_every_steps = train_cfg.lr_decay_every_steps
+        self.min_learning_rate = float(train_cfg.min_learning_rate)
         self.train_step = 0
 
     def predict_logits(self, x: np.ndarray, training: bool = False) -> np.ndarray:
@@ -447,7 +448,7 @@ class ValueAgent:
         self.train_step += 1
         if self.lr_decay_every_steps > 0 and self.train_step % self.lr_decay_every_steps == 0:
             for pg in self.optimizer.param_groups:
-                pg["lr"] *= self.lr_decay_factor
+                pg["lr"] = max(float(pg["lr"]) * self.lr_decay_factor, self.min_learning_rate)
         return float(loss.detach().cpu().item())
 
     def state_dict(self) -> dict:
