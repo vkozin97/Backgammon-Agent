@@ -260,7 +260,9 @@ class LeagueController:
         self._ensemble_base_model_cache: dict[tuple, torch.nn.Module] = {}
         self._obs_probe_env = None
         self._move_eval_env = bg_env.Env(int(seed) + 11) if bg_env is not None else _FallbackEnv(int(seed) + 11)
-        self._accept_eval_env = bg_env.Env(int(seed) + 17) if bg_env is not None else _FallbackEnv(int(seed) + 17)
+        self._post_action_opponent_double_eval_env = (
+            bg_env.Env(int(seed) + 17) if bg_env is not None else _FallbackEnv(int(seed) + 17)
+        )
         if bg_env is not None:
             try:
                 self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(self.cfg, "games_in_match", 11)))
@@ -378,51 +380,98 @@ class LeagueController:
         obs_batch: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         n = int(len(actions))
+        if n == 0:
+            return np.zeros((n,), dtype=np.uint8), np.zeros((n,), dtype=np.uint8)
+
+        base_obs = self._base_observations_for_states(states, obs_batch)
+        eval_agents = [evaluator] * n
+        apply_doubles = self._decide_apply_doubles(states, base_obs, eval_agents)
+        accept_doubles = self._decide_accept_doubles_for_actions(states, actions, apply_doubles, eval_agents)
+        return apply_doubles, accept_doubles
+
+    def _base_observations_for_states(self, states: np.ndarray, obs_batch: np.ndarray | None = None) -> np.ndarray:
+        if obs_batch is not None:
+            return np.asarray(obs_batch, dtype=np.float32)
+        return np.stack([self.state_vector_from_raw(states[i]) for i in range(len(states))]).astype(np.float32)
+
+    def _decide_apply_doubles(
+        self,
+        states: np.ndarray,
+        base_obs: np.ndarray,
+        evaluators: list[ValueAgent],
+        enabled_mask: list[bool] | np.ndarray | None = None,
+    ) -> np.ndarray:
+        n = int(len(evaluators))
         apply_doubles = np.zeros((n,), dtype=np.uint8)
+        if n == 0:
+            return apply_doubles
+
+        if enabled_mask is None:
+            enabled_idx = np.arange(n, dtype=np.int64)
+        else:
+            enabled_idx = np.flatnonzero(np.asarray(enabled_mask, dtype=bool))
+        if enabled_idx.size == 0:
+            return apply_doubles
+
+        enabled_obs = np.asarray(base_obs[enabled_idx], dtype=np.float32)
+        enabled_evaluators = [evaluators[int(i)] for i in enabled_idx]
+        probs_now = self._predict_probs_single_cuda_call(enabled_evaluators, enabled_obs)
+        obs_double_batch = np.stack([set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
+        probs_double = self._predict_probs_single_cuda_call(enabled_evaluators, obs_double_batch)
+        for local_i, i in enumerate(enabled_idx):
+            owner = int(i)
+            apply_doubles[owner] = decide_apply_double_from_probs(
+                probs_now[local_i],
+                probs_double[local_i],
+                enabled_obs[local_i],
+                endless=_is_endless_state(states[owner]),
+            )
+        return apply_doubles
+
+    def _decide_accept_doubles_for_actions(
+        self,
+        states: np.ndarray,
+        actions: np.ndarray,
+        apply_doubles: np.ndarray,
+        evaluators: list[ValueAgent],
+        enabled_mask: list[bool] | np.ndarray | None = None,
+        accept_if_disabled: int = 1,
+    ) -> np.ndarray:
+        n = int(len(actions))
         accept_doubles = np.zeros((n,), dtype=np.uint8)
         if n == 0:
-            return apply_doubles, accept_doubles
+            return accept_doubles
 
-        base_obs: list[np.ndarray] = []
-        for i in range(n):
-            if obs_batch is not None:
-                base_obs.append(np.asarray(obs_batch[i], dtype=np.float32))
-            else:
-                base_obs.append(self.state_vector_from_raw(states[i]))
-
-        eval_agents = [evaluator for _ in range(n)]
-        probs_now = self._predict_probs_single_cuda_call(eval_agents, np.stack(base_obs).astype(np.float32))
-        obs_double_batch = np.stack([set_obs_double_state(x) for x in base_obs]).astype(np.float32)
-        probs_double = self._predict_probs_single_cuda_call(eval_agents, obs_double_batch)
-        for i in range(n):
-            apply_doubles[i] = decide_apply_double_from_probs(
-                probs_now[i],
-                probs_double[i],
-                base_obs[i],
-                endless=_is_endless_state(states[i]),
-            )
-
+        enabled_arr = None if enabled_mask is None else np.asarray(enabled_mask, dtype=bool)
         accept_eval_obs: list[np.ndarray] = []
         accept_eval_owner: list[int] = []
-        sim2 = bg_env.Env(int(self.seed) + 19) if bg_env is not None else _FallbackEnv(int(self.seed) + 19)
-        for i in range(n):
-            mv = np.asarray(actions[i], dtype=np.uint8)
-            if int(mv[0]) == 255:
+        accept_eval_evaluators: list[ValueAgent] = []
+        sim = self._post_action_opponent_double_eval_env
+        for i, mv in enumerate(actions):
+            mv_arr = np.asarray(mv, dtype=np.uint8)
+            if int(mv_arr[0]) == 255:
                 continue
-            sim2.set_state_raw(states[i])
+            sim.set_state_raw(states[i])
             try:
-                sim2.step_move(mv, apply_double=int(apply_doubles[i]), accept_double=1)
+                sim.step_move(mv_arr, apply_double=int(apply_doubles[i]), accept_double=1)
             except TypeError:
-                sim2.step_move(mv)
-            post_obs = self.state_vector(sim2)
+                sim.step_move(mv_arr)
+            post_obs = self.state_vector(sim)
             _, _, _, _, opp_double_avail = extract_obs_controls(post_obs)
             if opp_double_avail <= 0:
                 continue
+            if enabled_arr is not None and not bool(enabled_arr[i]):
+                accept_doubles[i] = int(accept_if_disabled)
+                continue
             accept_eval_obs.append(set_obs_opponent_double_offer(post_obs))
             accept_eval_owner.append(i)
+            accept_eval_evaluators.append(evaluators[i])
 
         if accept_eval_obs:
-            probs_accept = self._predict_probs_single_cuda_call([evaluator for _ in range(len(accept_eval_obs))], np.stack(accept_eval_obs).astype(np.float32))
+            probs_accept = self._predict_probs_single_cuda_call(
+                accept_eval_evaluators,
+                np.stack(accept_eval_obs).astype(np.float32),
+            )
             for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs):
                 obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
                 if obs_pre.size >= 7:
@@ -437,7 +486,7 @@ class LeagueController:
                     endless=_is_endless_state(states[owner]),
                 )
 
-        return apply_doubles, accept_doubles
+        return accept_doubles
 
     def _predict_probs_single_cuda_call(self, agents_for_samples: list[ValueAgent], obs_np: np.ndarray) -> np.ndarray:
         """Predict probabilities for mixed-agent samples with one CUDA call per architecture group."""
@@ -530,30 +579,10 @@ class LeagueController:
 
     def _select_group_actions_single_call(self, states: np.ndarray, legal_moves_list: list[np.ndarray], actors: list[ValueAgent], obs_batch: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         actions = np.full((len(legal_moves_list), 8), 255, dtype=np.uint8)
-        apply_doubles = np.zeros((len(legal_moves_list),), dtype=np.uint8)
-        accept_doubles = np.ones((len(legal_moves_list),), dtype=np.uint8)
-
-        if obs_batch is not None:
-            base_obs = np.asarray(obs_batch, dtype=np.float32)
-        else:
-            base_obs = np.stack([self.state_vector_from_raw(states[i]) for i in range(len(legal_moves_list))]).astype(np.float32)
+        base_obs = self._base_observations_for_states(states, obs_batch)
 
         enabled_for_double = [self._is_agent_double_decision_enabled(a.agent_id) for a in actors]
-        if actors and any(enabled_for_double):
-            enabled_idx = np.flatnonzero(np.asarray(enabled_for_double, dtype=bool))
-            enabled_actors = [actors[int(i)] for i in enabled_idx]
-            enabled_obs = base_obs[enabled_idx]
-            probs_now = self._predict_probs_single_cuda_call(enabled_actors, enabled_obs)
-            obs_double_batch = np.stack([set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
-            probs_double = self._predict_probs_single_cuda_call(enabled_actors, obs_double_batch)
-            for local_i, i in enumerate(enabled_idx):
-                i = int(i)
-                apply_doubles[i] = decide_apply_double_from_probs(
-                    probs_now[local_i],
-                    probs_double[local_i],
-                    base_obs[i],
-                    endless=_is_endless_state(states[i]),
-                )
+        apply_doubles = self._decide_apply_doubles(states, base_obs, actors, enabled_mask=enabled_for_double)
 
         candidate_obs: list[np.ndarray] = []
         candidate_done: list[bool] = []
@@ -607,50 +636,14 @@ class LeagueController:
                     self._record_topk_hit(-values_i, selected_idx)
                 actions[i] = moves[selected_idx]
 
-        # Decide accept_double for opponent's potential next-turn double using post-move state
-        accept_eval_obs: list[np.ndarray] = []
-        accept_eval_actor: list[ValueAgent] = []
-        accept_eval_owner: list[int] = []
-        sim2 = self._accept_eval_env
-        for i, mv in enumerate(actions):
-            if int(mv[0]) == 255:
-                accept_doubles[i] = 0
-                continue
-            sim2.set_state_raw(states[i])
-            try:
-                sim2.step_move(np.asarray(mv, dtype=np.uint8), apply_double=int(apply_doubles[i]), accept_double=1)
-            except TypeError:
-                sim2.step_move(np.asarray(mv, dtype=np.uint8))
-            post_obs = self.state_vector(sim2)
-            _, _, _, _, opp_double_avail = extract_obs_controls(post_obs)
-            if opp_double_avail <= 0:
-                accept_doubles[i] = 0
-                continue
-            if i < len(actors) and not enabled_for_double[i]:
-                accept_doubles[i] = 1
-                continue
-            accept_eval_obs.append(set_obs_opponent_double_offer(post_obs))
-            accept_eval_actor.append(actors[i])
-            accept_eval_owner.append(i)
-
-        if accept_eval_obs:
-            accept_eval_obs_np = np.stack(accept_eval_obs).astype(np.float32)
-            probs_accept = self._predict_probs_single_cuda_call(accept_eval_actor, accept_eval_obs_np)
-            for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs_np):
-                # reject threshold uses pre-offer post-move state (halve cube back)
-                obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
-                if obs_pre.size >= 7:
-                    obs_pre[-7] = obs_pre[-7] / 2.0
-                if obs_pre.size >= 4:
-                    obs_pre[-4] = 0.0
-                if obs_pre.size >= 3:
-                    obs_pre[-3] = 1.0
-                accept_doubles[owner] = decide_accept_double_from_probs(
-                    p_row,
-                    obs_pre,
-                    endless=_is_endless_state(states[owner]),
-                )
-
+        accept_doubles = self._decide_accept_doubles_for_actions(
+            states,
+            actions,
+            apply_doubles,
+            actors,
+            enabled_mask=enabled_for_double,
+            accept_if_disabled=1,
+        )
         return actions, apply_doubles, accept_doubles
 
     def _play_all_games_batched(self, game_specs: list[_GameSpec], epoch: int) -> list[GameResult]:
