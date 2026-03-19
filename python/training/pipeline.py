@@ -341,7 +341,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         current_temperature = float(cfg.league.selfplay_temperature)
         current_choose_best_probability = float(cfg.league.choose_best_probability)
 
-    current_learning_rate, current_lr_decay_factor, current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
+    current_learning_rate, current_lr_decay_factor, _current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
         cfg,
         int(start_epoch),
         calculate_learning_params=calculate_learning_params,
@@ -353,12 +353,12 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         agent.configure_training_phase(
             learning_rate=current_learning_rate,
             lr_decay_factor=current_lr_decay_factor,
-            schedule_step_offset=max(int(current_lr_start_epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0),
+            schedule_step_offset=completed_updates_before_start,
             freeze_to_output_layer=freeze_output_layer,
         )
 
     for epoch in range(start_epoch, cfg.train.num_epochs):
-        current_learning_rate, current_lr_decay_factor, current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
+        current_learning_rate, current_lr_decay_factor, _current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
             cfg,
             int(epoch),
             calculate_learning_params=calculate_learning_params,
@@ -367,7 +367,9 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             agent.configure_training_phase(
                 learning_rate=current_learning_rate,
                 lr_decay_factor=current_lr_decay_factor,
-                schedule_step_offset=max(int(current_lr_start_epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0),
+                # `learning_rate` is already the effective LR at the start of this epoch,
+                # so future decay events must be counted relative to the current epoch start.
+                schedule_step_offset=max(int(epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0),
                 freeze_to_output_layer=freeze_output_layer,
             )
 
