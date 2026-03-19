@@ -663,6 +663,39 @@ def test_learning_rate_for_epoch_can_restart_decay_from_freeze_start_epoch():
     assert np.isclose(lr, 1e-5 * (0.98 ** 2))
 
 
+def test_configure_training_phase_does_not_double_apply_prior_epoch_decay():
+    cfg = ExperimentConfig()
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 50
+    agent = ValueAgent("trainable_0", "A", cfg.model_group_a, cfg.train, seed=0)
+
+    current_epoch = 1
+    completed_updates = current_epoch * cfg.train.updates_per_epoch_per_agent
+    current_lr = _learning_rate_for_epoch(
+        base_learning_rate=cfg.train.learning_rate,
+        min_learning_rate=cfg.train.min_learning_rate,
+        lr_decay_factor=cfg.train.lr_decay_factor,
+        lr_decay_every_steps=cfg.train.lr_decay_every_steps,
+        updates_per_epoch_per_agent=cfg.train.updates_per_epoch_per_agent,
+        epoch=current_epoch,
+    )
+
+    agent.train_step = completed_updates
+    configured_lr = agent.configure_training_phase(
+        learning_rate=current_lr,
+        lr_decay_factor=cfg.train.lr_decay_factor,
+        schedule_step_offset=completed_updates,
+        freeze_to_output_layer=False,
+    )
+
+    assert np.isclose(current_lr, 1e-3 * (0.5 ** 2))
+    assert np.isclose(configured_lr, current_lr)
+
+    agent.train_step = completed_updates + cfg.train.lr_decay_every_steps
+    assert np.isclose(agent._apply_current_learning_rate(), 1e-3 * (0.5 ** 3))
+
+
 def test_epoch_uses_output_freeze_is_inclusive():
     assert not _epoch_uses_output_freeze(epoch=249, freeze_from_epoch=250, freeze_till_epoch=400)
     assert _epoch_uses_output_freeze(epoch=250, freeze_from_epoch=250, freeze_till_epoch=400)
