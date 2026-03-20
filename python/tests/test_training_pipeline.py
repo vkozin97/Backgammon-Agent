@@ -127,6 +127,7 @@ def test_config_roundtrip(tmp_path: Path):
     loaded = load_config(p)
     assert loaded.train.num_epochs == cfg.train.num_epochs
     assert loaded.train.winrate_window_size == cfg.train.winrate_window_size
+    assert loaded.train.value_window_size == cfg.train.value_window_size
     assert loaded.checkpoint_dir == cfg.checkpoint_dir
 
 
@@ -151,6 +152,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     lr_dir = Path(cfg.plots_dir) / "lr"
     replay_dir = Path(cfg.plots_dir) / "replay"
     winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
+    value_windowed_dir = Path(cfg.plots_dir) / "value_windowed"
     decision_dir = Path(cfg.plots_dir) / "decision_temperature"
     if importlib.util.find_spec("matplotlib") is not None:
         assert loss_dir.exists()
@@ -158,6 +160,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
         total_agents = len(trainable_agents) + 1
         opponents_per_agent = total_agents - 1
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
+        assert len(list(value_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
         assert not (replay_dir / "replay_size.png").exists()

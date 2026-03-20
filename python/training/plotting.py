@@ -161,6 +161,7 @@ def plot_metrics_history(
     metrics_history: list[dict],
     out_dir: Path,
     winrate_window_size: int,
+    value_window_size: int,
     alpha_recency: float,
     alpha_uniform: float,
     recency_decay: float,
@@ -176,6 +177,7 @@ def plot_metrics_history(
         return
     _print_plot_timing("matplotlib import", step_t0, plot_total_t0)
     winrates_windowed_dir = out_dir / "winrates_windowed"
+    value_windowed_dir = out_dir / "value_windowed"
     loss_dir = out_dir / "loss"
     lr_dir = out_dir / "lr"
     decision_dir = out_dir / "decision_temperature"
@@ -183,6 +185,7 @@ def plot_metrics_history(
     games_stats_dir = out_dir / "games_stats"
     step_t0 = time.perf_counter()
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
+    value_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
@@ -411,6 +414,34 @@ def plot_metrics_history(
         _print_plot_timing(f"{aid}: winrate plots", agent_t0, plot_total_t0)
         agent_t0 = time.perf_counter()
 
+        value_series_by_opp = {
+            opp: [float(m["agents"][aid].get("average_value_vs_opponents", {}).get(opp, 0.0)) for m in metrics_history]
+            for opp in opponents_for_agent
+        }
+        windowed_value_series_by_opp = {
+            opp: _uniform_windowed(value_series_by_opp[opp], value_window_size)
+            for opp in opponents_for_agent
+        }
+
+        for focus_opp in opponents_for_agent:
+            plt.figure(figsize=(18, 9))
+            for opp in opponents_for_agent:
+                lw = 2.4 if opp == focus_opp else 1.0
+                alpha = 1.0 if opp == focus_opp else 0.4
+                plt.plot(xs, windowed_value_series_by_opp[opp], label=opp, linewidth=lw, alpha=alpha)
+            plt.title(f"{aid} average value windowed (focus: {focus_opp}, w={max(int(value_window_size), 1)})")
+            plt.xlabel("epoch")
+            plt.ylabel("windowed avg value / game")
+            plt.axhline(y=0.0, linestyle="--", color="gray", linewidth=0.9, alpha=0.8)
+            _plot_sampling_probability_overlay(plt, xs, sampling_probs)
+            plt.legend(fontsize=6, ncol=2)
+            plt.tight_layout()
+            plt.savefig(value_windowed_dir / f"{aid}_value_windowed_focus_{focus_opp}.png")
+            plt.close()
+
+        _print_plot_timing(f"{aid}: value plots", agent_t0, plot_total_t0)
+        agent_t0 = time.perf_counter()
+
         loss_steps: list[float] = []
         loss_epoch_end_steps: list[int] = []
         loss_cursor = 0
@@ -510,5 +541,27 @@ def plot_metrics_history(
         plt.savefig(winrates_windowed_dir / "overall_avg_winrates_windowed.png")
         plt.close()
 
-    _print_plot_timing("overall average winrate plots", step_t0, plot_total_t0)
+    overall_value_series: dict[str, list[float]] = {}
+    for aid in agents:
+        vals = []
+        for m in metrics_history:
+            opp_vals = list(m["agents"][aid].get("average_value_vs_opponents", {}).values())
+            vals.append(float(np.mean(opp_vals)) if opp_vals else 0.0)
+        overall_value_series[aid] = vals
+
+    if overall_value_series:
+        plt.figure(figsize=(18, 9))
+        for aid in agents:
+            plt.plot(xs, _uniform_windowed(overall_value_series[aid], value_window_size), label=aid, linewidth=1.4)
+        plt.title(f"Agents overall average value windowed (w={max(int(value_window_size), 1)})")
+        plt.xlabel("epoch")
+        plt.ylabel("windowed avg value / game")
+        plt.axhline(y=0.0, linestyle="--", color="gray", linewidth=0.9, alpha=0.8)
+        _plot_sampling_probability_overlay(plt, xs, sampling_probs)
+        plt.legend(fontsize=7, ncol=3)
+        plt.tight_layout()
+        plt.savefig(value_windowed_dir / "overall_avg_value_windowed.png")
+        plt.close()
+
+    _print_plot_timing("overall average winrate/value plots", step_t0, plot_total_t0)
     _print_plot_timing("full plotting stage", plot_total_t0, plot_total_t0)
