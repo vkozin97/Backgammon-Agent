@@ -63,7 +63,7 @@ class LeagueConfig:
     alpha_uniform: float = 0.2
     recency_decay: float = 0.9
     replay_window_epochs: int = 20
-    sigmoid_parameter: float = 6.0
+    sigmoid_parameter: float = 6.74755607143124
     batched_obs_threads: int = 16
     selfplay_temperature: float = 0.1
     temperature_decay: float = 0.98

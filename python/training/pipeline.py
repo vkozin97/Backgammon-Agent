@@ -35,11 +35,14 @@ def _sigmoid_growth_probability(
         return base
     if epoch > end:
         return 1.0
-    center = 0.5 * (float(start) + float(end))
+
+    width = float(end - start)
+    progress = (float(epoch) - float(start)) / width
+    centered_progress = progress - 0.5
     steepness = max(float(sigmoid_parameter), 1e-6)
-    raw = 1.0 / (1.0 + np.exp(-steepness * (float(epoch) - center)))
-    raw_start = 1.0 / (1.0 + np.exp(-steepness * (float(start) - center)))
-    raw_end = 1.0 / (1.0 + np.exp(-steepness * (float(end) - center)))
+    raw = 1.0 / (1.0 + np.exp(-steepness * centered_progress))
+    raw_start = 1.0 / (1.0 + np.exp(steepness * 0.5))
+    raw_end = 1.0 / (1.0 + np.exp(-steepness * 0.5))
     denom = max(raw_end - raw_start, 1e-12)
     normalized = float(np.clip((raw - raw_start) / denom, 0.0, 1.0))
     low = float(np.clip(base + 0.001, 0.0, 0.999))
