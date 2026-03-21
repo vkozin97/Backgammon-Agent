@@ -499,8 +499,12 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             "winrate_vs_random": 0.0,
             "winrate_vs_baseline": 0.0,
             "aggregate_winrate_vs_trainable": 0.0,
+            "average_value_vs_random": 0.0,
+            "average_value_vs_baseline": 0.0,
+            "aggregate_average_value_vs_trainable": 0.0,
             "avg_game_length": float(np.mean([g.turns for g in game_results]) if game_results else 0.0),
             "winrate_vs_opponents": {},
+            "average_value_vs_opponents": {},
         } for aid in all_agent_ids}
 
         for a in agents:
@@ -517,16 +521,26 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                 pair = _games_for_pair(game_results, aid, opp)
                 if not pair:
                     wr = 0.0
+                    avg_value = 0.0
                 else:
                     wr = sum(1 for g in pair if g.winner == aid) / len(pair)
+                    avg_value = float(np.mean([
+                        float(getattr(g, "points_won", getattr(g, "reward_value", 1))) if g.winner == aid
+                        else -float(getattr(g, "points_won", getattr(g, "reward_value", 1)))
+                        for g in pair
+                    ]))
                 per_agent[aid]["winrate_vs_opponents"][opp] = wr
+                per_agent[aid]["average_value_vs_opponents"][opp] = avg_value
 
             trainable_opponents = [x.agent_id for x in agents if x.agent_id != aid]
             if trainable_opponents:
                 per_agent[aid]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
+                per_agent[aid]["aggregate_average_value_vs_trainable"] = float(np.mean([per_agent[aid]["average_value_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
 
             per_agent[aid]["winrate_vs_random"] = 0.0
             per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("conservative_baseline", 0.0)
+            per_agent[aid]["average_value_vs_random"] = per_agent[aid]["average_value_vs_opponents"].get("random", 0.0)
+            per_agent[aid]["average_value_vs_baseline"] = per_agent[aid]["average_value_vs_opponents"].get("conservative_baseline", 0.0)
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)
@@ -583,6 +597,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                 metrics_history,
                 Path(cfg.plots_dir),
                 cfg.train.winrate_window_size,
+                cfg.train.value_window_size,
                 cfg.league.alpha_recency,
                 cfg.league.alpha_uniform,
                 cfg.league.recency_decay,

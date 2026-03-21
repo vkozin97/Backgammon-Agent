@@ -50,6 +50,7 @@ class TrainConfig:
     target_expansion: str = "repeat"
     plot_every_k_epochs: int = 20
     winrate_window_size: int = 10
+    value_window_size: int = 10
 
 
 @dataclass
