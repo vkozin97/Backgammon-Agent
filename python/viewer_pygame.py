@@ -7,7 +7,7 @@ import numpy as np
 import pygame
 
 import bg_env  # pybind11 module
-from training.agents import build_trainable_agents, get_double_hint_metrics
+from training.agents import build_trainable_agents, flip_observation_perspective, get_double_hint_metrics
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
 from training.observation import state_to_observation
@@ -272,13 +272,37 @@ def _format_vec_percent(values: np.ndarray) -> str:
     return "[" + ", ".join(f"{(float(v) * 100.0):.1f}" for v in arr.tolist()) + "]"
 
 
+def _raw_state_to_player_observation(raw_state: np.ndarray, player_is_white: bool) -> np.ndarray:
+    obs = state_to_observation(np.asarray(raw_state, dtype=np.float32))
+    if player_is_white:
+        return obs
+    return flip_observation_perspective(obs)
+
+
+def _simulate_committed_turn_state(base_state: np.ndarray, move: Optional[np.ndarray] = None, use_current_state: bool = False) -> np.ndarray:
+    sim = bg_env.Env(0)
+    sim.set_state_full(_require_full_state69(np.asarray(base_state, dtype=np.int16)))
+    mv = np.full((8,), 255, dtype=np.uint8) if use_current_state or move is None else np.asarray(move, dtype=np.uint8)
+    try:
+        sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
+    except TypeError:
+        sim.step_move(np.asarray(mv, dtype=np.uint8))
+    if hasattr(sim, "get_state_full"):
+        return np.asarray(sim.get_state_full(), dtype=np.int16)
+    return np.asarray(sim.get_state_raw(), dtype=np.int16)
+
+
 def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.ndarray, dice_values: list[int]) -> list[str]:
     if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
         return []
 
     endless = int(np.asarray(raw_state, dtype=np.int16).reshape(-1)[56]) < 0 if np.asarray(raw_state).size > 56 else False
-    obs_now = state_to_observation(np.asarray(raw_state, dtype=np.float32))
-    obs_after = state_to_observation(np.asarray(raw_after_selected_move, dtype=np.float32))
+    raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
+    now_white = bool(raw_now[57]) if raw_now.size > 57 else True
+    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
+    obs_now = _raw_state_to_player_observation(raw_now, now_white)
+    obs_after = _raw_state_to_player_observation(raw_post, post_white)
     m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
@@ -1271,15 +1295,14 @@ def main():
             elif hint_pending:
                 raw_after_selected = np.asarray(raw, dtype=np.int16)
                 if can_submit and len(history) > 0:
-                    raw_after_selected = np.asarray(raw, dtype=np.int16)
+                    raw_after_selected = _simulate_committed_turn_state(np.asarray(raw, dtype=np.int16), use_current_state=True)
                 elif len(move_hints) > 0:
-                    sim_hint = bg_env.Env(0)
-                    sim_hint.set_state_raw(np.asarray(turn_start_state, dtype=np.int16))
-                    try:
-                        sim_hint.step_move(np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8), 0, 1)
-                    except TypeError:
-                        sim_hint.step_move(np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8))
-                    raw_after_selected = np.asarray(sim_hint.get_state_raw(), dtype=np.int16)
+                    raw_after_selected = _simulate_committed_turn_state(
+                        np.asarray(turn_start_state, dtype=np.int16),
+                        move=np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8),
+                    )
+                elif dice_values:
+                    raw_after_selected = _simulate_committed_turn_state(np.asarray(turn_start_state, dtype=np.int16))
                 hint_lines_cache = _agent_hint_lines(agent, raw, raw_after_selected, dice_values)
                 hint_pending = False
                 hint_pending_started = False

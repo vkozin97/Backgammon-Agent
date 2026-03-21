@@ -233,19 +233,18 @@ def decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: n
     return int(p_accept >= p_reject)
 
 
-def get_double_hint_metrics(agent: "ValueAgent", obs_now: np.ndarray, obs_after_selected_move: np.ndarray, endless: bool = False) -> DoubleHintMetrics:
-    obs_now_2d = np.asarray(obs_now, dtype=np.float32).reshape(1, -1)
+def get_double_hint_metrics(agent: "ValueAgent", obs_now_current: np.ndarray, obs_post_next_turn: np.ndarray, endless: bool = False) -> DoubleHintMetrics:
+    obs_now_2d = np.asarray(obs_now_current, dtype=np.float32).reshape(1, -1)
     probs_now = np.asarray(agent.predict_proba(obs_now_2d), dtype=np.float32).reshape(-1)
-    probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now).reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now_current).reshape(1, -1)), dtype=np.float32).reshape(-1)
 
     reward_vec = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
     p_accept = float(np.clip(probs_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
     exp_no_double = reward_expectation(probs_now)
     exp_double = p_accept * (2.0 * reward_expectation(probs_double_now)) + (1.0 - p_accept) * 1.0
-    apply_double = decide_apply_double_from_probs(probs_now, probs_double_now, obs_now, endless=endless)
+    apply_double = decide_apply_double_from_probs(probs_now, probs_double_now, obs_now_current, endless=endless)
 
-    obs_post = np.asarray(obs_after_selected_move, dtype=np.float32).reshape(-1)
-    obs_post_current = flip_observation_perspective(obs_post)
+    obs_post_current = np.asarray(obs_post_next_turn, dtype=np.float32).reshape(-1)
     probs_keep = np.asarray(agent.predict_proba(obs_post_current.reshape(1, -1)), dtype=np.float32).reshape(-1)
     probs_offer = np.asarray(
         agent.predict_proba(set_obs_opponent_double_offer(obs_post_current).reshape(1, -1)),
