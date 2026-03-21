@@ -109,11 +109,11 @@ REWARD_VECTOR_DIM = 6
 REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 
 # Viewer hyperparameters
-agent_mode = "none"  # "none" | "hint" | "play" | "replay"
-viewer_n_games = 5  # number of games in endless mode or points to win the match in regular mode
-viewer_endless_mode = False
-agent_id = "trainable_2"
-agent_epoch = 248
+agent_mode = "hint"  # "none" | "hint" | "play" | "replay"
+viewer_n_games = 100  # number of games in endless mode or points to win the match in regular mode
+viewer_endless_mode = True
+agent_id = "trainable_1"
+agent_epoch = 332
 agent_checkpoint_dir = "training_stats/checkpoints"
 replay_storage_dir = "training_stats/replay"
 replay_match_id = None
