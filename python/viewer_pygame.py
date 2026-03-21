@@ -441,6 +441,17 @@ def _debug_print_hint_context(
     print("now.double", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(m.apply_double)})
     print("post.double", {"exp_rej": float(m.exp_reject), "exp_acc": float(m.exp_accept), "accept": int(m.accept_double)})
     print("post.double.panel", {"exp_rej": -1.0 if endless else float(m.exp_reject), "exp_acc": float(final_post_accept), "accept": int(final_post_accept_flag)})
+    hint_lines = _agent_hint_lines(
+        agent,
+        raw_state,
+        raw_after_selected_move,
+        dice_values,
+        selected_move_vec=selected_move_vec,
+    )
+    if hint_lines:
+        print("hint.lines")
+        for line in hint_lines:
+            print("  ", line)
     print("=== HINT DEBUG END ===")
 
 
