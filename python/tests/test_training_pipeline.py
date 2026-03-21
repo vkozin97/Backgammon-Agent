@@ -127,6 +127,7 @@ def test_config_roundtrip(tmp_path: Path):
     loaded = load_config(p)
     assert loaded.train.num_epochs == cfg.train.num_epochs
     assert loaded.train.winrate_window_size == cfg.train.winrate_window_size
+    assert loaded.train.value_window_size == cfg.train.value_window_size
     assert loaded.checkpoint_dir == cfg.checkpoint_dir
 
 
@@ -151,6 +152,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     lr_dir = Path(cfg.plots_dir) / "lr"
     replay_dir = Path(cfg.plots_dir) / "replay"
     winrates_windowed_dir = Path(cfg.plots_dir) / "winrates_windowed"
+    value_windowed_dir = Path(cfg.plots_dir) / "value_windowed"
     decision_dir = Path(cfg.plots_dir) / "decision_temperature"
     if importlib.util.find_spec("matplotlib") is not None:
         assert loss_dir.exists()
@@ -158,6 +160,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
         total_agents = len(trainable_agents) + 1
         opponents_per_agent = total_agents - 1
         assert len(list(winrates_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
+        assert len(list(value_windowed_dir.glob("*.png"))) == total_agents * opponents_per_agent + 1
         assert len(list(loss_dir.glob("*.png"))) == len(trainable_agents)
         assert len(list(lr_dir.glob("*.png"))) == len(trainable_agents) * 2
         assert not (replay_dir / "replay_size.png").exists()
@@ -596,14 +599,18 @@ def test_state_to_observation_uses_cube_scalars_from_state_raw():
 
 def test_sigmoid_growth_probability_schedule():
     base = 0.2
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0), base)
-    at_start = _sigmoid_growth_probability(base, epoch=5, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
-    mid = _sigmoid_growth_probability(base, epoch=7, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
-    at_end = _sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0)
+    sigmoid_parameter = 6.74755607143124
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=0, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter), base)
+    at_start = _sigmoid_growth_probability(base, epoch=5, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter)
+    quarter_rise = _sigmoid_growth_probability(base, epoch=6.75, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter)
+    mid = _sigmoid_growth_probability(base, epoch=7.5, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter)
+    at_end = _sigmoid_growth_probability(base, epoch=10, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter)
+    expected_quarter_rise = (base + 0.001) + 0.25 * (0.999 - (base + 0.001))
     assert np.isclose(at_start, base + 0.001)
-    assert at_start < mid < at_end
+    assert np.isclose(quarter_rise, expected_quarter_rise, atol=1e-6)
+    assert at_start < quarter_rise < mid < at_end
     assert np.isclose(at_end, 0.999)
-    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10, sigmoid_parameter=6.0), 1.0)
+    assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter), 1.0)
 
 
 def test_learning_rate_for_epoch_accounts_for_updates_and_decay_steps():
