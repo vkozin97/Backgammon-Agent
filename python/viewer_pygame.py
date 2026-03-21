@@ -151,6 +151,17 @@ def _cube_owner_debug_label(raw_state: np.ndarray, perspective_white: bool) -> s
     return f"{global_label} ({relative_label})"
 
 
+def _raw_cube_available_to_player(raw_state: np.ndarray, player_is_white: bool) -> bool:
+    raw = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    if raw.size <= 63:
+        return False
+    owner = int(raw[63])
+    if owner < 0:
+        return True
+    owner_is_white = owner == 0
+    return bool(owner_is_white == bool(player_is_white))
+
+
 def load_replay_steps(storage_dir: str, match_id: str, game_number_in_match: int) -> list[dict]:
     db_path = Path(storage_dir) / "replay.sqlite3"
     if not db_path.exists():
@@ -356,15 +367,18 @@ def _agent_hint_lines(
     exp_reject = float(m.exp_reject)
     exp_accept = float(m.exp_accept)
     accept_double = int(m.accept_double)
+    apply_double = int(m.apply_double)
     if endless:
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
         exp_reject = -1.0
         exp_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
         accept_double = int((opp_double_avail > 0 or obs_has_pending_double_offer(obs_post_current_player)) and exp_accept >= exp_reject)
+        if not dice_values and _raw_cube_available_to_player(raw_now, now_white):
+            apply_double = int(float(m.exp_double) > float(m.exp_no_double))
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
     line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={exp_reject:.3f} | EV(acc)={exp_accept:.3f}"
-    line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if accept_double else 'Нет'}"
+    line3 = f"Удв: {'Да' if apply_double else 'Нет'}. Прин: {'Да' if accept_double else 'Нет'}"
     return [line0, line1, line2, line3]
 
 
@@ -414,10 +428,13 @@ def _debug_print_hint_context(
     )
     final_post_accept = float(m.exp_accept)
     final_post_accept_flag = int(m.accept_double)
+    final_apply_double_flag = int(m.apply_double)
     if endless:
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current)
         final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
         final_post_accept_flag = int((opp_double_avail > 0 or obs_has_pending_double_offer(obs_post_current)) and final_post_accept >= -1.0)
+        if not dice_values and _raw_cube_available_to_player(raw_now, now_white):
+            final_apply_double_flag = int(float(m.exp_double) > float(m.exp_no_double))
 
     print("\n=== HINT DEBUG START ===")
     print(f"dice={dice_values} selected_move={move_to_str(selected_move, turn_white=now_white) if selected_move is not None else '(none)'}")
@@ -461,6 +478,7 @@ def _debug_print_hint_context(
     if selected_move_vec is not None:
         print("selected_move_vec.panel", np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).tolist(), "EV=", float(np.dot(REWARD_VALUES, np.asarray(selected_move_vec, dtype=np.float32).reshape(-1))))
     print("now.double", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(m.apply_double)})
+    print("now.double.panel", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(final_apply_double_flag)})
     print("post.double", {"exp_rej": float(m.exp_reject), "exp_acc": float(m.exp_accept), "accept": int(m.accept_double)})
     print("post.double.panel", {"exp_rej": -1.0 if endless else float(m.exp_reject), "exp_acc": float(final_post_accept), "accept": int(final_post_accept_flag)})
     hint_lines = _agent_hint_lines(
