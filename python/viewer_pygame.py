@@ -15,7 +15,6 @@ from training.agents import (
     reward_expectation,
     set_obs_double_state,
     set_obs_opponent_double_offer,
-    obs_has_pending_double_offer,
 )
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
@@ -372,7 +371,7 @@ def _agent_hint_lines(
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
         exp_reject = -1.0
         exp_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
-        accept_double = int((opp_double_avail > 0 or obs_has_pending_double_offer(obs_post_current_player)) and exp_accept >= exp_reject)
+        accept_double = int(opp_double_avail > 0 and exp_accept >= exp_reject)
         if not dice_values and _raw_cube_available_to_player(raw_now, now_white):
             apply_double = int(float(m.exp_double) > float(m.exp_no_double))
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
@@ -432,7 +431,7 @@ def _debug_print_hint_context(
     if endless:
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current)
         final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
-        final_post_accept_flag = int((opp_double_avail > 0 or obs_has_pending_double_offer(obs_post_current)) and final_post_accept >= -1.0)
+        final_post_accept_flag = int(opp_double_avail > 0 and final_post_accept >= -1.0)
         if not dice_values and _raw_cube_available_to_player(raw_now, now_white):
             final_apply_double_flag = int(float(m.exp_double) > float(m.exp_no_double))
 
