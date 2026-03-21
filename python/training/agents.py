@@ -50,6 +50,11 @@ def extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
     return my_left, opp_left, dave_val, my_double_avail, opp_double_avail
 
 
+def obs_has_pending_double_offer(obs: np.ndarray) -> bool:
+    v = np.asarray(obs, dtype=np.float32).reshape(-1)
+    return bool(v.size >= 1 and int(round(float(v[-1]))) > 0)
+
+
 def set_obs_double_state(obs: np.ndarray) -> np.ndarray:
     x = np.asarray(obs, dtype=np.float32).copy()
     if x.size >= 7:
@@ -224,7 +229,8 @@ def decide_apply_double_from_probs(probs_now: np.ndarray, probs_after_double: np
 
 def decide_accept_double_from_probs(probs_if_opp_doubles: np.ndarray, obs_now: np.ndarray, endless: bool = False) -> int:
     _, _, _, _, opp_double_avail = extract_obs_controls(obs_now)
-    if opp_double_avail <= 0:
+    offer_pending = obs_has_pending_double_offer(obs_now)
+    if opp_double_avail <= 0 and not offer_pending:
         return 0
     if endless:
         exp_reject = reject_double_equity(obs_now, endless=True)
@@ -273,7 +279,7 @@ def get_double_hint_metrics(
         head_win_eval(probs_offer, set_obs_opponent_double_offer(obs_post_current))
     )
     accept_double = (
-        int(extract_obs_controls(obs_post_current)[4] > 0 and exp_accept >= exp_reject)
+        int((extract_obs_controls(obs_post_current)[4] > 0 or obs_has_pending_double_offer(obs_post_current)) and exp_accept >= exp_reject)
         if endless else
         decide_accept_double_from_probs(probs_offer, obs_post_current, endless=endless)
     )

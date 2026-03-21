@@ -15,6 +15,7 @@ from training.agents import (
     reward_expectation,
     set_obs_double_state,
     set_obs_opponent_double_offer,
+    obs_has_pending_double_offer,
 )
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
@@ -359,7 +360,7 @@ def _agent_hint_lines(
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
         exp_reject = -1.0
         exp_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
-        accept_double = int(opp_double_avail > 0 and exp_accept >= exp_reject)
+        accept_double = int((opp_double_avail > 0 or obs_has_pending_double_offer(obs_post_current_player)) and exp_accept >= exp_reject)
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
     line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={exp_reject:.3f} | EV(acc)={exp_accept:.3f}"
@@ -416,7 +417,7 @@ def _debug_print_hint_context(
     if endless:
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current)
         final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
-        final_post_accept_flag = int(opp_double_avail > 0 and final_post_accept >= -1.0)
+        final_post_accept_flag = int((opp_double_avail > 0 or obs_has_pending_double_offer(obs_post_current)) and final_post_accept >= -1.0)
 
     print("\n=== HINT DEBUG START ===")
     print(f"dice={dice_values} selected_move={move_to_str(selected_move, turn_white=now_white) if selected_move is not None else '(none)'}")

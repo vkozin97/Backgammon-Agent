@@ -23,6 +23,7 @@ from training.agents import (
     flip_observation_perspective,
     get_double_hint_metrics,
     reject_double_equity,
+    obs_has_pending_double_offer,
 )
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
@@ -633,6 +634,18 @@ def test_decide_accept_double_from_probs_endless_sign():
     probs[MATCH_VECTOR_DIM * 2 + 1 + 5] = 1.0  # certain +3 for chooser
     obs = np.zeros((263,), dtype=np.float32)
     obs[-3] = 1.0
+    assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
+
+
+def test_decide_accept_double_from_probs_endless_allows_pending_offer_without_opp_cube_flag():
+    probs = np.zeros((31,), dtype=np.float32)
+    probs[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-4] = 1.0
+    obs[-3] = 0.0
+    obs[-1] = 1.0
+
+    assert obs_has_pending_double_offer(obs)
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
 
 
