@@ -651,6 +651,40 @@ def test_decide_apply_double_from_probs_endless_requires_cube_availability():
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
 
 
+def test_get_double_hint_metrics_endless_uses_canonical_post_reward_vector_for_accept_equity():
+    class _FakeAgent:
+        def predict_proba(self, obs_batch):
+            n = int(np.asarray(obs_batch).shape[0])
+            out = np.zeros((n, 31), dtype=np.float32)
+            out[:, MATCH_VECTOR_DIM * 2] = 1.0
+            out[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + 6] = np.asarray(
+                [0.01, 0.02, 0.30, 0.40, 0.20, 0.07],
+                dtype=np.float32,
+            )
+            return out
+
+    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now[-4] = 1.0
+    obs_now[-3] = 1.0
+
+    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn[-4] = 1.0
+    obs_post_turn[-3] = 1.0
+
+    canonical_post_reward_vec = np.asarray([0.01, 0.02, 0.07, 0.20, 0.30, 0.40], dtype=np.float32)
+    metrics = get_double_hint_metrics(
+        _FakeAgent(),
+        obs_now,
+        obs_post_turn,
+        endless=True,
+        canonical_post_reward_vec=canonical_post_reward_vec,
+    )
+
+    reward_values = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
+    assert np.isclose(metrics.exp_accept, 2.0 * float(np.dot(reward_values, canonical_post_reward_vec)))
+    assert metrics.accept_double == 1
+
+
 def test_get_double_hint_metrics_swaps_post_reward_vector_to_mover_perspective():
     class _FakeAgent:
         def predict_proba(self, obs_batch):

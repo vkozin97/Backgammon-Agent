@@ -327,11 +327,17 @@ def _agent_hint_lines(
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
     obs_after = _raw_state_to_player_observation(raw_post, post_white)
     obs_post_current_player = _raw_state_to_player_observation(raw_post, now_white)
-    m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
     canonical_post_vec = (
         np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
         if selected_move_vec is not None else
         _canonical_panel_reward_vec(agent, raw_post)
+    )
+    m = get_double_hint_metrics(
+        agent,
+        obs_now,
+        obs_after,
+        endless=endless,
+        canonical_post_reward_vec=canonical_post_vec,
     )
     exp_reject = float(m.exp_reject)
     exp_accept = float(m.exp_accept)
@@ -380,12 +386,23 @@ def _debug_print_hint_context(
     reward_now = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
     reward_post_turn = probs_post_turn[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
     reward_post_mover = reward_post_turn[::-1].copy()
-    m = get_double_hint_metrics(agent, obs_now, obs_post_turn, endless=endless)
+    canonical_post_vec = (
+        np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
+        if selected_move_vec is not None else
+        reward_post_mover.copy()
+    )
+    m = get_double_hint_metrics(
+        agent,
+        obs_now,
+        obs_post_turn,
+        endless=endless,
+        canonical_post_reward_vec=canonical_post_vec,
+    )
     final_post_accept = float(m.exp_accept)
     final_post_accept_flag = int(m.accept_double)
     if endless:
         _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current)
-        final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, selected_move_vec if selected_move_vec is not None else reward_post_mover))
+        final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
         final_post_accept_flag = int(opp_double_avail > 0 and final_post_accept >= -1.0)
 
     print("\n=== HINT DEBUG START ===")
