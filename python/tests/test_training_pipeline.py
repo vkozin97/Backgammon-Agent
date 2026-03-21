@@ -21,6 +21,7 @@ from training.agents import (
     decide_apply_double_from_probs,
     decide_accept_double_from_probs,
     flip_observation_perspective,
+    get_double_hint_metrics,
     reject_double_equity,
 )
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
@@ -648,6 +649,30 @@ def test_decide_apply_double_from_probs_endless_requires_cube_availability():
 
     obs[-4] = 1.0
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
+
+
+def test_get_double_hint_metrics_swaps_post_reward_vector_to_mover_perspective():
+    class _FakeAgent:
+        def predict_proba(self, obs_batch):
+            n = int(np.asarray(obs_batch).shape[0])
+            out = np.zeros((n, 31), dtype=np.float32)
+            out[:, MATCH_VECTOR_DIM * 2] = 1.0
+            out[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + 6] = np.asarray(
+                [0.01, 0.02, 0.30, 0.40, 0.20, 0.07],
+                dtype=np.float32,
+            )
+            return out
+
+    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now[-4] = 1.0
+    obs_now[-3] = 1.0
+
+    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn[-4] = 1.0
+    obs_post_turn[-3] = 1.0
+
+    metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
+    assert np.allclose(metrics.reward_vec_after_move, np.asarray([0.07, 0.20, 0.40, 0.30, 0.02, 0.01], dtype=np.float32))
 
 
 def test_flip_observation_perspective_swaps_sides_and_controls():
