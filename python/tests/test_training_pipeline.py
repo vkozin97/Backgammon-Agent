@@ -649,6 +649,29 @@ def test_decide_accept_double_from_probs_endless_allows_pending_offer_without_op
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
 
 
+def test_get_double_hint_metrics_uses_post_double_accept_head_for_p_accept_and_ev_double():
+    class _FakeAgent:
+        def predict_proba(self, obs_batch):
+            obs = np.asarray(obs_batch, dtype=np.float32)
+            n = int(obs.shape[0])
+            out = np.zeros((n, 31), dtype=np.float32)
+            is_offered = obs[:, -1] > 0.5
+            out[~is_offered, MATCH_VECTOR_DIM * 2] = 0.1
+            out[is_offered, MATCH_VECTOR_DIM * 2] = 0.9
+            out[:, MATCH_VECTOR_DIM * 2 + 1 + 3] = 1.0  # certain +1 reward expectation
+            return out
+
+    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now[-4] = 1.0
+    obs_now[-3] = 1.0
+    obs_post_turn = np.zeros((263,), dtype=np.float32)
+
+    metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
+
+    assert np.isclose(metrics.p_accept, 0.9)
+    assert np.isclose(metrics.exp_double, 0.9 * 2.0 * 1.0 + 0.1 * 1.0)
+
+
 def test_decide_apply_double_from_probs_endless_requires_cube_availability():
     probs_now = np.zeros((31,), dtype=np.float32)
     probs_after_double = np.zeros((31,), dtype=np.float32)

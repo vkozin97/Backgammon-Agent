@@ -210,7 +210,7 @@ def decide_apply_double_from_probs(probs_now: np.ndarray, probs_after_double: np
         _, _, _, my_double_avail, _ = extract_obs_controls(obs_now)
         if my_double_avail <= 0:
             return 0
-        p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+        p_accept = float(np.clip(np.asarray(probs_after_double, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
         exp_no_double = reward_expectation(probs_now)
         exp_double = p_accept * 2.0 * reward_expectation(probs_after_double) + (1.0 - p_accept) * 1.0
         return int(exp_double > exp_no_double)
@@ -222,7 +222,7 @@ def decide_apply_double_from_probs(probs_now: np.ndarray, probs_after_double: np
     my_after_reject = max(my_left - int(max(dave_val, 1)), 0)
     p_win_rejected = float(MET_TABLE[my_after_reject, opp_left])
     p_win_accepted = head_win_eval(probs_after_double, set_obs_double_state(obs_now))
-    p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    p_accept = float(np.clip(np.asarray(probs_after_double, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
     p_win_double = p_accept * p_win_accepted + (1.0 - p_accept) * p_win_rejected
     return int(p_win_double > p_win)
 
@@ -254,7 +254,7 @@ def get_double_hint_metrics(
     probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now_current).reshape(1, -1)), dtype=np.float32).reshape(-1)
 
     reward_vec = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
-    p_accept = float(np.clip(probs_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    p_accept = float(np.clip(probs_double_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
     exp_no_double = reward_expectation(probs_now)
     exp_double = p_accept * (2.0 * reward_expectation(probs_double_now)) + (1.0 - p_accept) * 1.0
     apply_double = decide_apply_double_from_probs(probs_now, probs_double_now, obs_now_current, endless=endless)
