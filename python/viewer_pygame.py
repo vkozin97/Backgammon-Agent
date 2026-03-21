@@ -137,6 +137,19 @@ def _require_full_state69(state: np.ndarray) -> np.ndarray:
     return a
 
 
+def _cube_owner_debug_label(raw_state: np.ndarray, perspective_white: bool) -> str:
+    raw = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    if raw.size <= 63:
+        return "unknown"
+    owner = int(raw[63])
+    if owner < 0:
+        return "center"
+    owner_is_white = owner == 0
+    global_label = "white" if owner_is_white else "black"
+    relative_label = "me" if owner_is_white == bool(perspective_white) else "opp"
+    return f"{global_label} ({relative_label})"
+
+
 def load_replay_steps(storage_dir: str, match_id: str, game_number_in_match: int) -> list[dict]:
     db_path = Path(storage_dir) / "replay.sqlite3"
     if not db_path.exists():
@@ -430,6 +443,14 @@ def _debug_print_hint_context(
                 "double_offered_68": int(raw_post[68]),
             },
         )
+    print(
+        "cube.owner",
+        {
+            "raw_now": _cube_owner_debug_label(raw_now, now_white),
+            "raw_post_turn": _cube_owner_debug_label(raw_post, post_white),
+            "raw_post_current": _cube_owner_debug_label(raw_post, now_white),
+        },
+    )
     print("obs_now.controls", extract_obs_controls(obs_now))
     print("obs_post_turn.controls", extract_obs_controls(obs_post_turn))
     print("obs_post_current.controls", extract_obs_controls(obs_post_current))
