@@ -326,16 +326,25 @@ def _agent_hint_lines(
     post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
     obs_after = _raw_state_to_player_observation(raw_post, post_white)
+    obs_post_current_player = _raw_state_to_player_observation(raw_post, now_white)
     m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
     canonical_post_vec = (
         np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
         if selected_move_vec is not None else
         _canonical_panel_reward_vec(agent, raw_post)
     )
+    exp_reject = float(m.exp_reject)
+    exp_accept = float(m.exp_accept)
+    accept_double = int(m.accept_double)
+    if endless:
+        _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
+        exp_reject = -1.0
+        exp_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
+        accept_double = int(opp_double_avail > 0 and exp_accept >= exp_reject)
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
-    line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={m.exp_reject:.3f} | EV(acc)={m.exp_accept:.3f}"
-    line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if m.accept_double else 'Нет'}"
+    line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={exp_reject:.3f} | EV(acc)={exp_accept:.3f}"
+    line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if accept_double else 'Нет'}"
     return [line0, line1, line2, line3]
 
 
@@ -372,6 +381,12 @@ def _debug_print_hint_context(
     reward_post_turn = probs_post_turn[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
     reward_post_mover = reward_post_turn[::-1].copy()
     m = get_double_hint_metrics(agent, obs_now, obs_post_turn, endless=endless)
+    final_post_accept = float(m.exp_accept)
+    final_post_accept_flag = int(m.accept_double)
+    if endless:
+        _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current)
+        final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, selected_move_vec if selected_move_vec is not None else reward_post_mover))
+        final_post_accept_flag = int(opp_double_avail > 0 and final_post_accept >= -1.0)
 
     print("\n=== HINT DEBUG START ===")
     print(f"dice={dice_values} selected_move={move_to_str(selected_move, turn_white=now_white) if selected_move is not None else '(none)'}")
@@ -408,6 +423,7 @@ def _debug_print_hint_context(
         print("selected_move_vec.panel", np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).tolist(), "EV=", float(np.dot(REWARD_VALUES, np.asarray(selected_move_vec, dtype=np.float32).reshape(-1))))
     print("now.double", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(m.apply_double)})
     print("post.double", {"exp_rej": float(m.exp_reject), "exp_acc": float(m.exp_accept), "accept": int(m.accept_double)})
+    print("post.double.panel", {"exp_rej": -1.0 if endless else float(m.exp_reject), "exp_acc": float(final_post_accept), "accept": int(final_post_accept_flag)})
     print("=== HINT DEBUG END ===")
 
 
