@@ -7,7 +7,15 @@ import numpy as np
 import pygame
 
 import bg_env  # pybind11 module
-from training.agents import build_trainable_agents, flip_observation_perspective, get_double_hint_metrics
+from training.agents import (
+    build_trainable_agents,
+    extract_obs_controls,
+    flip_observation_perspective,
+    get_double_hint_metrics,
+    reward_expectation,
+    set_obs_double_state,
+    set_obs_opponent_double_offer,
+)
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
 from training.observation import state_to_observation
@@ -309,6 +317,78 @@ def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.
     line2 = f"postR6={_format_vec_percent(m.reward_vec_after_move)} | EV(rej)={m.exp_reject:.3f} | EV(acc)={m.exp_accept:.3f}"
     line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if m.accept_double else 'Нет'}"
     return [line0, line1, line2, line3]
+
+
+def _debug_print_hint_context(
+    agent,
+    raw_state: np.ndarray,
+    raw_after_selected_move: np.ndarray,
+    dice_values: list[int],
+    selected_move: Optional[np.ndarray] = None,
+    selected_move_vec: Optional[np.ndarray] = None,
+):
+    if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
+        return
+
+    raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
+    endless = int(raw_now[56]) < 0 if raw_now.size > 56 else False
+    now_white = bool(raw_now[57]) if raw_now.size > 57 else True
+    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
+
+    obs_now = _raw_state_to_player_observation(raw_now, now_white)
+    obs_post_turn = _raw_state_to_player_observation(raw_post, post_white)
+    obs_post_current = flip_observation_perspective(obs_post_turn)
+
+    probs_now = np.asarray(agent.predict_proba(obs_now.reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now).reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_post_turn = np.asarray(agent.predict_proba(obs_post_turn.reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_post_offer = np.asarray(
+        agent.predict_proba(set_obs_opponent_double_offer(obs_post_current).reshape(1, -1)),
+        dtype=np.float32,
+    ).reshape(-1)
+
+    reward_now = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
+    reward_post_turn = probs_post_turn[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
+    reward_post_mover = reward_post_turn[::-1].copy()
+    m = get_double_hint_metrics(agent, obs_now, obs_post_turn, endless=endless)
+
+    print("\n=== HINT DEBUG START ===")
+    print(f"dice={dice_values} selected_move={move_to_str(selected_move, turn_white=now_white) if selected_move is not None else '(none)'}")
+    print(f"now_white={int(now_white)} post_white={int(post_white)} endless={int(endless)}")
+    if raw_now.size > 68:
+        print(
+            "raw_now.controls",
+            {
+                "turn_white": int(raw_now[57]),
+                "cube_owner_raw63": int(raw_now[63]),
+                "cube_avail_66": int(raw_now[66]),
+                "cube_avail_67": int(raw_now[67]),
+                "double_offered_68": int(raw_now[68]),
+            },
+        )
+    if raw_post.size > 68:
+        print(
+            "raw_post.controls",
+            {
+                "turn_white": int(raw_post[57]),
+                "cube_owner_raw63": int(raw_post[63]),
+                "cube_avail_66": int(raw_post[66]),
+                "cube_avail_67": int(raw_post[67]),
+                "double_offered_68": int(raw_post[68]),
+            },
+        )
+    print("obs_now.controls", extract_obs_controls(obs_now))
+    print("obs_post_turn.controls", extract_obs_controls(obs_post_turn))
+    print("obs_post_current.controls", extract_obs_controls(obs_post_current))
+    print("reward_now.raw", reward_now.tolist(), "EV=", float(reward_expectation(probs_now)))
+    print("reward_post_turn.raw", reward_post_turn.tolist(), "EV=", float(reward_expectation(probs_post_turn)))
+    print("reward_post_mover.swapped", reward_post_mover.tolist(), "EV=", float(np.dot(REWARD_VALUES, reward_post_mover)))
+    if selected_move_vec is not None:
+        print("selected_move_vec.panel", np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).tolist(), "EV=", float(np.dot(REWARD_VALUES, np.asarray(selected_move_vec, dtype=np.float32).reshape(-1))))
+    print("now.double", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(m.apply_double)})
+    print("post.double", {"exp_rej": float(m.exp_reject), "exp_acc": float(m.exp_accept), "accept": int(m.accept_double)})
+    print("=== HINT DEBUG END ===")
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -1303,6 +1383,16 @@ def main():
                     )
                 elif dice_values:
                     raw_after_selected = _simulate_committed_turn_state(np.asarray(turn_start_state, dtype=np.int16))
+                selected_move = move_hints[selected_hint_idx][1] if len(move_hints) > 0 else None
+                selected_move_vec = move_hints[selected_hint_idx][3] if len(move_hints) > 0 else None
+                _debug_print_hint_context(
+                    agent,
+                    raw,
+                    raw_after_selected,
+                    dice_values,
+                    selected_move=selected_move,
+                    selected_move_vec=selected_move_vec,
+                )
                 hint_lines_cache = _agent_hint_lines(agent, raw, raw_after_selected, dice_values)
                 hint_pending = False
                 hint_pending_started = False
