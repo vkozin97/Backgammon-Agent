@@ -202,6 +202,9 @@ def head_win_eval(probs_row: np.ndarray, obs_row: np.ndarray) -> float:
 
 def decide_apply_double_from_probs(probs_now: np.ndarray, probs_after_double: np.ndarray, obs_now: np.ndarray, endless: bool = False) -> int:
     if endless:
+        _, _, _, my_double_avail, _ = extract_obs_controls(obs_now)
+        if my_double_avail <= 0:
+            return 0
         p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
         exp_no_double = reward_expectation(probs_now)
         exp_double = p_accept * 2.0 * reward_expectation(probs_after_double) + (1.0 - p_accept) * 1.0

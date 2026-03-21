@@ -18,6 +18,7 @@ from training.agents import (
     MATCH_VECTOR_DIM,
     ValueAgent,
     build_trainable_agents,
+    decide_apply_double_from_probs,
     decide_accept_double_from_probs,
     flip_observation_perspective,
     reject_double_equity,
@@ -632,6 +633,21 @@ def test_decide_accept_double_from_probs_endless_sign():
     obs = np.zeros((263,), dtype=np.float32)
     obs[-3] = 1.0
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
+
+
+def test_decide_apply_double_from_probs_endless_requires_cube_availability():
+    probs_now = np.zeros((31,), dtype=np.float32)
+    probs_after_double = np.zeros((31,), dtype=np.float32)
+    probs_now[MATCH_VECTOR_DIM * 2] = 0.9
+    probs_now[MATCH_VECTOR_DIM * 2 + 1 + 2] = 1.0  # certain -1
+    probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
+
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-4] = 0.0
+    assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 0
+
+    obs[-4] = 1.0
+    assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
 
 
 def test_flip_observation_perspective_swaps_sides_and_controls():

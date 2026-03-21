@@ -300,9 +300,8 @@ def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.
     raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
     raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
     now_white = bool(raw_now[57]) if raw_now.size > 57 else True
-    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
-    obs_after = _raw_state_to_player_observation(raw_post, post_white)
+    obs_after = _raw_state_to_player_observation(raw_post, now_white)
     m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
