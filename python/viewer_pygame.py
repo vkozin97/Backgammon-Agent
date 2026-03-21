@@ -280,6 +280,15 @@ def _format_vec_percent(values: np.ndarray) -> str:
     return "[" + ", ".join(f"{(float(v) * 100.0):.1f}" for v in arr.tolist()) + "]"
 
 
+def _canonical_panel_reward_vec(agent, raw_state: np.ndarray) -> np.ndarray:
+    if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
+        return np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
+    obs = state_to_observation(np.asarray(raw_state, dtype=np.float32)).reshape(1, -1)
+    pred = np.asarray(agent.predict_proba(obs), dtype=np.float32).reshape(-1)
+    reward_head = pred[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    return _swap_reward_vector_perspective(reward_head)
+
+
 def _raw_state_to_player_observation(raw_state: np.ndarray, player_is_white: bool) -> np.ndarray:
     obs = state_to_observation(np.asarray(raw_state, dtype=np.float32))
     if player_is_white:
@@ -300,7 +309,13 @@ def _simulate_committed_turn_state(base_state: np.ndarray, move: Optional[np.nda
     return np.asarray(sim.get_state_raw(), dtype=np.int16)
 
 
-def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.ndarray, dice_values: list[int]) -> list[str]:
+def _agent_hint_lines(
+    agent,
+    raw_state: np.ndarray,
+    raw_after_selected_move: np.ndarray,
+    dice_values: list[int],
+    selected_move_vec: Optional[np.ndarray] = None,
+) -> list[str]:
     if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
         return []
 
@@ -312,9 +327,14 @@ def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
     obs_after = _raw_state_to_player_observation(raw_post, post_white)
     m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
+    canonical_post_vec = (
+        np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
+        if selected_move_vec is not None else
+        _canonical_panel_reward_vec(agent, raw_post)
+    )
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
-    line2 = f"postR6={_format_vec_percent(m.reward_vec_after_move)} | EV(rej)={m.exp_reject:.3f} | EV(acc)={m.exp_accept:.3f}"
+    line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={m.exp_reject:.3f} | EV(acc)={m.exp_accept:.3f}"
     line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if m.accept_double else 'Нет'}"
     return [line0, line1, line2, line3]
 
@@ -1393,7 +1413,13 @@ def main():
                     selected_move=selected_move,
                     selected_move_vec=selected_move_vec,
                 )
-                hint_lines_cache = _agent_hint_lines(agent, raw, raw_after_selected, dice_values)
+                hint_lines_cache = _agent_hint_lines(
+                    agent,
+                    raw,
+                    raw_after_selected,
+                    dice_values,
+                    selected_move_vec=selected_move_vec,
+                )
                 hint_pending = False
                 hint_pending_started = False
                 hint_lines = hint_lines_cache
