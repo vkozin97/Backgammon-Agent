@@ -314,8 +314,10 @@ def _canonical_panel_reward_vec(agent, raw_state: np.ndarray) -> np.ndarray:
 
 
 def _raw_state_to_player_observation(raw_state: np.ndarray, player_is_white: bool) -> np.ndarray:
-    obs = state_to_observation(np.asarray(raw_state, dtype=np.float32))
-    if player_is_white:
+    raw = np.asarray(raw_state, dtype=np.float32).reshape(-1)
+    obs = state_to_observation(raw)
+    current_player_is_white = bool(int(raw[57])) if raw.size > 57 else True
+    if bool(player_is_white) == current_player_is_white:
         return obs
     return flip_observation_perspective(obs)
 
