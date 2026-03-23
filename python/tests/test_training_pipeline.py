@@ -647,17 +647,14 @@ def test_decide_accept_double_from_probs_endless_requires_opponent_cube_availabi
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 0
 
 
-def test_get_double_hint_metrics_uses_receiver_offer_perspective_for_p_accept_and_ev_double():
+def test_get_double_hint_metrics_uses_current_state_accept_head_for_p_accept_and_ev_double():
     class _FakeAgent:
         def predict_proba(self, obs_batch):
             obs = np.asarray(obs_batch, dtype=np.float32)
             n = int(obs.shape[0])
             out = np.zeros((n, 31), dtype=np.float32)
-            mover_offer = (obs[:, -4] < 0.5) & (obs[:, -3] > 0.5) & (obs[:, -1] > 0.5)
-            receiver_offer = (obs[:, -4] > 0.5) & (obs[:, -3] < 0.5) & (obs[:, -1] > 0.5)
             out[:, MATCH_VECTOR_DIM * 2] = 0.1
-            out[mover_offer, MATCH_VECTOR_DIM * 2] = 0.2
-            out[receiver_offer, MATCH_VECTOR_DIM * 2] = 0.9
+            out[obs[:, -1] < 0.5, MATCH_VECTOR_DIM * 2] = 0.9
             out[:, MATCH_VECTOR_DIM * 2 + 1 + 3] = 1.0  # certain +1 reward expectation
             return out
 
@@ -672,26 +669,18 @@ def test_get_double_hint_metrics_uses_receiver_offer_perspective_for_p_accept_an
     assert np.isclose(metrics.exp_double, 0.9 * 2.0 * 1.0 + 0.1 * 1.0)
 
 
-def test_decide_apply_double_from_probs_can_use_receiver_offer_accept_head():
+def test_decide_apply_double_from_probs_uses_current_state_accept_head():
     probs_now = np.zeros((31,), dtype=np.float32)
     probs_after_double = np.zeros((31,), dtype=np.float32)
-    probs_offer_receiver = np.zeros((31,), dtype=np.float32)
 
+    probs_now[MATCH_VECTOR_DIM * 2] = 0.9
     probs_now[MATCH_VECTOR_DIM * 2 + 1 + 2] = 1.0  # certain -1
-    probs_after_double[MATCH_VECTOR_DIM * 2] = 0.1
     probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2 if accepted
-    probs_offer_receiver[MATCH_VECTOR_DIM * 2] = 0.9
 
     obs = np.zeros((263,), dtype=np.float32)
     obs[-4] = 1.0
 
-    assert decide_apply_double_from_probs(
-        probs_now,
-        probs_after_double,
-        obs,
-        endless=True,
-        probs_offer_receiver=probs_offer_receiver,
-    ) == 1
+    assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
 
 
 def test_decide_apply_double_from_probs_endless_requires_cube_availability():

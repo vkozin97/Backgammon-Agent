@@ -76,10 +76,6 @@ def set_obs_opponent_double_offer(obs: np.ndarray) -> np.ndarray:
     return x
 
 
-def set_obs_double_offer_for_receiver(obs: np.ndarray) -> np.ndarray:
-    return set_obs_opponent_double_offer(flip_observation_perspective(set_obs_double_state(obs)))
-
-
 def flip_observation_perspective(obs: np.ndarray) -> np.ndarray:
     x = np.asarray(obs, dtype=np.float32).reshape(-1)
     if x.size == 0:
@@ -209,10 +205,8 @@ def decide_apply_double_from_probs(
     probs_after_double: np.ndarray,
     obs_now: np.ndarray,
     endless: bool = False,
-    probs_offer_receiver: np.ndarray | None = None,
 ) -> int:
-    p_accept_source = probs_after_double if probs_offer_receiver is None else probs_offer_receiver
-    p_accept = float(np.clip(np.asarray(p_accept_source, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    p_accept = float(np.clip(np.asarray(probs_now, dtype=np.float32)[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
     if endless:
         _, _, _, my_double_avail, _ = extract_obs_controls(obs_now)
         if my_double_avail <= 0:
@@ -256,22 +250,12 @@ def get_double_hint_metrics(
     obs_now_2d = np.asarray(obs_now_current, dtype=np.float32).reshape(1, -1)
     probs_now = np.asarray(agent.predict_proba(obs_now_2d), dtype=np.float32).reshape(-1)
     probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now_current).reshape(1, -1)), dtype=np.float32).reshape(-1)
-    probs_double_offer_receiver = np.asarray(
-        agent.predict_proba(set_obs_double_offer_for_receiver(obs_now_current).reshape(1, -1)),
-        dtype=np.float32,
-    ).reshape(-1)
 
     reward_vec = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
-    p_accept = float(np.clip(probs_double_offer_receiver[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
+    p_accept = float(np.clip(probs_now[MATCH_VECTOR_DIM * 2], 0.0, 1.0))
     exp_no_double = reward_expectation(probs_now)
     exp_double = p_accept * (2.0 * reward_expectation(probs_double_now)) + (1.0 - p_accept) * 1.0
-    apply_double = decide_apply_double_from_probs(
-        probs_now,
-        probs_double_now,
-        obs_now_current,
-        endless=endless,
-        probs_offer_receiver=probs_double_offer_receiver,
-    )
+    apply_double = decide_apply_double_from_probs(probs_now, probs_double_now, obs_now_current, endless=endless)
 
     obs_post_turn = np.asarray(obs_post_turn_swapped, dtype=np.float32).reshape(-1)
     probs_keep = np.asarray(agent.predict_proba(obs_post_turn.reshape(1, -1)), dtype=np.float32).reshape(-1)

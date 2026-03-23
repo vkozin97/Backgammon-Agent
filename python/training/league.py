@@ -16,7 +16,6 @@ from .agents import (
     flip_observation_perspective,
     head_win_eval,
     reward_expectation,
-    set_obs_double_offer_for_receiver,
     set_obs_double_state,
     set_obs_opponent_double_offer,
 )
@@ -434,10 +433,6 @@ class LeagueController:
             enabled_evaluators,
             np.stack([set_obs_double_state(x) for x in enabled_obs]).astype(np.float32),
         )
-        probs_double_offer_receiver = self._predict_probs_single_cuda_call(
-            enabled_evaluators,
-            np.stack([set_obs_double_offer_for_receiver(x) for x in enabled_obs]).astype(np.float32),
-        )
         for local_i, i in enumerate(enabled_idx):
             owner = int(i)
             apply_doubles[owner] = decide_apply_double_from_probs(
@@ -445,7 +440,6 @@ class LeagueController:
                 probs_double[local_i],
                 enabled_obs[local_i],
                 endless=_is_endless_state(states[owner]),
-                probs_offer_receiver=probs_double_offer_receiver[local_i],
             )
         return apply_doubles
 
