@@ -1614,7 +1614,7 @@ def main():
                     offerer_is_white = bool(cube_offer_from_white)
                     dave_before_reject = int(dave_value_ui)
                     _dave_after, _accepted, done_code = env.resolve_pending_double(0)
-                    if endless_mode and agent_mode == "none" and int(done_code) in (1, 2):
+                    if endless_mode and agent_mode != "replay" and int(done_code) in (1, 2):
                         on_endless_game_finished(offerer_is_white, dave_before_reject)
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None
