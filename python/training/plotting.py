@@ -103,11 +103,38 @@ def _apply_percent_y_grid(ax) -> None:
 
 
 def _apply_loss_y_grid(ax) -> None:
-    ax.set_ylim(0.0, 2.0)
-    ax.set_yticks(np.arange(0.0, 2.01, 0.2))
-    ax.set_yticks(np.arange(0.0, 2.01, 0.1), minor=True)
+    ax.set_ylim(0.0, 4.0)
+    ax.set_yticks(np.arange(0.0, 4.01, 0.4))
+    ax.set_yticks(np.arange(0.0, 4.01, 0.2), minor=True)
     ax.grid(axis="y", which="major", linestyle="-", linewidth=0.7, alpha=0.35)
     ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.5, alpha=0.25)
+
+
+def _rolling_percentiles(values: list[float], window_size: int, percentiles: tuple[float, ...]) -> dict[float, list[float]]:
+    if not values:
+        return {p: [] for p in percentiles}
+    w = max(int(window_size), 1)
+    arr = np.asarray(values, dtype=np.float64)
+    out: dict[float, list[float]] = {p: [] for p in percentiles}
+    for i in range(len(arr)):
+        left = max(0, i - w + 1)
+        chunk = arr[left:i + 1]
+        for p in percentiles:
+            out[p].append(float(np.percentile(chunk, p)))
+    return out
+
+
+def _loss_plot_name_from_metric_key(metric_key: str) -> str:
+    if metric_key == "train_loss_steps_epoch":
+        return "total"
+    name = metric_key
+    if name.endswith("_steps_epoch"):
+        name = name[: -len("_steps_epoch")]
+    if name.endswith("_epoch"):
+        name = name[: -len("_epoch")]
+    if name.startswith("train_"):
+        name = name[len("train_"):]
+    return name
 
 
 
@@ -180,6 +207,7 @@ def plot_metrics_history(
     winrates_windowed_dir = out_dir / "winrates_windowed"
     value_windowed_dir = out_dir / "value_windowed"
     loss_dir = out_dir / "loss"
+    loss_total_dir = loss_dir / "total"
     lr_dir = out_dir / "lr"
     decision_dir = out_dir / "decision_temperature"
     replay_dir = out_dir / "replay"
@@ -189,6 +217,7 @@ def plot_metrics_history(
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     value_windowed_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
+    loss_total_dir.mkdir(parents=True, exist_ok=True)
     lr_dir.mkdir(parents=True, exist_ok=True)
     decision_dir.mkdir(parents=True, exist_ok=True)
     replay_dir.mkdir(parents=True, exist_ok=True)
@@ -486,18 +515,53 @@ def plot_metrics_history(
             loss_epoch_end_steps.append(loss_cursor)
 
         if loss_steps:
+        loss_step_metric_keys = sorted({
+            k
+            for m in metrics_history
+            for k, v in m["agents"][aid].items()
+            if ("loss" in k.lower()) and k.endswith("_steps_epoch") and isinstance(v, list)
+        })
+        if "train_loss_steps_epoch" in loss_step_metric_keys:
+            loss_step_metric_keys = ["train_loss_steps_epoch"] + [k for k in loss_step_metric_keys if k != "train_loss_steps_epoch"]
+
+        for loss_metric_key in loss_step_metric_keys:
+            loss_steps: list[float] = []
+            loss_epoch_end_steps: list[int] = []
+            loss_cursor = 0
+            for m in metrics_history:
+                epoch_loss_steps = m["agents"][aid].get(loss_metric_key, [])
+                if epoch_loss_steps:
+                    sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
+                    loss_steps.extend(sanitized_epoch_loss)
+                loss_cursor += len(epoch_loss_steps)
+                loss_epoch_end_steps.append(loss_cursor)
+
+            if not loss_steps:
+                continue
+
+            loss_name = _loss_plot_name_from_metric_key(loss_metric_key)
+            loss_subdir = loss_dir / loss_name
+            loss_subdir.mkdir(parents=True, exist_ok=True)
+
             loss_xs = list(range(1, len(loss_steps) + 1))
             loss_epoch_boundaries = sorted({x for x in loss_epoch_end_steps[:-1] if 0 < x < len(loss_steps)})
+            window_size = max(int(round(np.mean(np.diff([0] + loss_epoch_end_steps)))) if len(loss_epoch_end_steps) > 1 else len(loss_steps), 1)
+            percs = _rolling_percentiles(loss_steps, window_size=window_size, percentiles=(50.0, 90.0, 99.0))
+
             plt.figure(figsize=(18, 9))
-            plt.plot(loss_xs, loss_steps, linewidth=1.2)
+            plt.plot(loss_xs, loss_steps, linewidth=1.0, alpha=0.35, label="raw")
+            plt.plot(loss_xs, percs[50.0], linewidth=1.8, label=f"p50 (rolling, w={window_size})")
+            plt.plot(loss_xs, percs[90.0], linewidth=1.5, label=f"p90 (rolling, w={window_size})")
+            plt.plot(loss_xs, percs[99.0], linewidth=1.2, label=f"p99 (rolling, w={window_size})")
             for boundary in loss_epoch_boundaries:
                 plt.axvline(x=boundary + 0.5, linestyle=":", color="gray", linewidth=0.8, alpha=0.8)
-            plt.title(f"{aid} train loss")
+            plt.title(f"{aid} train {loss_name} loss")
             plt.xlabel("learning step")
             plt.ylabel("loss")
             _apply_loss_y_grid(plt.gca())
+            plt.legend(fontsize=8)
             plt.tight_layout()
-            plt.savefig(loss_dir / f"{aid}_loss.png")
+            plt.savefig(loss_subdir / f"{aid}_{loss_name}_loss.png")
             plt.close()
         _print_plot_timing(f"{aid}: loss plot", agent_t0, plot_total_t0)
         agent_t0 = time.perf_counter()
@@ -596,4 +660,34 @@ def plot_metrics_history(
         plt.close()
 
     _print_plot_timing("overall average winrate/value plots", step_t0, plot_total_t0)
+
+    step_t0 = time.perf_counter()
+    total_loss_by_agent: dict[str, list[float]] = {}
+    for aid in agents:
+        vals = [float(m["agents"][aid].get("train_loss_epoch", np.nan)) for m in metrics_history]
+        total_loss_by_agent[aid] = vals
+
+    if total_loss_by_agent:
+        total_arr = np.asarray([total_loss_by_agent[aid] for aid in agents], dtype=np.float64)
+        mean_total = np.nanmean(total_arr, axis=0)
+        p50_total = np.nanpercentile(total_arr, 50, axis=0)
+        p90_total = np.nanpercentile(total_arr, 90, axis=0)
+        p99_total = np.nanpercentile(total_arr, 99, axis=0)
+
+        plt.figure(figsize=(18, 9))
+        for aid in agents:
+            plt.plot(xs, total_loss_by_agent[aid], alpha=0.18, linewidth=0.9, label="_nolegend_")
+        plt.plot(xs, mean_total, linewidth=2.2, color="black", label="mean")
+        plt.plot(xs, p50_total, linewidth=1.8, label="p50 across agents")
+        plt.plot(xs, p90_total, linewidth=1.5, label="p90 across agents")
+        plt.plot(xs, p99_total, linewidth=1.2, label="p99 across agents")
+        plt.title("Overall total train loss (epoch)")
+        plt.xlabel("epoch")
+        plt.ylabel("loss")
+        _apply_loss_y_grid(plt.gca())
+        plt.legend(fontsize=8)
+        plt.tight_layout()
+        plt.savefig(loss_total_dir / "overall_total_loss_epoch.png")
+        plt.close()
+    _print_plot_timing("overall total-loss plots", step_t0, plot_total_t0)
     _print_plot_timing("full plotting stage", plot_total_t0, plot_total_t0)
