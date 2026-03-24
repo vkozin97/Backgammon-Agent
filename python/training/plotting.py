@@ -189,6 +189,7 @@ def plot_metrics_history(
     out_dir: Path,
     winrate_window_size: int,
     value_window_size: int,
+    matchmaking_window_size: int,
     alpha_recency: float,
     alpha_uniform: float,
     recency_decay: float,
@@ -211,6 +212,7 @@ def plot_metrics_history(
     decision_dir = out_dir / "decision_temperature"
     replay_dir = out_dir / "replay"
     games_stats_dir = out_dir / "games_stats"
+    matchmaking_dir = out_dir / "matchmaking"
     step_t0 = time.perf_counter()
     winrates_windowed_dir.mkdir(parents=True, exist_ok=True)
     value_windowed_dir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +222,7 @@ def plot_metrics_history(
     decision_dir.mkdir(parents=True, exist_ok=True)
     replay_dir.mkdir(parents=True, exist_ok=True)
     games_stats_dir.mkdir(parents=True, exist_ok=True)
+    matchmaking_dir.mkdir(parents=True, exist_ok=True)
     _print_plot_timing("prepare output directories", step_t0, plot_total_t0)
 
     agents = sorted(metrics_history[-1]["agents"].keys())
@@ -471,6 +474,47 @@ def plot_metrics_history(
         _print_plot_timing(f"{aid}: value plots", agent_t0, plot_total_t0)
         agent_t0 = time.perf_counter()
 
+        latest_matchmaking_opponents = set(metrics_history[-1]["agents"][aid].get("matches_vs_opponents", {}).keys())
+        matchmaking_opponents = sorted(latest_matchmaking_opponents | {aid, "conservative_baseline"})
+        matchmaking_series_by_opp = {
+            opp: [float(m["agents"][aid].get("matches_vs_opponents", {}).get(opp, 0.0)) for m in metrics_history]
+            for opp in matchmaking_opponents
+        }
+        windowed_matchmaking_series = {
+            opp: _uniform_windowed(matchmaking_series_by_opp[opp], matchmaking_window_size)
+            for opp in matchmaking_opponents
+        }
+
+        for focus_opp in matchmaking_opponents:
+            plt.figure(figsize=(18, 9))
+            for opp in matchmaking_opponents:
+                lw = 2.4 if opp == focus_opp else 1.0
+                alpha = 1.0 if opp == focus_opp else 0.4
+                plt.plot(xs, windowed_matchmaking_series[opp], label=opp, linewidth=lw, alpha=alpha)
+            plt.title(f"{aid} matchmaking windowed (focus: {focus_opp}, w={max(int(matchmaking_window_size), 1)})")
+            plt.xlabel("epoch")
+            plt.ylabel("windowed matches per epoch")
+            _plot_sampling_probability_overlay(plt, xs, sampling_probs)
+            plt.legend(fontsize=6, ncol=2)
+            plt.tight_layout()
+            plt.savefig(matchmaking_dir / f"{aid}_matchmaking_windowed_focus_{focus_opp}.png")
+            plt.close()
+
+        _print_plot_timing(f"{aid}: matchmaking plots", agent_t0, plot_total_t0)
+        agent_t0 = time.perf_counter()
+
+        loss_steps: list[float] = []
+        loss_epoch_end_steps: list[int] = []
+        loss_cursor = 0
+        for m in metrics_history:
+            epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
+            if epoch_loss_steps:
+                sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
+                loss_steps.extend(sanitized_epoch_loss)
+            loss_cursor += len(epoch_loss_steps)
+            loss_epoch_end_steps.append(loss_cursor)
+
+        if loss_steps:
         loss_step_metric_keys = sorted({
             k
             for m in metrics_history

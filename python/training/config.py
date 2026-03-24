@@ -51,11 +51,12 @@ class TrainConfig:
     plot_every_k_epochs: int = 20
     winrate_window_size: int = 10
     value_window_size: int = 10
+    matchmaking_window_size: int = 20
 
 
 @dataclass
 class LeagueConfig:
-    matches_per_pair: int = 3
+    matches_per_agent: int = 20
     n_games_per_match: int = 4
     endless_mode: bool = True
     replay_storage_dir: str = "training_stats/replay"
@@ -78,6 +79,10 @@ class LeagueConfig:
     agents_double_decision_end_epoch: int = 300
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
+    calibrate_every_k_epochs: int = 1
+    calibrate_matches_per_pair: int = 1
+    calibrate_winrates_decay: float = 0.9
+    matchmaking_sigma: float = 0.2
 
 
 @dataclass
@@ -139,6 +144,10 @@ class ExperimentConfig:
             league_data["matches_per_pair"] = league_data.pop("games_per_pair")
         if "pages_per_pair" in league_data and "matches_per_pair" not in league_data:
             league_data["matches_per_pair"] = league_data.pop("pages_per_pair")
+        if "matches_per_pair" in league_data and "matches_per_agent" not in league_data:
+            legacy_matches_per_pair = int(league_data.pop("matches_per_pair"))
+            legacy_games_per_epoch = max(legacy_matches_per_pair, 1)
+            league_data["matches_per_agent"] = legacy_games_per_epoch
         if "baseline_conservative_double_copy_prob" in league_data and "conservative_baseline_double_copy_prob" not in league_data:
             league_data["conservative_baseline_double_copy_prob"] = league_data.pop("baseline_conservative_double_copy_prob")
         league_data.pop("recency_window", None)

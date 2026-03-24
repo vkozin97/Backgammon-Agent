@@ -1038,37 +1038,126 @@ class LeagueController:
 
         return results
 
-    def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
-        t0 = time.time()
-        self.reset_decision_stats()
+    def _configure_doubling_mode(self, trainable_agents: list[ValueAgent], enable_agent_decisions: bool) -> None:
         baseline_copy_prob = float(np.clip(getattr(self.cfg, "conservative_baseline_double_copy_prob", 0.0), 0.0, 1.0))
         if trainable_agents and self.rng.random() < baseline_copy_prob:
             self._baseline_eval_agent = trainable_agents[int(self.rng.integers(0, len(trainable_agents)))]
         else:
             self._baseline_eval_agent = None
 
+        if not enable_agent_decisions:
+            self._agents_double_decision_enabled_by_agent = {a.agent_id: False for a in trainable_agents}
+            return
+
         agents_double_decision_prob = float(np.clip(getattr(self.cfg, "agents_double_decision_prob", 0.0), 0.0, 1.0))
         self._agents_double_decision_enabled_by_agent = {
             a.agent_id: bool(self.rng.random() < agents_double_decision_prob)
             for a in trainable_agents
         }
-        opponents = [self.conservative_baseline]
+
+    def run_calibration_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
+        t0 = time.time()
+        self.reset_decision_stats()
+        self._configure_doubling_mode(trainable_agents, enable_agent_decisions=True)
+
+        all_agents: list[object] = list(trainable_agents) + [self.conservative_baseline]
         specs: list[_GameSpec] = []
-
-        matches_per_pair = max(1, int(getattr(self.cfg, "matches_per_pair", 1)))
-
-        for i, a in enumerate(trainable_agents):
-            for j in range(i, len(trainable_agents)):
-                b = trainable_agents[j]
+        matches_per_pair = max(1, int(getattr(self.cfg, "calibrate_matches_per_pair", 1)))
+        match_counter = 0
+        for i, a in enumerate(all_agents):
+            for j in range(i, len(all_agents)):
+                b = all_agents[j]
                 pair_token = f"{_compact_agent_token(a.agent_id)}_{_compact_agent_token(b.agent_id)}"
                 for match_number in range(matches_per_pair):
-                    specs.append(_GameSpec(match_id=f"e{epoch}_{pair_token}_m{match_number}", match_number=match_number, p1=a, p2=b))
-            for opp in opponents:
-                pair_token = f"{_compact_agent_token(a.agent_id)}_{_compact_agent_token(opp.agent_id)}"
-                for match_number in range(matches_per_pair):
-                    specs.append(_GameSpec(match_id=f"e{epoch}_{pair_token}_m{match_number}", match_number=match_number, p1=a, p2=opp))
+                    specs.append(
+                        _GameSpec(
+                            match_id=f"e{epoch}_cal_{pair_token}_m{match_number}",
+                            match_number=match_counter,
+                            p1=a,
+                            p2=b,
+                        )
+                    )
+                    match_counter += 1
 
         results = self._play_all_games_batched(specs, epoch)
         dt = max(time.time() - t0, 1e-6)
-        
         return results, len(results) / dt
+
+    def run_training_epoch(
+        self,
+        trainable_agents: list[ValueAgent],
+        epoch: int,
+        decayed_winrates: np.ndarray,
+        all_agent_ids: list[str],
+    ):
+        t0 = time.time()
+        self.reset_decision_stats()
+        self._configure_doubling_mode(trainable_agents, enable_agent_decisions=True)
+
+        all_agents: list[object] = list(trainable_agents) + [self.conservative_baseline]
+        n_agents = len(all_agents)
+        matches_per_agent = max(1, int(getattr(self.cfg, "matches_per_agent", 1)))
+        matches_left = np.full((n_agents,), matches_per_agent, dtype=np.int64)
+        sigma = max(float(getattr(self.cfg, "matchmaking_sigma", 0.2)), 1e-6)
+
+        pairs: list[tuple[int, int]] = []
+        dist_probs: list[float] = []
+        norm_const = 1.0 / (sigma * np.sqrt(2.0 * np.pi))
+        for i in range(n_agents):
+            for j in range(i, n_agents):
+                if all_agents[i].agent_id == self.conservative_baseline.agent_id and all_agents[j].agent_id == self.conservative_baseline.agent_id:
+                    continue
+                pairs.append((i, j))
+                diff = float(decayed_winrates[i] - decayed_winrates[j])
+                dist_probs.append(float(norm_const * np.exp(-0.5 * (diff / sigma) ** 2)))
+        dist_probs_arr = np.asarray(dist_probs, dtype=np.float64)
+
+        specs: list[_GameSpec] = []
+        pair_match_numbers: dict[tuple[int, int], int] = {}
+        match_counts = {aid: {opp: 0 for opp in all_agent_ids} for aid in all_agent_ids}
+
+        while int(np.sum(matches_left)) > 0:
+            matches_left_probs = np.asarray(
+                [max(0, min(int(matches_left[i]), int(matches_left[j]))) for i, j in pairs],
+                dtype=np.float64,
+            )
+            sampling_probs = matches_left_probs * dist_probs_arr
+            total = float(np.sum(sampling_probs))
+            if total <= 0.0:
+                break
+            sampling_probs = sampling_probs / total
+            chosen_idx = int(self.rng.choice(len(pairs), p=sampling_probs))
+            i, j = pairs[chosen_idx]
+            a = all_agents[i]
+            b = all_agents[j]
+
+            pair_key = (i, j)
+            match_number = pair_match_numbers.get(pair_key, 0)
+            pair_match_numbers[pair_key] = match_number + 1
+            pair_token = f"{_compact_agent_token(a.agent_id)}_{_compact_agent_token(b.agent_id)}"
+            specs.append(
+                _GameSpec(
+                    match_id=f"e{epoch}_train_{pair_token}_m{match_number}",
+                    match_number=match_number,
+                    p1=a,
+                    p2=b,
+                )
+            )
+
+            matches_left[i] = max(int(matches_left[i]) - 1, 0)
+            if j != i:
+                matches_left[j] = max(int(matches_left[j]) - 1, 0)
+
+            aid = all_agent_ids[i]
+            bid = all_agent_ids[j]
+            match_counts[aid][bid] += 1
+            if i != j:
+                match_counts[bid][aid] += 1
+
+        results = self._play_all_games_batched(specs, epoch)
+        dt = max(time.time() - t0, 1e-6)
+        return results, len(results) / dt, match_counts
+
+    # Backward-compatible API used in tests and legacy callers.
+    def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
+        return self.run_calibration_epoch(trainable_agents=trainable_agents, epoch=epoch)
