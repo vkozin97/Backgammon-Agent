@@ -78,7 +78,12 @@ def _epoch_uses_output_freeze(epoch: int, freeze_from_epoch: int, freeze_till_ep
     return start <= int(epoch) <= end
 
 
-def _training_phase_for_epoch(cfg: ExperimentConfig, epoch: int, calculate_learning_params: bool) -> tuple[float, float, int, bool]:
+def _training_phase_for_epoch(
+    cfg: ExperimentConfig,
+    epoch: int,
+    calculate_learning_params: bool,
+    schedule_origin_epoch: int | None = None,
+) -> tuple[float, float, int, bool]:
     freeze_active = _epoch_uses_output_freeze(
         epoch,
         int(getattr(cfg.train, "freeze_weights_from_epoch", 0)),
@@ -93,20 +98,47 @@ def _training_phase_for_epoch(cfg: ExperimentConfig, epoch: int, calculate_learn
         lr_decay_factor = float(cfg.train.lr_decay_factor)
         schedule_start_epoch = 0
 
-    if calculate_learning_params:
-        learning_rate = _learning_rate_for_epoch(
-            base_learning_rate=base_learning_rate,
-            min_learning_rate=float(cfg.train.min_learning_rate),
-            lr_decay_factor=lr_decay_factor,
-            lr_decay_every_steps=int(cfg.train.lr_decay_every_steps),
-            updates_per_epoch_per_agent=int(cfg.train.updates_per_epoch_per_agent),
-            epoch=int(epoch),
-            start_epoch=schedule_start_epoch,
-        )
-    else:
-        learning_rate = base_learning_rate
+    effective_schedule_start = (
+        schedule_start_epoch
+        if schedule_origin_epoch is None else
+        max(int(schedule_start_epoch), int(schedule_origin_epoch))
+    )
 
-    return learning_rate, lr_decay_factor, schedule_start_epoch, freeze_active
+    learning_rate = _learning_rate_for_epoch(
+        base_learning_rate=base_learning_rate,
+        min_learning_rate=float(cfg.train.min_learning_rate),
+        lr_decay_factor=lr_decay_factor,
+        lr_decay_every_steps=int(cfg.train.lr_decay_every_steps),
+        updates_per_epoch_per_agent=int(cfg.train.updates_per_epoch_per_agent),
+        epoch=int(epoch),
+        start_epoch=effective_schedule_start,
+    )
+
+    return learning_rate, lr_decay_factor, effective_schedule_start, freeze_active
+
+
+def _temperature_for_epoch(
+    base_temperature: float,
+    temperature_decay: float,
+    epoch: int,
+    start_epoch: int = 0,
+) -> float:
+    relative_epoch = max(int(epoch) - int(start_epoch), 0)
+    return float(base_temperature) * (float(temperature_decay) ** int(relative_epoch))
+
+
+def _choose_best_probability_for_epoch(
+    base_probability: float,
+    choose_best_decay: float,
+    epoch: int,
+    start_epoch: int = 0,
+) -> float:
+    relative_epoch = max(int(epoch) - int(start_epoch), 0)
+    return 1.0 - (1.0 - float(base_probability)) * (float(choose_best_decay) ** int(relative_epoch))
+
+
+def _schedule_origin_epoch(start_epoch: int, calculate_learning_params: bool) -> int:
+    return 0 if calculate_learning_params else max(int(start_epoch), 0)
 
 
 def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
@@ -337,22 +369,29 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
     base_agents_double_decision_prob = float(cfg.league.agents_double_decision_prob)
 
     completed_updates_before_start = max(int(start_epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0)
-    if calculate_learning_params:
-        current_temperature = float(cfg.league.selfplay_temperature) * (float(cfg.league.temperature_decay) ** max(start_epoch, 0))
-        current_choose_best_probability = 1.0 - (1.0 - float(cfg.league.choose_best_probability)) * (float(cfg.league.choose_best_decay) ** max(start_epoch, 0))
-    else:
-        current_temperature = float(cfg.league.selfplay_temperature)
-        current_choose_best_probability = float(cfg.league.choose_best_probability)
+    dynamic_origin_epoch = _schedule_origin_epoch(start_epoch, calculate_learning_params)
+    current_temperature = _temperature_for_epoch(
+        float(cfg.league.selfplay_temperature),
+        float(cfg.league.temperature_decay),
+        int(start_epoch),
+        start_epoch=dynamic_origin_epoch,
+    )
+    current_choose_best_probability = _choose_best_probability_for_epoch(
+        float(cfg.league.choose_best_probability),
+        float(cfg.league.choose_best_decay),
+        int(start_epoch),
+        start_epoch=dynamic_origin_epoch,
+    )
 
     current_learning_rate, current_lr_decay_factor, _current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
         cfg,
         int(start_epoch),
         calculate_learning_params=calculate_learning_params,
+        schedule_origin_epoch=None if calculate_learning_params else int(start_epoch),
     )
 
     for agent in agents:
-        if calculate_learning_params:
-            agent.train_step = int(completed_updates_before_start)
+        agent.train_step = int(completed_updates_before_start)
         agent.configure_training_phase(
             learning_rate=current_learning_rate,
             lr_decay_factor=current_lr_decay_factor,
@@ -365,6 +404,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             cfg,
             int(epoch),
             calculate_learning_params=calculate_learning_params,
+            schedule_origin_epoch=None if calculate_learning_params else dynamic_origin_epoch,
         )
         for agent in agents:
             agent.configure_training_phase(
@@ -607,8 +647,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         if epoch % cfg.league.checkpoint_frequency_epochs == 0:
             save_checkpoint(cfg, agents, replay, epoch, metrics)
 
-        if calculate_learning_params:
-            current_temperature *= float(cfg.league.temperature_decay)
-            current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
+        current_temperature *= float(cfg.league.temperature_decay)
+        current_choose_best_probability = 1.0 - (1.0 - current_choose_best_probability) * float(cfg.league.choose_best_decay)
 
     return metrics_history

@@ -429,8 +429,10 @@ class LeagueController:
         enabled_obs = np.asarray(base_obs[enabled_idx], dtype=np.float32)
         enabled_evaluators = [evaluators[int(i)] for i in enabled_idx]
         probs_now = self._predict_probs_single_cuda_call(enabled_evaluators, enabled_obs)
-        obs_double_batch = np.stack([set_obs_double_state(x) for x in enabled_obs]).astype(np.float32)
-        probs_double = self._predict_probs_single_cuda_call(enabled_evaluators, obs_double_batch)
+        probs_double = self._predict_probs_single_cuda_call(
+            enabled_evaluators,
+            np.stack([set_obs_double_state(x) for x in enabled_obs]).astype(np.float32),
+        )
         for local_i, i in enumerate(enabled_idx):
             owner = int(i)
             apply_doubles[owner] = decide_apply_double_from_probs(

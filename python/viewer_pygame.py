@@ -7,7 +7,15 @@ import numpy as np
 import pygame
 
 import bg_env  # pybind11 module
-from training.agents import build_trainable_agents, get_double_hint_metrics
+from training.agents import (
+    build_trainable_agents,
+    extract_obs_controls,
+    flip_observation_perspective,
+    get_double_hint_metrics,
+    reward_expectation,
+    set_obs_double_state,
+    set_obs_opponent_double_offer,
+)
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
 from training.observation import state_to_observation
@@ -109,11 +117,11 @@ REWARD_VECTOR_DIM = 6
 REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 
 # Viewer hyperparameters
-agent_mode = "none"  # "none" | "hint" | "play" | "replay"
-viewer_n_games = 5  # number of games in endless mode or points to win the match in regular mode
-viewer_endless_mode = False
-agent_id = "trainable_2"
-agent_epoch = 248
+agent_mode = "hint"  # "none" | "hint" | "play" | "replay"
+viewer_n_games = 100  # number of games in endless mode or points to win the match in regular mode
+viewer_endless_mode = True
+agent_id = "trainable_1"
+agent_epoch = 332
 agent_checkpoint_dir = "training_stats/checkpoints"
 replay_storage_dir = "training_stats/replay"
 replay_match_id = None
@@ -127,6 +135,30 @@ def _require_full_state69(state: np.ndarray) -> np.ndarray:
     if a.size != RAW_STATE_FULL_DIM:
         raise ValueError(f"Expected full state length {RAW_STATE_FULL_DIM}, got {a.size}")
     return a
+
+
+def _cube_owner_debug_label(raw_state: np.ndarray, perspective_white: bool) -> str:
+    raw = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    if raw.size <= 63:
+        return "unknown"
+    owner = int(raw[63])
+    if owner < 0:
+        return "center"
+    owner_is_white = owner == 0
+    global_label = "white" if owner_is_white else "black"
+    relative_label = "me" if owner_is_white == bool(perspective_white) else "opp"
+    return f"{global_label} ({relative_label})"
+
+
+def _raw_cube_available_to_player(raw_state: np.ndarray, player_is_white: bool) -> bool:
+    raw = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    if raw.size <= 63:
+        return False
+    owner = int(raw[63])
+    if owner < 0:
+        return True
+    owner_is_white = owner == 0
+    return bool(owner_is_white == bool(player_is_white))
 
 
 def load_replay_steps(storage_dir: str, match_id: str, game_number_in_match: int) -> list[dict]:
@@ -272,19 +304,196 @@ def _format_vec_percent(values: np.ndarray) -> str:
     return "[" + ", ".join(f"{(float(v) * 100.0):.1f}" for v in arr.tolist()) + "]"
 
 
-def _agent_hint_lines(agent, raw_state: np.ndarray, raw_after_selected_move: np.ndarray, dice_values: list[int]) -> list[str]:
+def _canonical_panel_reward_vec(agent, raw_state: np.ndarray) -> np.ndarray:
+    if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
+        return np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
+    obs = state_to_observation(np.asarray(raw_state, dtype=np.float32)).reshape(1, -1)
+    pred = np.asarray(agent.predict_proba(obs), dtype=np.float32).reshape(-1)
+    reward_head = pred[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM]
+    return _swap_reward_vector_perspective(reward_head)
+
+
+def _raw_state_to_player_observation(raw_state: np.ndarray, player_is_white: bool) -> np.ndarray:
+    raw = np.asarray(raw_state, dtype=np.float32).reshape(-1)
+    obs = state_to_observation(raw)
+    current_player_is_white = bool(int(raw[57])) if raw.size > 57 else True
+    if bool(player_is_white) == current_player_is_white:
+        return obs
+    return flip_observation_perspective(obs)
+
+
+def _simulate_committed_turn_state(base_state: np.ndarray, move: Optional[np.ndarray] = None, use_current_state: bool = False) -> np.ndarray:
+    sim = bg_env.Env(0)
+    sim.set_state_full(_require_full_state69(np.asarray(base_state, dtype=np.int16)))
+    mv = np.full((8,), 255, dtype=np.uint8) if use_current_state or move is None else np.asarray(move, dtype=np.uint8)
+    try:
+        sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
+    except TypeError:
+        sim.step_move(np.asarray(mv, dtype=np.uint8))
+    if hasattr(sim, "get_state_full"):
+        return np.asarray(sim.get_state_full(), dtype=np.int16)
+    return np.asarray(sim.get_state_raw(), dtype=np.int16)
+
+
+def _agent_hint_lines(
+    agent,
+    raw_state: np.ndarray,
+    raw_after_selected_move: np.ndarray,
+    dice_values: list[int],
+    selected_move_vec: Optional[np.ndarray] = None,
+) -> list[str]:
     if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
         return []
 
     endless = int(np.asarray(raw_state, dtype=np.int16).reshape(-1)[56]) < 0 if np.asarray(raw_state).size > 56 else False
-    obs_now = state_to_observation(np.asarray(raw_state, dtype=np.float32))
-    obs_after = state_to_observation(np.asarray(raw_after_selected_move, dtype=np.float32))
-    m = get_double_hint_metrics(agent, obs_now, obs_after, endless=endless)
+    raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
+    now_white = bool(raw_now[57]) if raw_now.size > 57 else True
+    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
+    obs_now = _raw_state_to_player_observation(raw_now, now_white)
+    obs_after = _raw_state_to_player_observation(raw_post, post_white)
+    obs_post_current_player = _raw_state_to_player_observation(raw_post, now_white)
+    canonical_post_vec = (
+        np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
+        if selected_move_vec is not None else
+        _canonical_panel_reward_vec(agent, raw_post)
+    )
+    m = get_double_hint_metrics(
+        agent,
+        obs_now,
+        obs_after,
+        endless=endless,
+        canonical_post_reward_vec=canonical_post_vec,
+    )
+    exp_reject = float(m.exp_reject)
+    exp_accept = float(m.exp_accept)
+    accept_double = int(m.accept_double)
+    apply_double = int(m.apply_double)
+    if endless:
+        _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
+        exp_reject = -1.0
+        exp_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
+        accept_double = int(opp_double_avail > 0 and exp_accept >= exp_reject)
+        if not dice_values and _raw_cube_available_to_player(raw_now, now_white):
+            apply_double = int(float(m.exp_double) > float(m.exp_no_double))
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
-    line2 = f"postR6={_format_vec_percent(m.reward_vec_after_move)} | EV(rej)={m.exp_reject:.3f} | EV(acc)={m.exp_accept:.3f}"
-    line3 = f"Удв: {'Да' if m.apply_double else 'Нет'}. Прин: {'Да' if m.accept_double else 'Нет'}"
+    line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={exp_reject:.3f} | EV(acc)={exp_accept:.3f}"
+    line3 = f"Удв: {'Да' if apply_double else 'Нет'}. Прин: {'Да' if accept_double else 'Нет'}"
     return [line0, line1, line2, line3]
+
+
+def _debug_print_hint_context(
+    agent,
+    raw_state: np.ndarray,
+    raw_after_selected_move: np.ndarray,
+    dice_values: list[int],
+    selected_move: Optional[np.ndarray] = None,
+    selected_move_vec: Optional[np.ndarray] = None,
+):
+    if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
+        return
+
+    raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
+    raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
+    endless = int(raw_now[56]) < 0 if raw_now.size > 56 else False
+    now_white = bool(raw_now[57]) if raw_now.size > 57 else True
+    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
+
+    obs_now = _raw_state_to_player_observation(raw_now, now_white)
+    obs_post_turn = _raw_state_to_player_observation(raw_post, post_white)
+    obs_post_current = flip_observation_perspective(obs_post_turn)
+
+    probs_now = np.asarray(agent.predict_proba(obs_now.reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_double_now = np.asarray(agent.predict_proba(set_obs_double_state(obs_now).reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_post_turn = np.asarray(agent.predict_proba(obs_post_turn.reshape(1, -1)), dtype=np.float32).reshape(-1)
+    probs_post_offer = np.asarray(
+        agent.predict_proba(set_obs_opponent_double_offer(obs_post_current).reshape(1, -1)),
+        dtype=np.float32,
+    ).reshape(-1)
+
+    reward_now = probs_now[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
+    reward_post_turn = probs_post_turn[MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + REWARD_VECTOR_DIM].copy()
+    reward_post_mover = reward_post_turn[::-1].copy()
+    canonical_post_vec = (
+        np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
+        if selected_move_vec is not None else
+        reward_post_mover.copy()
+    )
+    m = get_double_hint_metrics(
+        agent,
+        obs_now,
+        obs_post_turn,
+        endless=endless,
+        canonical_post_reward_vec=canonical_post_vec,
+    )
+    final_post_accept = float(m.exp_accept)
+    final_post_accept_flag = int(m.accept_double)
+    final_apply_double_flag = int(m.apply_double)
+    if endless:
+        _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current)
+        final_post_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
+        final_post_accept_flag = int(opp_double_avail > 0 and final_post_accept >= -1.0)
+        if not dice_values and _raw_cube_available_to_player(raw_now, now_white):
+            final_apply_double_flag = int(float(m.exp_double) > float(m.exp_no_double))
+
+    print("\n=== HINT DEBUG START ===")
+    print(f"dice={dice_values} selected_move={move_to_str(selected_move, turn_white=now_white) if selected_move is not None else '(none)'}")
+    print(f"now_white={int(now_white)} post_white={int(post_white)} endless={int(endless)}")
+    if raw_now.size > 68:
+        print(
+            "raw_now.controls",
+            {
+                "turn_white": int(raw_now[57]),
+                "cube_owner_raw63": int(raw_now[63]),
+                "cube_avail_66": int(raw_now[66]),
+                "cube_avail_67": int(raw_now[67]),
+                "double_offered_68": int(raw_now[68]),
+            },
+        )
+    if raw_post.size > 68:
+        print(
+            "raw_post.controls",
+            {
+                "turn_white": int(raw_post[57]),
+                "cube_owner_raw63": int(raw_post[63]),
+                "cube_avail_66": int(raw_post[66]),
+                "cube_avail_67": int(raw_post[67]),
+                "double_offered_68": int(raw_post[68]),
+            },
+        )
+    print(
+        "cube.owner",
+        {
+            "raw_now": _cube_owner_debug_label(raw_now, now_white),
+            "raw_post_turn": _cube_owner_debug_label(raw_post, post_white),
+            "raw_post_current": _cube_owner_debug_label(raw_post, now_white),
+        },
+    )
+    print("obs_now.controls", extract_obs_controls(obs_now))
+    print("obs_post_turn.controls", extract_obs_controls(obs_post_turn))
+    print("obs_post_current.controls", extract_obs_controls(obs_post_current))
+    print("reward_now.raw", reward_now.tolist(), "EV=", float(reward_expectation(probs_now)))
+    print("reward_post_turn.raw", reward_post_turn.tolist(), "EV=", float(reward_expectation(probs_post_turn)))
+    print("reward_post_mover.swapped", reward_post_mover.tolist(), "EV=", float(np.dot(REWARD_VALUES, reward_post_mover)))
+    if selected_move_vec is not None:
+        print("selected_move_vec.panel", np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).tolist(), "EV=", float(np.dot(REWARD_VALUES, np.asarray(selected_move_vec, dtype=np.float32).reshape(-1))))
+    print("now.double", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(m.apply_double)})
+    print("now.double.panel", {"exp_noD": float(m.exp_no_double), "exp_D": float(m.exp_double), "p_acc": float(m.p_accept), "apply": int(final_apply_double_flag)})
+    print("post.double", {"exp_rej": float(m.exp_reject), "exp_acc": float(m.exp_accept), "accept": int(m.accept_double)})
+    print("post.double.panel", {"exp_rej": -1.0 if endless else float(m.exp_reject), "exp_acc": float(final_post_accept), "accept": int(final_post_accept_flag)})
+    hint_lines = _agent_hint_lines(
+        agent,
+        raw_state,
+        raw_after_selected_move,
+        dice_values,
+        selected_move_vec=selected_move_vec,
+    )
+    if hint_lines:
+        print("hint.lines")
+        for line in hint_lines:
+            print("  ", line)
+    print("=== HINT DEBUG END ===")
 
 
 def draw_text(surf, font, text, x, y, color=TEXT):
@@ -1271,16 +1480,31 @@ def main():
             elif hint_pending:
                 raw_after_selected = np.asarray(raw, dtype=np.int16)
                 if can_submit and len(history) > 0:
-                    raw_after_selected = np.asarray(raw, dtype=np.int16)
+                    raw_after_selected = _simulate_committed_turn_state(np.asarray(raw, dtype=np.int16), use_current_state=True)
                 elif len(move_hints) > 0:
-                    sim_hint = bg_env.Env(0)
-                    sim_hint.set_state_raw(np.asarray(turn_start_state, dtype=np.int16))
-                    try:
-                        sim_hint.step_move(np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8), 0, 1)
-                    except TypeError:
-                        sim_hint.step_move(np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8))
-                    raw_after_selected = np.asarray(sim_hint.get_state_raw(), dtype=np.int16)
-                hint_lines_cache = _agent_hint_lines(agent, raw, raw_after_selected, dice_values)
+                    raw_after_selected = _simulate_committed_turn_state(
+                        np.asarray(turn_start_state, dtype=np.int16),
+                        move=np.asarray(move_hints[selected_hint_idx][1], dtype=np.uint8),
+                    )
+                elif dice_values:
+                    raw_after_selected = _simulate_committed_turn_state(np.asarray(turn_start_state, dtype=np.int16))
+                selected_move = move_hints[selected_hint_idx][1] if len(move_hints) > 0 else None
+                selected_move_vec = move_hints[selected_hint_idx][3] if len(move_hints) > 0 else None
+                _debug_print_hint_context(
+                    agent,
+                    raw,
+                    raw_after_selected,
+                    dice_values,
+                    selected_move=selected_move,
+                    selected_move_vec=selected_move_vec,
+                )
+                hint_lines_cache = _agent_hint_lines(
+                    agent,
+                    raw,
+                    raw_after_selected,
+                    dice_values,
+                    selected_move_vec=selected_move_vec,
+                )
                 hint_pending = False
                 hint_pending_started = False
                 hint_lines = hint_lines_cache
@@ -1390,7 +1614,7 @@ def main():
                     offerer_is_white = bool(cube_offer_from_white)
                     dave_before_reject = int(dave_value_ui)
                     _dave_after, _accepted, done_code = env.resolve_pending_double(0)
-                    if endless_mode and agent_mode == "none" and int(done_code) in (1, 2):
+                    if endless_mode and agent_mode != "replay" and int(done_code) in (1, 2):
                         on_endless_game_finished(offerer_is_white, dave_before_reject)
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None

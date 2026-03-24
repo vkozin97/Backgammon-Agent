@@ -18,8 +18,10 @@ from training.agents import (
     MATCH_VECTOR_DIM,
     ValueAgent,
     build_trainable_agents,
+    decide_apply_double_from_probs,
     decide_accept_double_from_probs,
     flip_observation_perspective,
+    get_double_hint_metrics,
     reject_double_equity,
 )
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
@@ -406,14 +408,72 @@ def test_run_training_deletes_stale_checkpoints_from_start_epoch(tmp_path: Path)
     assert not (ckpt_root / "epoch_0003").exists()
 
 
-def test_run_training_uses_config_params_when_calculation_disabled(tmp_path: Path):
+def test_run_training_uses_config_params_as_current_epoch_values_when_calculation_disabled(tmp_path: Path, monkeypatch):
+    import training.pipeline as pipeline_mod
+
+    class FakeAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+            self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
+            self.train_step = 0
+
+        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+            self.optimizer.param_groups[0]["lr"] = float(learning_rate)
+            return float(learning_rate)
+
+        def state_dict(self) -> dict:
+            return {"agent_id": self.agent_id, "group": "A", "model": {}}
+
+    class FakeLeague:
+        def __init__(self, *_args, **_kwargs):
+            self._decision_stats = {"decision_count": 0, "topk_freq": [0.0] * 10}
+            self._temperature = None
+            self._choose_best = None
+
+        def set_decision_temperature(self, value: float) -> None:
+            self._temperature = float(value)
+
+        def set_choose_best_probability(self, value: float) -> None:
+            self._choose_best = float(value)
+
+        def run_epoch(self, _agents, _epoch: int):
+            return [], 0.0
+
+        def get_decision_stats(self) -> dict:
+            return self._decision_stats
+
+    class FakeReplay:
+        def __init__(self, *_args, **_kwargs):
+            self.size = 0
+
+        def __len__(self) -> int:
+            return self.size
+
+        def add_many(self, _records) -> None:
+            return None
+
+        def get_meta(self) -> dict:
+            return {"size": self.size}
+
+        def delete_from_epoch(self, _start_epoch: int) -> None:
+            return None
+
+    fake_agents = [FakeAgent("trainable_0"), FakeAgent("trainable_1")]
+    monkeypatch.setattr(pipeline_mod, "build_trainable_agents", lambda cfg, seed: fake_agents)
+    monkeypatch.setattr(pipeline_mod, "LeagueController", FakeLeague)
+    monkeypatch.setattr(pipeline_mod, "ReplayBuffer", FakeReplay)
+    monkeypatch.setattr(pipeline_mod, "load_metrics_history_from_checkpoints", lambda *_args, **_kwargs: [{"epoch": 0}, {"epoch": 1}])
+    monkeypatch.setattr(pipeline_mod, "plot_metrics_history", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "load_checkpoint", lambda *_args, **_kwargs: None)
+
     cfg = ExperimentConfig()
-    cfg.train.num_epochs = 3
+    cfg.train.num_epochs = 4
     cfg.train.updates_per_epoch_per_agent = 1
     cfg.train.batch_size = 4
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 1000
+    cfg.train.lr_decay_every_steps = 1
     cfg.league.matches_per_pair = 1
     cfg.league.min_replay_size_to_train = 1
     cfg.league.selfplay_temperature = 0.7
@@ -426,19 +486,121 @@ def test_run_training_uses_config_params_when_calculation_disabled(tmp_path: Pat
     cfg.plots_dir = str(tmp_path / "plots")
     cfg.league.replay_storage_dir = str(tmp_path / "replay")
 
-    run_training(cfg, start_epoch=0)
     metrics = run_training(cfg, start_epoch=2, calculate_learning_params=False)
 
-    assert len(metrics) == 3
-    resumed = metrics[-1]
+    assert len(metrics) == 4
+    resumed_epoch_2 = metrics[-2]
+    resumed_epoch_3 = metrics[-1]
+    assert resumed_epoch_2["epoch"] == 2
+    assert resumed_epoch_3["epoch"] == 3
+    assert np.isclose(resumed_epoch_2["decision_temperature"], cfg.league.selfplay_temperature)
+    assert np.isclose(
+        resumed_epoch_3["decision_temperature"],
+        cfg.league.selfplay_temperature * cfg.league.temperature_decay,
+    )
+    assert np.isclose(resumed_epoch_2["choose_best_probability"], cfg.league.choose_best_probability)
+    assert np.isclose(
+        resumed_epoch_3["choose_best_probability"],
+        1.0 - (1.0 - cfg.league.choose_best_probability) * cfg.league.choose_best_decay,
+    )
+    for aid in [ag.agent_id for ag in fake_agents]:
+        stats = resumed_epoch_2["agents"][aid]
+        assert np.isclose(stats["learning_rate"], cfg.train.learning_rate)
+    for aid in [ag.agent_id for ag in fake_agents]:
+        stats = resumed_epoch_3["agents"][aid]
+        assert np.isclose(stats["learning_rate"], cfg.train.learning_rate * cfg.train.lr_decay_factor)
+
+
+def test_run_training_recomputes_decay_from_epoch_zero_when_calculation_enabled(tmp_path: Path, monkeypatch):
+    import training.pipeline as pipeline_mod
+
+    class FakeAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+            self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
+            self.train_step = 0
+
+        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+            self.optimizer.param_groups[0]["lr"] = float(learning_rate)
+            return float(learning_rate)
+
+        def state_dict(self) -> dict:
+            return {"agent_id": self.agent_id, "group": "A", "model": {}}
+
+    class FakeLeague:
+        def __init__(self, *_args, **_kwargs):
+            self._decision_stats = {"decision_count": 0, "topk_freq": [0.0] * 10}
+
+        def set_decision_temperature(self, _value: float) -> None:
+            return None
+
+        def set_choose_best_probability(self, _value: float) -> None:
+            return None
+
+        def run_epoch(self, _agents, _epoch: int):
+            return [], 0.0
+
+        def get_decision_stats(self) -> dict:
+            return self._decision_stats
+
+    class FakeReplay:
+        def __init__(self, *_args, **_kwargs):
+            self.size = 0
+
+        def __len__(self) -> int:
+            return self.size
+
+        def add_many(self, _records) -> None:
+            return None
+
+        def get_meta(self) -> dict:
+            return {"size": self.size}
+
+        def delete_from_epoch(self, _start_epoch: int) -> None:
+            return None
+
+    fake_agents = [FakeAgent("trainable_0"), FakeAgent("trainable_1")]
+    monkeypatch.setattr(pipeline_mod, "build_trainable_agents", lambda cfg, seed: fake_agents)
+    monkeypatch.setattr(pipeline_mod, "LeagueController", FakeLeague)
+    monkeypatch.setattr(pipeline_mod, "ReplayBuffer", FakeReplay)
+    monkeypatch.setattr(pipeline_mod, "load_metrics_history_from_checkpoints", lambda *_args, **_kwargs: [{"epoch": 0}, {"epoch": 1}])
+    monkeypatch.setattr(pipeline_mod, "plot_metrics_history", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "load_checkpoint", lambda *_args, **_kwargs: None)
+
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 4
+    cfg.train.updates_per_epoch_per_agent = 1
+    cfg.train.batch_size = 4
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 1
+    cfg.league.matches_per_pair = 1
+    cfg.league.min_replay_size_to_train = 1
+    cfg.league.selfplay_temperature = 0.7
+    cfg.league.temperature_decay = 0.1
+    cfg.league.choose_best_probability = 0.2
+    cfg.league.choose_best_decay = 0.3
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    metrics = run_training(cfg, start_epoch=2, calculate_learning_params=True)
+
+    assert len(metrics) == 4
+    resumed = metrics[-2]
     assert resumed["epoch"] == 2
-    assert np.isclose(resumed["decision_temperature"], cfg.league.selfplay_temperature)
-    assert np.isclose(resumed["choose_best_probability"], cfg.league.choose_best_probability)
-    assert np.isclose(resumed["conservative_baseline_double_copy_prob"], cfg.league.conservative_baseline_double_copy_prob)
-    assert np.isclose(resumed["agents_double_decision_prob"], cfg.league.agents_double_decision_prob)
-    for aid, stats in resumed["agents"].items():
-        assert stats["learning_rate_steps_epoch"]
-        assert np.isclose(stats["learning_rate_steps_epoch"][0], cfg.train.learning_rate)
+    assert np.isclose(
+        resumed["decision_temperature"],
+        cfg.league.selfplay_temperature * (cfg.league.temperature_decay ** 2),
+    )
+    assert np.isclose(
+        resumed["choose_best_probability"],
+        1.0 - (1.0 - cfg.league.choose_best_probability) * (cfg.league.choose_best_decay ** 2),
+    )
+    for aid in [ag.agent_id for ag in fake_agents]:
+        stats = resumed["agents"][aid]
+        assert np.isclose(stats["learning_rate"], cfg.train.learning_rate * (cfg.train.lr_decay_factor ** 2))
 
 
 def test_run_training_can_resume_from_epoch(tmp_path: Path):
@@ -465,6 +627,38 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     assert metrics[0]["epoch"] == 0
     assert metrics[1]["epoch"] == 1
     assert (Path(cfg.checkpoint_dir) / "epoch_0001" / "agents.json").exists()
+
+
+def test_replay_delete_from_epoch_vacuums_database(tmp_path: Path):
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(tmp_path / "replay"))
+    big_state = np.ones((2048,), dtype=np.float32)
+    big_outcome = np.ones((31,), dtype=np.float32)
+    for epoch in range(6):
+        for step in range(8):
+            replay.add(
+                state_vector=big_state,
+                agent_id="trainable_0",
+                opponent_id="opp",
+                game_id=f"g_{epoch}_{step}",
+                step_index=step,
+                epoch=epoch,
+                terminal_outcome=big_outcome,
+            )
+    replay._flush_if_needed()
+    replay._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    size_before = replay.db_path.stat().st_size
+
+    replay.delete_from_epoch(3)
+
+    size_after = replay.db_path.stat().st_size
+    remaining_epochs = [int(v) for v in replay._epochs]
+    freelist_count = int(replay._conn.execute("PRAGMA freelist_count").fetchone()[0])
+    assert remaining_epochs
+    assert max(remaining_epochs) < 3
+    assert freelist_count == 0
+    assert size_after < size_before
 
 
 def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path):
@@ -632,6 +826,126 @@ def test_decide_accept_double_from_probs_endless_sign():
     obs = np.zeros((263,), dtype=np.float32)
     obs[-3] = 1.0
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
+
+
+def test_decide_accept_double_from_probs_endless_requires_opponent_cube_availability():
+    probs = np.zeros((31,), dtype=np.float32)
+    probs[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-4] = 1.0
+    obs[-3] = 0.0
+    obs[-1] = 1.0
+
+    assert decide_accept_double_from_probs(probs, obs, endless=True) == 0
+
+
+def test_get_double_hint_metrics_uses_current_state_accept_head_for_p_accept_and_ev_double():
+    class _FakeAgent:
+        def predict_proba(self, obs_batch):
+            obs = np.asarray(obs_batch, dtype=np.float32)
+            n = int(obs.shape[0])
+            out = np.zeros((n, 31), dtype=np.float32)
+            out[:, MATCH_VECTOR_DIM * 2] = 0.1
+            out[obs[:, -1] < 0.5, MATCH_VECTOR_DIM * 2] = 0.9
+            out[:, MATCH_VECTOR_DIM * 2 + 1 + 3] = 1.0  # certain +1 reward expectation
+            return out
+
+    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now[-4] = 1.0
+    obs_now[-3] = 1.0
+    obs_post_turn = np.zeros((263,), dtype=np.float32)
+
+    metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
+
+    assert np.isclose(metrics.p_accept, 0.9)
+    assert np.isclose(metrics.exp_double, 0.9 * 2.0 * 1.0 + 0.1 * 1.0)
+
+
+def test_decide_apply_double_from_probs_uses_current_state_accept_head():
+    probs_now = np.zeros((31,), dtype=np.float32)
+    probs_after_double = np.zeros((31,), dtype=np.float32)
+
+    probs_now[MATCH_VECTOR_DIM * 2] = 0.9
+    probs_now[MATCH_VECTOR_DIM * 2 + 1 + 2] = 1.0  # certain -1
+    probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2 if accepted
+
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-4] = 1.0
+
+    assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
+
+
+def test_decide_apply_double_from_probs_endless_requires_cube_availability():
+    probs_now = np.zeros((31,), dtype=np.float32)
+    probs_after_double = np.zeros((31,), dtype=np.float32)
+    probs_now[MATCH_VECTOR_DIM * 2] = 0.9
+    probs_now[MATCH_VECTOR_DIM * 2 + 1 + 2] = 1.0  # certain -1
+    probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
+
+    obs = np.zeros((263,), dtype=np.float32)
+    obs[-4] = 0.0
+    assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 0
+
+    obs[-4] = 1.0
+    assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
+
+
+def test_get_double_hint_metrics_endless_uses_canonical_post_reward_vector_for_accept_equity():
+    class _FakeAgent:
+        def predict_proba(self, obs_batch):
+            n = int(np.asarray(obs_batch).shape[0])
+            out = np.zeros((n, 31), dtype=np.float32)
+            out[:, MATCH_VECTOR_DIM * 2] = 1.0
+            out[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + 6] = np.asarray(
+                [0.01, 0.02, 0.30, 0.40, 0.20, 0.07],
+                dtype=np.float32,
+            )
+            return out
+
+    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now[-4] = 1.0
+    obs_now[-3] = 1.0
+
+    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn[-4] = 1.0
+    obs_post_turn[-3] = 1.0
+
+    canonical_post_reward_vec = np.asarray([0.01, 0.02, 0.07, 0.20, 0.30, 0.40], dtype=np.float32)
+    metrics = get_double_hint_metrics(
+        _FakeAgent(),
+        obs_now,
+        obs_post_turn,
+        endless=True,
+        canonical_post_reward_vec=canonical_post_reward_vec,
+    )
+
+    reward_values = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
+    assert np.isclose(metrics.exp_accept, 2.0 * float(np.dot(reward_values, canonical_post_reward_vec)))
+    assert metrics.accept_double == 1
+
+
+def test_get_double_hint_metrics_swaps_post_reward_vector_to_mover_perspective():
+    class _FakeAgent:
+        def predict_proba(self, obs_batch):
+            n = int(np.asarray(obs_batch).shape[0])
+            out = np.zeros((n, 31), dtype=np.float32)
+            out[:, MATCH_VECTOR_DIM * 2] = 1.0
+            out[:, MATCH_VECTOR_DIM * 2 + 1: MATCH_VECTOR_DIM * 2 + 1 + 6] = np.asarray(
+                [0.01, 0.02, 0.30, 0.40, 0.20, 0.07],
+                dtype=np.float32,
+            )
+            return out
+
+    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now[-4] = 1.0
+    obs_now[-3] = 1.0
+
+    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn[-4] = 1.0
+    obs_post_turn[-3] = 1.0
+
+    metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
+    assert np.allclose(metrics.reward_vec_after_move, np.asarray([0.07, 0.20, 0.40, 0.30, 0.02, 0.01], dtype=np.float32))
 
 
 def test_flip_observation_perspective_swaps_sides_and_controls():
