@@ -408,14 +408,72 @@ def test_run_training_deletes_stale_checkpoints_from_start_epoch(tmp_path: Path)
     assert not (ckpt_root / "epoch_0003").exists()
 
 
-def test_run_training_uses_config_params_when_calculation_disabled(tmp_path: Path):
+def test_run_training_uses_config_params_as_current_epoch_values_when_calculation_disabled(tmp_path: Path, monkeypatch):
+    import training.pipeline as pipeline_mod
+
+    class FakeAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+            self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
+            self.train_step = 0
+
+        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+            self.optimizer.param_groups[0]["lr"] = float(learning_rate)
+            return float(learning_rate)
+
+        def state_dict(self) -> dict:
+            return {"agent_id": self.agent_id, "group": "A", "model": {}}
+
+    class FakeLeague:
+        def __init__(self, *_args, **_kwargs):
+            self._decision_stats = {"decision_count": 0, "topk_freq": [0.0] * 10}
+            self._temperature = None
+            self._choose_best = None
+
+        def set_decision_temperature(self, value: float) -> None:
+            self._temperature = float(value)
+
+        def set_choose_best_probability(self, value: float) -> None:
+            self._choose_best = float(value)
+
+        def run_epoch(self, _agents, _epoch: int):
+            return [], 0.0
+
+        def get_decision_stats(self) -> dict:
+            return self._decision_stats
+
+    class FakeReplay:
+        def __init__(self, *_args, **_kwargs):
+            self.size = 0
+
+        def __len__(self) -> int:
+            return self.size
+
+        def add_many(self, _records) -> None:
+            return None
+
+        def get_meta(self) -> dict:
+            return {"size": self.size}
+
+        def delete_from_epoch(self, _start_epoch: int) -> None:
+            return None
+
+    fake_agents = [FakeAgent("trainable_0"), FakeAgent("trainable_1")]
+    monkeypatch.setattr(pipeline_mod, "build_trainable_agents", lambda cfg, seed: fake_agents)
+    monkeypatch.setattr(pipeline_mod, "LeagueController", FakeLeague)
+    monkeypatch.setattr(pipeline_mod, "ReplayBuffer", FakeReplay)
+    monkeypatch.setattr(pipeline_mod, "load_metrics_history_from_checkpoints", lambda *_args, **_kwargs: [{"epoch": 0}, {"epoch": 1}])
+    monkeypatch.setattr(pipeline_mod, "plot_metrics_history", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "load_checkpoint", lambda *_args, **_kwargs: None)
+
     cfg = ExperimentConfig()
-    cfg.train.num_epochs = 3
+    cfg.train.num_epochs = 4
     cfg.train.updates_per_epoch_per_agent = 1
     cfg.train.batch_size = 4
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 1000
+    cfg.train.lr_decay_every_steps = 1
     cfg.league.matches_per_pair = 1
     cfg.league.min_replay_size_to_train = 1
     cfg.league.selfplay_temperature = 0.7
@@ -428,19 +486,121 @@ def test_run_training_uses_config_params_when_calculation_disabled(tmp_path: Pat
     cfg.plots_dir = str(tmp_path / "plots")
     cfg.league.replay_storage_dir = str(tmp_path / "replay")
 
-    run_training(cfg, start_epoch=0)
     metrics = run_training(cfg, start_epoch=2, calculate_learning_params=False)
 
-    assert len(metrics) == 3
-    resumed = metrics[-1]
+    assert len(metrics) == 4
+    resumed_epoch_2 = metrics[-2]
+    resumed_epoch_3 = metrics[-1]
+    assert resumed_epoch_2["epoch"] == 2
+    assert resumed_epoch_3["epoch"] == 3
+    assert np.isclose(resumed_epoch_2["decision_temperature"], cfg.league.selfplay_temperature)
+    assert np.isclose(
+        resumed_epoch_3["decision_temperature"],
+        cfg.league.selfplay_temperature * cfg.league.temperature_decay,
+    )
+    assert np.isclose(resumed_epoch_2["choose_best_probability"], cfg.league.choose_best_probability)
+    assert np.isclose(
+        resumed_epoch_3["choose_best_probability"],
+        1.0 - (1.0 - cfg.league.choose_best_probability) * cfg.league.choose_best_decay,
+    )
+    for aid in [ag.agent_id for ag in fake_agents]:
+        stats = resumed_epoch_2["agents"][aid]
+        assert np.isclose(stats["learning_rate"], cfg.train.learning_rate)
+    for aid in [ag.agent_id for ag in fake_agents]:
+        stats = resumed_epoch_3["agents"][aid]
+        assert np.isclose(stats["learning_rate"], cfg.train.learning_rate * cfg.train.lr_decay_factor)
+
+
+def test_run_training_recomputes_decay_from_epoch_zero_when_calculation_enabled(tmp_path: Path, monkeypatch):
+    import training.pipeline as pipeline_mod
+
+    class FakeAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+            self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
+            self.train_step = 0
+
+        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+            self.optimizer.param_groups[0]["lr"] = float(learning_rate)
+            return float(learning_rate)
+
+        def state_dict(self) -> dict:
+            return {"agent_id": self.agent_id, "group": "A", "model": {}}
+
+    class FakeLeague:
+        def __init__(self, *_args, **_kwargs):
+            self._decision_stats = {"decision_count": 0, "topk_freq": [0.0] * 10}
+
+        def set_decision_temperature(self, _value: float) -> None:
+            return None
+
+        def set_choose_best_probability(self, _value: float) -> None:
+            return None
+
+        def run_epoch(self, _agents, _epoch: int):
+            return [], 0.0
+
+        def get_decision_stats(self) -> dict:
+            return self._decision_stats
+
+    class FakeReplay:
+        def __init__(self, *_args, **_kwargs):
+            self.size = 0
+
+        def __len__(self) -> int:
+            return self.size
+
+        def add_many(self, _records) -> None:
+            return None
+
+        def get_meta(self) -> dict:
+            return {"size": self.size}
+
+        def delete_from_epoch(self, _start_epoch: int) -> None:
+            return None
+
+    fake_agents = [FakeAgent("trainable_0"), FakeAgent("trainable_1")]
+    monkeypatch.setattr(pipeline_mod, "build_trainable_agents", lambda cfg, seed: fake_agents)
+    monkeypatch.setattr(pipeline_mod, "LeagueController", FakeLeague)
+    monkeypatch.setattr(pipeline_mod, "ReplayBuffer", FakeReplay)
+    monkeypatch.setattr(pipeline_mod, "load_metrics_history_from_checkpoints", lambda *_args, **_kwargs: [{"epoch": 0}, {"epoch": 1}])
+    monkeypatch.setattr(pipeline_mod, "plot_metrics_history", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "load_checkpoint", lambda *_args, **_kwargs: None)
+
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 4
+    cfg.train.updates_per_epoch_per_agent = 1
+    cfg.train.batch_size = 4
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 1
+    cfg.league.matches_per_pair = 1
+    cfg.league.min_replay_size_to_train = 1
+    cfg.league.selfplay_temperature = 0.7
+    cfg.league.temperature_decay = 0.1
+    cfg.league.choose_best_probability = 0.2
+    cfg.league.choose_best_decay = 0.3
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    metrics = run_training(cfg, start_epoch=2, calculate_learning_params=True)
+
+    assert len(metrics) == 4
+    resumed = metrics[-2]
     assert resumed["epoch"] == 2
-    assert np.isclose(resumed["decision_temperature"], cfg.league.selfplay_temperature)
-    assert np.isclose(resumed["choose_best_probability"], cfg.league.choose_best_probability)
-    assert np.isclose(resumed["conservative_baseline_double_copy_prob"], cfg.league.conservative_baseline_double_copy_prob)
-    assert np.isclose(resumed["agents_double_decision_prob"], cfg.league.agents_double_decision_prob)
-    for aid, stats in resumed["agents"].items():
-        assert stats["learning_rate_steps_epoch"]
-        assert np.isclose(stats["learning_rate_steps_epoch"][0], cfg.train.learning_rate)
+    assert np.isclose(
+        resumed["decision_temperature"],
+        cfg.league.selfplay_temperature * (cfg.league.temperature_decay ** 2),
+    )
+    assert np.isclose(
+        resumed["choose_best_probability"],
+        1.0 - (1.0 - cfg.league.choose_best_probability) * (cfg.league.choose_best_decay ** 2),
+    )
+    for aid in [ag.agent_id for ag in fake_agents]:
+        stats = resumed["agents"][aid]
+        assert np.isclose(stats["learning_rate"], cfg.train.learning_rate * (cfg.train.lr_decay_factor ** 2))
 
 
 def test_run_training_can_resume_from_epoch(tmp_path: Path):
@@ -467,6 +627,38 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     assert metrics[0]["epoch"] == 0
     assert metrics[1]["epoch"] == 1
     assert (Path(cfg.checkpoint_dir) / "epoch_0001" / "agents.json").exists()
+
+
+def test_replay_delete_from_epoch_vacuums_database(tmp_path: Path):
+    from training.replay import ReplayBuffer
+
+    replay = ReplayBuffer(storage_dir=str(tmp_path / "replay"))
+    big_state = np.ones((2048,), dtype=np.float32)
+    big_outcome = np.ones((31,), dtype=np.float32)
+    for epoch in range(6):
+        for step in range(8):
+            replay.add(
+                state_vector=big_state,
+                agent_id="trainable_0",
+                opponent_id="opp",
+                game_id=f"g_{epoch}_{step}",
+                step_index=step,
+                epoch=epoch,
+                terminal_outcome=big_outcome,
+            )
+    replay._flush_if_needed()
+    replay._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    size_before = replay.db_path.stat().st_size
+
+    replay.delete_from_epoch(3)
+
+    size_after = replay.db_path.stat().st_size
+    remaining_epochs = [int(v) for v in replay._epochs]
+    freelist_count = int(replay._conn.execute("PRAGMA freelist_count").fetchone()[0])
+    assert remaining_epochs
+    assert max(remaining_epochs) < 3
+    assert freelist_count == 0
+    assert size_after < size_before
 
 
 def test_load_checkpoint_keeps_old_head_and_initializes_new_heads(tmp_path: Path):

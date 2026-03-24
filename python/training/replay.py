@@ -306,6 +306,10 @@ class ReplayBuffer:
         self._flush_if_needed()
         self._conn.execute("DELETE FROM replay WHERE epoch >= ?", (int(min_epoch_inclusive),))
         self._conn.commit()
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self._conn.execute("VACUUM")
+        self._conn.commit()
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         rows = self._conn.execute(
             "SELECT recency_index, state_vector, terminal_outcome, terminal_outcome_dim, agent_id, epoch FROM replay ORDER BY recency_index ASC"
         ).fetchall()
