@@ -1105,6 +1105,8 @@ class LeagueController:
         norm_const = 1.0 / (sigma * np.sqrt(2.0 * np.pi))
         for i in range(n_agents):
             for j in range(i, n_agents):
+                if all_agents[i].agent_id == self.conservative_baseline.agent_id and all_agents[j].agent_id == self.conservative_baseline.agent_id:
+                    continue
                 pairs.append((i, j))
                 diff = float(decayed_winrates[i] - decayed_winrates[j])
                 dist_probs.append(float(norm_const * np.exp(-0.5 * (diff / sigma) ** 2)))
@@ -1158,12 +1160,4 @@ class LeagueController:
 
     # Backward-compatible API used in tests and legacy callers.
     def run_epoch(self, trainable_agents: list[ValueAgent], epoch: int):
-        all_agent_ids = [a.agent_id for a in trainable_agents] + [self.conservative_baseline.agent_id]
-        neutral_winrates = np.full((len(all_agent_ids),), 0.5, dtype=np.float32)
-        results, games_sec, _ = self.run_training_epoch(
-            trainable_agents=trainable_agents,
-            epoch=epoch,
-            decayed_winrates=neutral_winrates,
-            all_agent_ids=all_agent_ids,
-        )
-        return results, games_sec
+        return self.run_calibration_epoch(trainable_agents=trainable_agents, epoch=epoch)
