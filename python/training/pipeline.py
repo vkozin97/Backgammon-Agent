@@ -158,6 +158,70 @@ def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list
     return pair
 
 
+def _per_agent_eval_from_games(game_results: list, all_agent_ids: list[str], trainable_agent_ids: list[str]) -> dict:
+    per_agent = {aid: {
+        "winrate_vs_random": 0.0,
+        "winrate_vs_baseline": 0.0,
+        "aggregate_winrate_vs_trainable": 0.0,
+        "average_value_vs_random": 0.0,
+        "average_value_vs_baseline": 0.0,
+        "aggregate_average_value_vs_trainable": 0.0,
+        "avg_game_length": float(np.mean([g.turns for g in game_results]) if game_results else 0.0),
+        "winrate_vs_opponents": {},
+        "average_value_vs_opponents": {},
+    } for aid in all_agent_ids}
+
+    for aid in all_agent_ids:
+        for opp in all_agent_ids:
+            if opp == aid:
+                continue
+            pair = _games_for_pair(game_results, aid, opp)
+            if not pair:
+                wr = 0.0
+                avg_value = 0.0
+            else:
+                wr = sum(1 for g in pair if g.winner == aid) / len(pair)
+                avg_value = float(np.mean([
+                    float(getattr(g, "points_won", getattr(g, "reward_value", 1))) if g.winner == aid
+                    else -float(getattr(g, "points_won", getattr(g, "reward_value", 1)))
+                    for g in pair
+                ]))
+            per_agent[aid]["winrate_vs_opponents"][opp] = wr
+            per_agent[aid]["average_value_vs_opponents"][opp] = avg_value
+
+        trainable_opponents = [tid for tid in trainable_agent_ids if tid != aid]
+        if trainable_opponents:
+            per_agent[aid]["aggregate_winrate_vs_trainable"] = float(
+                np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents])
+            )
+            per_agent[aid]["aggregate_average_value_vs_trainable"] = float(
+                np.mean([per_agent[aid]["average_value_vs_opponents"].get(t, 0.0) for t in trainable_opponents])
+            )
+
+        per_agent[aid]["winrate_vs_random"] = 0.0
+        per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("conservative_baseline", 0.0)
+        per_agent[aid]["average_value_vs_random"] = per_agent[aid]["average_value_vs_opponents"].get("random", 0.0)
+        per_agent[aid]["average_value_vs_baseline"] = per_agent[aid]["average_value_vs_opponents"].get("conservative_baseline", 0.0)
+    return per_agent
+
+
+def _current_winrates_from_calibration(game_results: list, all_agent_ids: list[str]) -> np.ndarray:
+    if not all_agent_ids:
+        return np.empty((0,), dtype=np.float32)
+    values = []
+    for aid in all_agent_ids:
+        rates = []
+        for opp in all_agent_ids:
+            if aid == opp:
+                continue
+            pair = _games_for_pair(game_results, aid, opp)
+            if not pair:
+                continue
+            rates.append(sum(1 for g in pair if g.winner == aid) / len(pair))
+        values.append(float(np.mean(rates)) if rates else 0.5)
+    return np.asarray(values, dtype=np.float32)
+
+
 
 
 def _pending_accept_target_from_step(step: dict) -> float:
@@ -365,8 +429,13 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
     metrics_history = load_metrics_history_from_checkpoints(Path(cfg.checkpoint_dir), start_epoch)
 
     all_agent_ids = [x.agent_id for x in agents] + ["conservative_baseline"]
+    trainable_agent_ids = [x.agent_id for x in agents]
     base_conservative_double_copy_prob = float(cfg.league.conservative_baseline_double_copy_prob)
     base_agents_double_decision_prob = float(cfg.league.agents_double_decision_prob)
+    calibration_decay = float(np.clip(getattr(cfg.league, "calibrate_winrates_decay", 0.9), 0.0, 1.0))
+    decayed_winrates: np.ndarray | None = None
+    last_calibration_results: list = []
+    last_current_winrates = np.full((len(all_agent_ids),), 0.5, dtype=np.float32)
 
     completed_updates_before_start = max(int(start_epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0)
     dynamic_origin_epoch = _schedule_origin_epoch(start_epoch, calculate_learning_params)
@@ -418,8 +487,8 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
 
         epoch_t0 = time.time()
         print(f"Epoch {epoch}\n")
-        print("[1/6] Self-play started")
-        play_t0 = time.time()
+        print("[1/7] Calibration started")
+        calibrate_t0 = time.time()
         league.set_decision_temperature(current_temperature)
         league.set_choose_best_probability(current_choose_best_probability)
         if calculate_learning_params:
@@ -442,14 +511,45 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             current_agents_double_decision_prob = float(cfg.league.agents_double_decision_prob)
         cfg.league.conservative_baseline_double_copy_prob = current_conservative_baseline_double_copy_prob
         cfg.league.agents_double_decision_prob = current_agents_double_decision_prob
-        game_results, games_sec = league.run_epoch(agents, epoch)
+        calibrate_every = max(int(getattr(cfg.league, "calibrate_every_k_epochs", 1)), 1)
+        should_calibrate = (epoch % calibrate_every == 0) or (not last_calibration_results)
+        if should_calibrate:
+            calibration_results, calibration_games_sec = league.run_calibration_epoch(agents, epoch)
+            current_winrates = _current_winrates_from_calibration(calibration_results, all_agent_ids)
+            if decayed_winrates is None or epoch == 0:
+                decayed_winrates = current_winrates.copy()
+            else:
+                decayed_winrates = (
+                    (1.0 - calibration_decay) * current_winrates +
+                    calibration_decay * decayed_winrates
+                ).astype(np.float32)
+            last_calibration_results = calibration_results
+            last_current_winrates = current_winrates.copy()
+        else:
+            calibration_results = last_calibration_results
+            calibration_games_sec = 0.0
+            current_winrates = last_current_winrates.copy()
+            if decayed_winrates is None:
+                decayed_winrates = current_winrates.copy()
+
+        calibrate_dt = max(time.time() - calibrate_t0, 1e-6)
         decision_stats = league.get_decision_stats()
+        print(f"[1/7] Calibration took {calibrate_dt:.2f} seconds")
+
+        print("[2/7] Training self-play started")
+        play_t0 = time.time()
+        train_game_results, games_sec, matchmaking_counts = league.run_training_epoch(
+            agents,
+            epoch,
+            np.asarray(decayed_winrates, dtype=np.float32),
+            all_agent_ids,
+        )
         play_dt = max(time.time() - play_t0, 1e-6)
-        print(f"[1/6] Self-play took {play_dt:.2f} seconds")
+        print(f"[2/7] Training self-play took {play_dt:.2f} seconds")
 
         replay_add_t0 = time.time()
         agent_lookup = {a.agent_id: a for a in agents}
-        for game in game_results:
+        for game in train_game_results:
             records = []
             bootstrap_targets = _bootstrap_outcomes_for_unfinished_game(game, agent_lookup) if bool(getattr(game, "max_steps_reached", False)) else {}
             for st in game.steps:
@@ -483,19 +583,19 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                 })
             replay.add_many(records)
         replay_add_dt = max(time.time() - replay_add_t0, 1e-6)
-        print(f"[2/6] Replay append took {replay_add_dt:.2f} seconds")
+        print(f"[3/7] Replay append took {replay_add_dt:.2f} seconds")
 
         winrates_t0 = time.time()
         winrates_vs_baseline = []
         for agent in agents:
-            pair_baseline = _games_for_pair(game_results, agent.agent_id, "conservative_baseline")
+            pair_baseline = _games_for_pair(calibration_results, agent.agent_id, "conservative_baseline")
             wr_baseline = sum(1 for g in pair_baseline if g.winner == agent.agent_id) / len(pair_baseline) if pair_baseline else 0.0
             winrates_vs_baseline.append(round(wr_baseline * 100.0, 2))
         winrates_dt = max(time.time() - winrates_t0, 1e-6)
-        print(f"[3/6] Winrate aggregation took {winrates_dt:.2f} seconds")
+        print(f"[4/7] Winrate aggregation took {winrates_dt:.2f} seconds")
 
         print(f"Winrates vs conservative baseline: {winrates_vs_baseline}\n")
-        print("[4/6] Training started")
+        print("[5/7] Training started")
 
         train_losses: dict[str, list[float]] = {a.agent_id: [] for a in agents}
         train_lrs_steps: dict[str, list[float]] = {a.agent_id: [] for a in agents}
@@ -530,22 +630,9 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         train_dt = max(time.time() - t0, 1e-6)
         steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
 
-        per_agent = {aid: {
-            "train_loss_epoch": None,
-            "train_loss_steps_epoch": [],
-            "learning_rate": None,
-            "learning_rate_steps_epoch": [],
-            "learning_steps_epoch": 0,
-            "winrate_vs_random": 0.0,
-            "winrate_vs_baseline": 0.0,
-            "aggregate_winrate_vs_trainable": 0.0,
-            "average_value_vs_random": 0.0,
-            "average_value_vs_baseline": 0.0,
-            "aggregate_average_value_vs_trainable": 0.0,
-            "avg_game_length": float(np.mean([g.turns for g in game_results]) if game_results else 0.0),
-            "winrate_vs_opponents": {},
-            "average_value_vs_opponents": {},
-        } for aid in all_agent_ids}
+        per_agent = _per_agent_eval_from_games(calibration_results, all_agent_ids, trainable_agent_ids)
+        for aid in all_agent_ids:
+            per_agent[aid]["matches_vs_opponents"] = dict(matchmaking_counts.get(aid, {}))
 
         for a in agents:
             per_agent[a.agent_id]["train_loss_epoch"] = float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0)
@@ -554,38 +641,10 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             per_agent[a.agent_id]["learning_rate_steps_epoch"] = train_lrs_steps[a.agent_id]
             per_agent[a.agent_id]["learning_steps_epoch"] = len(train_lrs_steps[a.agent_id])
 
-        for aid in all_agent_ids:
-            for opp in all_agent_ids:
-                if opp == aid:
-                    continue
-                pair = _games_for_pair(game_results, aid, opp)
-                if not pair:
-                    wr = 0.0
-                    avg_value = 0.0
-                else:
-                    wr = sum(1 for g in pair if g.winner == aid) / len(pair)
-                    avg_value = float(np.mean([
-                        float(getattr(g, "points_won", getattr(g, "reward_value", 1))) if g.winner == aid
-                        else -float(getattr(g, "points_won", getattr(g, "reward_value", 1)))
-                        for g in pair
-                    ]))
-                per_agent[aid]["winrate_vs_opponents"][opp] = wr
-                per_agent[aid]["average_value_vs_opponents"][opp] = avg_value
-
-            trainable_opponents = [x.agent_id for x in agents if x.agent_id != aid]
-            if trainable_opponents:
-                per_agent[aid]["aggregate_winrate_vs_trainable"] = float(np.mean([per_agent[aid]["winrate_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
-                per_agent[aid]["aggregate_average_value_vs_trainable"] = float(np.mean([per_agent[aid]["average_value_vs_opponents"].get(t, 0.0) for t in trainable_opponents]))
-
-            per_agent[aid]["winrate_vs_random"] = 0.0
-            per_agent[aid]["winrate_vs_baseline"] = per_agent[aid]["winrate_vs_opponents"].get("conservative_baseline", 0.0)
-            per_agent[aid]["average_value_vs_random"] = per_agent[aid]["average_value_vs_opponents"].get("random", 0.0)
-            per_agent[aid]["average_value_vs_baseline"] = per_agent[aid]["average_value_vs_opponents"].get("conservative_baseline", 0.0)
-
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)
-        print(f"[4/6] Training (model update only) took {pure_train_dt:.2f} seconds")
-        print(f"[5/6] Replay sampling took {replay_sample_time_total:.2f} seconds (avg={avg_sample_ms:.2f}ms, calls={replay_sample_calls})")
+        print(f"[5/7] Training (model update only) took {pure_train_dt:.2f} seconds")
+        print(f"[6/7] Replay sampling took {replay_sample_time_total:.2f} seconds (avg={avg_sample_ms:.2f}ms, calls={replay_sample_calls})")
         print(f"Losses: {[round(float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0), 6) for a in agents]}\n")
 
         gpu_mem_allocated = 0.0
@@ -595,13 +654,14 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             gpu_mem_reserved = float(torch.cuda.max_memory_reserved() / (1024 * 1024))
             torch.cuda.reset_peak_memory_stats()
 
-        games_stats = _games_stats(game_results, all_agent_ids)
+        games_stats = _games_stats(train_game_results, all_agent_ids)
 
         metrics = {
             "epoch": epoch,
             "freeze_output_layer_only": bool(freeze_output_layer),
             "epoch_total_sec": max(time.time() - epoch_t0, 1e-6),
             "games_sec": games_sec,
+            "calibration_games_sec": float(calibration_games_sec),
             "steps_sec": steps_per_sec,
             "gpu_mem_mb": gpu_mem_allocated,
             "gpu_mem_allocated_mb": gpu_mem_allocated,
@@ -610,6 +670,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             "replay_sampling_avg_ms": avg_sample_ms,
             "replay_size": int(len(replay)),
             "timings": {
+                "calibration_sec": calibrate_dt,
                 "selfplay_sec": play_dt,
                 "replay_append_sec": replay_add_dt,
                 "winrate_aggregation_sec": winrates_dt,
@@ -623,13 +684,16 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             "agents_double_decision_prob": float(current_agents_double_decision_prob),
             "decision_count": int(decision_stats["decision_count"]),
             "decision_topk_freq": decision_stats["topk_freq"],
+            "calibration_applied": bool(should_calibrate),
+            "current_winrates": np.asarray(current_winrates, dtype=np.float32).tolist(),
+            "decayed_winrates": np.asarray(decayed_winrates, dtype=np.float32).tolist(),
             "agents": per_agent,
             "games_stats": games_stats,
         }
         metrics_history.append(metrics)
 
         epoch_total_dt = float(metrics["epoch_total_sec"])
-        print(f"[6/6] Epoch total took {epoch_total_dt:.2f} seconds\n")
+        print(f"[7/7] Epoch total took {epoch_total_dt:.2f} seconds\n")
 
         should_plot = (epoch + 1) % max(cfg.train.plot_every_k_epochs, 1) == 0 or epoch == cfg.train.num_epochs - 1
         if should_plot:
@@ -638,6 +702,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                 Path(cfg.plots_dir),
                 cfg.train.winrate_window_size,
                 cfg.train.value_window_size,
+                cfg.train.matchmaking_window_size,
                 cfg.league.alpha_recency,
                 cfg.league.alpha_uniform,
                 cfg.league.recency_decay,

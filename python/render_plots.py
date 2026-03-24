@@ -40,6 +40,7 @@ def main() -> int:
         Path(cfg.plots_dir),
         cfg.train.winrate_window_size,
         cfg.train.value_window_size,
+        cfg.train.matchmaking_window_size,
         cfg.league.alpha_recency,
         cfg.league.alpha_uniform,
         cfg.league.recency_decay,
