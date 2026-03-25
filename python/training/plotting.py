@@ -503,18 +503,6 @@ def plot_metrics_history(
         _print_plot_timing(f"{aid}: matchmaking plots", agent_t0, plot_total_t0)
         agent_t0 = time.perf_counter()
 
-        loss_steps: list[float] = []
-        loss_epoch_end_steps: list[int] = []
-        loss_cursor = 0
-        for m in metrics_history:
-            epoch_loss_steps = m["agents"][aid].get("train_loss_steps_epoch", [])
-            if epoch_loss_steps:
-                sanitized_epoch_loss = [float(v) for v in epoch_loss_steps]
-                loss_steps.extend(sanitized_epoch_loss)
-            loss_cursor += len(epoch_loss_steps)
-            loss_epoch_end_steps.append(loss_cursor)
-
-        if loss_steps:
         loss_step_metric_keys = sorted({
             k
             for m in metrics_history
