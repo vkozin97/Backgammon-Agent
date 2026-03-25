@@ -120,10 +120,10 @@ REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 agent_mode = "hint"  # "none" | "hint" | "play" | "replay"
 viewer_n_games = 100  # number of games in endless mode or points to win the match in regular mode
 viewer_endless_mode = True
-agent_id = "trainable_1"
-agent_epoch = 332
-agent_checkpoint_dir = "training_stats/checkpoints"
-replay_storage_dir = "training_stats/replay"
+agent_id = "trainable_6"
+agent_epoch = 559
+agent_checkpoint_dir = "training_stats_dave/checkpoints"
+replay_storage_dir = "training_stats_dave/replay"
 replay_match_id = None
 replay_game_number_in_match = None
 

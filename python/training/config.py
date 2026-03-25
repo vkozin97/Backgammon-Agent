@@ -32,13 +32,13 @@ class TrainConfig:
     batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-4
-    min_learning_rate: float = 1e-9
-    lr_decay_factor: float = 0.98
+    min_learning_rate: float = 1e-7
+    lr_decay_factor: float = 0.99
     lr_decay_every_steps: int = 50
-    freeze_weights_from_epoch: int = 200
-    freeze_weights_till_epoch: int = 300
-    lr_during_freeze: float = 1e-5
-    lr_decay_during_freeze: float = 0.95
+    freeze_weights_from_epoch: int = 120
+    freeze_weights_till_epoch: int = 220
+    lr_during_freeze: float = 5e-5
+    lr_decay_during_freeze: float = 0.98
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -49,14 +49,14 @@ class TrainConfig:
     loss_weights: list[float] = field(default_factory=lambda: [1.0])
     target_expansion: str = "repeat"
     plot_every_k_epochs: int = 20
-    winrate_window_size: int = 10
-    value_window_size: int = 10
+    winrate_window_size: int = 20
+    value_window_size: int = 20
     matchmaking_window_size: int = 20
 
 
 @dataclass
 class LeagueConfig:
-    matches_per_agent: int = 20
+    matches_per_agent: int = 12
     n_games_per_match: int = 4
     endless_mode: bool = True
     replay_storage_dir: str = "training_stats/replay"
@@ -66,17 +66,17 @@ class LeagueConfig:
     recency_decay: float = 0.9
     replay_window_epochs: int = 20
     sigmoid_parameter: float = 6.74755607143124
-    batched_obs_threads: int = 16
+    batched_obs_threads: int = 8
     selfplay_temperature: float = 0.1
     temperature_decay: float = 0.98
     choose_best_probability: float = 0.3
-    choose_best_decay: float = 0.8
+    choose_best_decay: float = 0.9
     conservative_baseline_double_copy_prob: float = 0.0
-    baseline_conservative_double_copy_start_epoch: int = 300
-    baseline_conservative_double_copy_end_epoch: int = 400
+    baseline_conservative_double_copy_start_epoch: int = 180
+    baseline_conservative_double_copy_end_epoch: int = 220
     agents_double_decision_prob: float = 0.0
-    agents_double_decision_start_epoch: int = 200
-    agents_double_decision_end_epoch: int = 300
+    agents_double_decision_start_epoch: int = 120
+    agents_double_decision_end_epoch: int = 180
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
     calibrate_every_k_epochs: int = 1
