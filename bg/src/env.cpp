@@ -352,10 +352,10 @@ int BackgammonEnv::classify_win_reward() const {
 uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_points) {
     int points = reward_points * dave_value_;
     if (winner_color == 0) {
-        if (!endless_mode_) white_score_ += points;
+        white_score_ += points;
         previous_game_loser_ = 1;
     } else {
-        if (!endless_mode_) black_score_ += points;
+        black_score_ += points;
         previous_game_loser_ = 0;
     }
 
@@ -363,7 +363,13 @@ uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_
     const bool match_finished = endless_mode_
         ? (games_played_in_match_ >= n_games_)
         : (white_score_ >= n_games_ || black_score_ >= n_games_);
-    if (match_finished) return 2;
+    if (match_finished) {
+        if (endless_mode_) {
+            s_.ply++;
+            start_new_game(false);
+        }
+        return 2;
+    }
 
     s_.ply++;
     start_new_game(false);

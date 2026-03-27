@@ -1006,16 +1006,8 @@ def main():
     endless_black_score = 0
     endless_game_number = 1
 
-    def on_endless_game_finished(mover_was_white: bool, scored_points: int):
-        nonlocal endless_white_score, endless_black_score, endless_game_number
-        if scored_points <= 0:
-            return
-        if mover_was_white:
-            endless_white_score += int(scored_points)
-            endless_black_score -= int(scored_points)
-        else:
-            endless_white_score -= int(scored_points)
-            endless_black_score += int(scored_points)
+    def on_endless_game_finished():
+        nonlocal endless_game_number
         endless_game_number += 1
 
     def refresh_moves():
@@ -1109,29 +1101,24 @@ def main():
         accept_double: int = 1,
     ):
         nonlocal turn_white, macro_pending_submit, dice_rolled, moves, selected_hint_idx
-        mover_was_white = bool(turn_white)
         mv = np.asarray(chosen_mv, dtype=np.uint8)
         if use_current_state:
             mv = np.full((8,), 255, dtype=np.uint8)
         else:
             set_env_state(turn_start_state)
-        dave_before = int(turn_start_state[55]) if turn_start_state.shape[0] > 55 else 1
         reward, dave_after, accepted, done_code = env.step_move(
             mv,
             apply_double=int(apply_double),
             accept_double=int(accept_double),
         )
         if int(n_games) <= 0 and int(done_code) in (1, 2):
-            scored_points = int(round(float(reward))) * max(1, int(dave_before))
-            on_endless_game_finished(mover_was_white, scored_points)
+            on_endless_game_finished()
         value_suffix = f" | 1-p={value_hint:.4f}" if value_hint is not None else ""
         info_lines.append(
             f"Apply: {move_to_str(chosen_mv, turn_white=turn_white)} | r={reward} dave={dave_after} acc={int(accepted)} done={done_code}{value_suffix}"
         )
         if int(apply_double) and int(accepted) == 0 and int(done_code) in (1, 2):
             info_lines.append(f"Double offer was rejected/effective loss. Match/game finished with r={reward}, dave={dave_after}, done={done_code}.")
-        if done_code == 2:
-            env.reset()
         turn_white = is_white_turn_from_env()
         if agent_mode == "replay":
             manual_steps.clear()
@@ -1339,6 +1326,8 @@ def main():
         raw = get_env_state()
         base_mine, base_opp, mine_bar, base_mine_off, opp_bar, base_opp_off, ply, white_score, black_score, dave_value, n_games, _ = decode_raw(raw)
         endless_mode = int(n_games) < 0
+        endless_white_score = int(white_score)
+        endless_black_score = int(black_score)
         dave_value_ui = int(dave_value)
 
         if turn_white:
@@ -1611,11 +1600,9 @@ def main():
                     continue
 
                 if cube_offer_pending and reject_rect is not None and reject_rect.collidepoint(mx, my):
-                    offerer_is_white = bool(cube_offer_from_white)
-                    dave_before_reject = int(dave_value_ui)
                     _dave_after, _accepted, done_code = env.resolve_pending_double(0)
                     if endless_mode and agent_mode != "replay" and int(done_code) in (1, 2):
-                        on_endless_game_finished(offerer_is_white, dave_before_reject)
+                        on_endless_game_finished()
                     turn_white = is_white_turn_from_env()
                     cube_owner_visual = None
                     cube_offer_pending = False
