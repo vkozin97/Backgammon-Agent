@@ -193,8 +193,15 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
         ],
         dtype=np.float32,
     )
-    mine_score = float(raw[53]) if raw.shape[0] > 53 else 0.0
-    opp_score = float(raw[54]) if raw.shape[0] > 54 else 0.0
+    white_score = float(raw[53]) if raw.shape[0] > 53 else 0.0
+    black_score = float(raw[54]) if raw.shape[0] > 54 else 0.0
+    white_to_move = bool(raw.shape[0] > 57 and raw[57] > 0.5)
+    if white_to_move:
+        mine_score = white_score
+        opp_score = black_score
+    else:
+        mine_score = black_score
+        opp_score = white_score
     dave_value = float(raw[55]) if raw.shape[0] > 55 else 1.0
     n_games = float(raw[56]) if raw.shape[0] > 56 else 11.0
     cube_available_mine = float(raw[66]) if raw.shape[0] > 66 else 0.0

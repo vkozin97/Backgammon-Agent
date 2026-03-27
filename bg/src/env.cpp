@@ -506,8 +506,8 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     s_.opp_bar = static_cast<uint8_t>(std::clamp<int>(in[50], 0, 15));
     s_.opp_off = static_cast<uint8_t>(std::clamp<int>(in[51], 0, 15));
     s_.ply = static_cast<uint8_t>(std::clamp<int>(in[52], 0, 255));
-    white_score_ = std::max(0, int(in[53]));
-    black_score_ = std::max(0, int(in[54]));
+    white_score_ = int(in[53]);
+    black_score_ = int(in[54]);
     dave_value_ = std::max(1, int(in[55]));
     const int encoded_n_games = int(in[56]);
     endless_mode_ = encoded_n_games < 0;
