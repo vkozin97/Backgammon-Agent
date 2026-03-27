@@ -351,12 +351,24 @@ int BackgammonEnv::classify_win_reward() const {
 
 uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_points) {
     int points = reward_points * dave_value_;
-    if (winner_color == 0) {
-        white_score_ += points;
-        previous_game_loser_ = 1;
+    if (endless_mode_) {
+        if (winner_color == 0) {
+            white_score_ += points;
+            black_score_ -= points;
+            previous_game_loser_ = 1;
+        } else {
+            black_score_ += points;
+            white_score_ -= points;
+            previous_game_loser_ = 0;
+        }
     } else {
-        black_score_ += points;
-        previous_game_loser_ = 0;
+        if (winner_color == 0) {
+            white_score_ += points;
+            previous_game_loser_ = 1;
+        } else {
+            black_score_ += points;
+            previous_game_loser_ = 0;
+        }
     }
 
     games_played_in_match_ += 1;
