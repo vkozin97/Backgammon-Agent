@@ -108,7 +108,7 @@ void BackgammonEnv::start_new_game(bool first_game) {
         std::uniform_int_distribution<int> starter(0, 1);
         current_player_white_ = starter(rng_) == 0;
     } else {
-        current_player_white_ = previous_game_loser_ == 1;
+        current_player_white_ = previous_game_loser_ == 0;
     }
     second_player_white_ = !current_player_white_;
 

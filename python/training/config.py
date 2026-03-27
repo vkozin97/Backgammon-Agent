@@ -27,7 +27,7 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    num_epochs: int = 600
+    num_epochs: int = 700
     updates_per_epoch_per_agent: int = 100
     batch_size: int = 10_000
     optimizer_type: str = "adam"
@@ -35,9 +35,9 @@ class TrainConfig:
     min_learning_rate: float = 1e-7
     lr_decay_factor: float = 0.99
     lr_decay_every_steps: int = 50
-    freeze_weights_from_epoch: int = 120
-    freeze_weights_till_epoch: int = 220
-    lr_during_freeze: float = 5e-5
+    freeze_weights_from_epoch: int = 240
+    freeze_weights_till_epoch: int = 360
+    lr_during_freeze: float = 1e-5
     lr_decay_during_freeze: float = 0.98
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
@@ -72,11 +72,11 @@ class LeagueConfig:
     choose_best_probability: float = 0.3
     choose_best_decay: float = 0.9
     conservative_baseline_double_copy_prob: float = 0.0
-    baseline_conservative_double_copy_start_epoch: int = 180
-    baseline_conservative_double_copy_end_epoch: int = 220
+    baseline_conservative_double_copy_start_epoch: int = 360
+    baseline_conservative_double_copy_end_epoch: int = 420
     agents_double_decision_prob: float = 0.0
-    agents_double_decision_start_epoch: int = 120
-    agents_double_decision_end_epoch: int = 180
+    agents_double_decision_start_epoch: int = 240
+    agents_double_decision_end_epoch: int = 300
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
     calibrate_every_k_epochs: int = 1

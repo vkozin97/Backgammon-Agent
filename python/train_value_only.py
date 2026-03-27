@@ -7,8 +7,8 @@ from training.pipeline import run_training
 if __name__ == "__main__":
     experiment_dir = "training_stats"
     experiment_dir_path = Path(experiment_dir)
-    epoch = 0
-    calculate_learning_params = False
+    epoch = 307
+    calculate_learning_params = True
 
     cfg = ExperimentConfig()
     cfg.checkpoint_dir = str(experiment_dir_path / "checkpoints")
