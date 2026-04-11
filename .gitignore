@@ -25,3 +25,4 @@ python/training_stats*
 
 # Project for debugging probability_vectors
 test_prob_vecs/
+python/.ipynb_checkpoints/Endgame investigation-checkpoint.ipynb

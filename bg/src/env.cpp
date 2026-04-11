@@ -351,19 +351,37 @@ int BackgammonEnv::classify_win_reward() const {
 
 uint8_t BackgammonEnv::finish_game_and_maybe_match(int winner_color, int reward_points) {
     int points = reward_points * dave_value_;
-    if (winner_color == 0) {
-        if (!endless_mode_) white_score_ += points;
-        previous_game_loser_ = 1;
+    if (endless_mode_) {
+        if (winner_color == 0) {
+            white_score_ += points;
+            black_score_ -= points;
+            previous_game_loser_ = 1;
+        } else {
+            black_score_ += points;
+            white_score_ -= points;
+            previous_game_loser_ = 0;
+        }
     } else {
-        if (!endless_mode_) black_score_ += points;
-        previous_game_loser_ = 0;
+        if (winner_color == 0) {
+            white_score_ += points;
+            previous_game_loser_ = 1;
+        } else {
+            black_score_ += points;
+            previous_game_loser_ = 0;
+        }
     }
 
     games_played_in_match_ += 1;
     const bool match_finished = endless_mode_
         ? (games_played_in_match_ >= n_games_)
         : (white_score_ >= n_games_ || black_score_ >= n_games_);
-    if (match_finished) return 2;
+    if (match_finished) {
+        if (endless_mode_) {
+            s_.ply++;
+            start_new_game(false);
+        }
+        return 2;
+    }
 
     s_.ply++;
     start_new_game(false);
@@ -488,8 +506,8 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     s_.opp_bar = static_cast<uint8_t>(std::clamp<int>(in[50], 0, 15));
     s_.opp_off = static_cast<uint8_t>(std::clamp<int>(in[51], 0, 15));
     s_.ply = static_cast<uint8_t>(std::clamp<int>(in[52], 0, 255));
-    white_score_ = std::max(0, int(in[53]));
-    black_score_ = std::max(0, int(in[54]));
+    white_score_ = int(in[53]);
+    black_score_ = int(in[54]);
     dave_value_ = std::max(1, int(in[55]));
     const int encoded_n_games = int(in[56]);
     endless_mode_ = encoded_n_games < 0;
