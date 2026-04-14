@@ -754,7 +754,7 @@ def test_terminal_outcome_accept_target_uses_pending_accept():
     step = {
         "agent_id": "a",
         "player_index": 0,
-        "state_vector": np.zeros((263,), dtype=np.float32),
+        "state_vector": np.zeros((266,), dtype=np.float32),
         "accept_double_opponent": False,
         "action_meta": {"raw_state": [0] * 65 + [1]},
     }
@@ -799,6 +799,21 @@ def test_state_to_observation_uses_cube_scalars_from_state_raw():
     assert ms[8] == 1.0
 
 
+def test_state_to_observation_adds_endgame_flags():
+    raw = np.zeros((69,), dtype=np.float32)
+    # mine checkers only in home board, opp checkers only in their home board
+    raw[0] = 2.0
+    raw[5] = 3.0
+    raw[18 + 24] = 4.0
+    raw[23 + 24] = 1.0
+
+    obs = state_to_observation(raw)
+    scalar_base = 240
+    assert obs[scalar_base + 14] == 1.0  # mine_all_in_home
+    assert obs[scalar_base + 15] == 1.0  # opp_all_in_home
+    assert obs[scalar_base + 16] == 1.0  # race_stage_no_hit
+
+
 def test_sigmoid_growth_probability_schedule():
     base = 0.2
     sigmoid_parameter = 6.74755607143124
@@ -831,7 +846,7 @@ def test_decide_accept_double_from_probs_endless_sign():
     probs = np.zeros((31,), dtype=np.float32)
     # reward head indices 25..30 for [-3,-2,-1,+1,+2,+3]
     probs[MATCH_VECTOR_DIM * 2 + 1 + 5] = 1.0  # certain +3 for chooser
-    obs = np.zeros((263,), dtype=np.float32)
+    obs = np.zeros((266,), dtype=np.float32)
     obs[-3] = 1.0
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
 
@@ -839,7 +854,7 @@ def test_decide_accept_double_from_probs_endless_sign():
 def test_decide_accept_double_from_probs_endless_requires_opponent_cube_availability():
     probs = np.zeros((31,), dtype=np.float32)
     probs[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
-    obs = np.zeros((263,), dtype=np.float32)
+    obs = np.zeros((266,), dtype=np.float32)
     obs[-4] = 1.0
     obs[-3] = 0.0
     obs[-1] = 1.0
@@ -858,10 +873,10 @@ def test_get_double_hint_metrics_uses_current_state_accept_head_for_p_accept_and
             out[:, MATCH_VECTOR_DIM * 2 + 1 + 3] = 1.0  # certain +1 reward expectation
             return out
 
-    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now = np.zeros((266,), dtype=np.float32)
     obs_now[-4] = 1.0
     obs_now[-3] = 1.0
-    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn = np.zeros((266,), dtype=np.float32)
 
     metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
 
@@ -877,7 +892,7 @@ def test_decide_apply_double_from_probs_uses_current_state_accept_head():
     probs_now[MATCH_VECTOR_DIM * 2 + 1 + 2] = 1.0  # certain -1
     probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2 if accepted
 
-    obs = np.zeros((263,), dtype=np.float32)
+    obs = np.zeros((266,), dtype=np.float32)
     obs[-4] = 1.0
 
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
@@ -890,7 +905,7 @@ def test_decide_apply_double_from_probs_endless_requires_cube_availability():
     probs_now[MATCH_VECTOR_DIM * 2 + 1 + 2] = 1.0  # certain -1
     probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
 
-    obs = np.zeros((263,), dtype=np.float32)
+    obs = np.zeros((266,), dtype=np.float32)
     obs[-4] = 0.0
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 0
 
@@ -910,11 +925,11 @@ def test_get_double_hint_metrics_endless_uses_canonical_post_reward_vector_for_a
             )
             return out
 
-    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now = np.zeros((266,), dtype=np.float32)
     obs_now[-4] = 1.0
     obs_now[-3] = 1.0
 
-    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn = np.zeros((266,), dtype=np.float32)
     obs_post_turn[-4] = 1.0
     obs_post_turn[-3] = 1.0
 
@@ -944,11 +959,11 @@ def test_get_double_hint_metrics_swaps_post_reward_vector_to_mover_perspective()
             )
             return out
 
-    obs_now = np.zeros((263,), dtype=np.float32)
+    obs_now = np.zeros((266,), dtype=np.float32)
     obs_now[-4] = 1.0
     obs_now[-3] = 1.0
 
-    obs_post_turn = np.zeros((263,), dtype=np.float32)
+    obs_post_turn = np.zeros((266,), dtype=np.float32)
     obs_post_turn[-4] = 1.0
     obs_post_turn[-3] = 1.0
 
@@ -957,24 +972,23 @@ def test_get_double_hint_metrics_swaps_post_reward_vector_to_mover_perspective()
 
 
 def test_flip_observation_perspective_swaps_sides_and_controls():
-    obs = np.zeros((263,), dtype=np.float32)
+    obs = np.zeros((266,), dtype=np.float32)
     obs[0] = 1.0
     obs[24 + 5] = 2.0
-    obs[240:254] = np.asarray([1, 2, 3, 4, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=np.float32)
-    obs[254:263] = np.asarray([7, 8, 2, 4, 5, 1, 0, 1, 0], dtype=np.float32)
+    obs[240:257] = np.asarray([1, 2, 3, 4, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 0, 1, 1], dtype=np.float32)
+    obs[257:266] = np.asarray([7, 8, 2, 4, 5, 1, 0, 1, 0], dtype=np.float32)
 
     flipped = flip_observation_perspective(obs)
 
     assert flipped[23 - (24 + 5 - 24)] == 2.0
     assert flipped[24 + 23] == 1.0
     assert np.allclose(flipped[240:244], np.asarray([3, 4, 1, 2], dtype=np.float32))
-    assert np.allclose(flipped[254:261], np.asarray([8, 7, 2, 5, 4, 0, 1], dtype=np.float32))
-    assert flipped[261] == 1.0
-    assert flipped[262] == 0.0
+    assert np.allclose(flipped[254:257], np.asarray([1, 0, 1], dtype=np.float32))
+    assert np.allclose(flipped[257:266], np.asarray([8, 7, 2, 5, 4, 0, 1, 1, 0], dtype=np.float32))
 
 
 def test_reject_double_equity_endless_is_immediate_loss():
-    obs = np.zeros((263,), dtype=np.float32)
+    obs = np.zeros((266,), dtype=np.float32)
     obs[-3] = 1.0
     assert reject_double_equity(obs, endless=True) == -1.0
 

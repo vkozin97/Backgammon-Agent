@@ -94,7 +94,7 @@ def flip_observation_perspective(obs: np.ndarray) -> np.ndarray:
     _flip_pair(POINTS_DIM * 7, POINTS_DIM * 9)  # cover_prob_mine / cover_prob_opp
 
     scalar_base = VECTOR_CHANNELS * POINTS_DIM
-    if out.size >= scalar_base + 14:
+    if out.size >= scalar_base + 17:
         out[scalar_base + 0] = x[scalar_base + 2]  # bar
         out[scalar_base + 1] = x[scalar_base + 3]  # off
         out[scalar_base + 2] = x[scalar_base + 0]  # opp_bar
@@ -109,8 +109,11 @@ def flip_observation_perspective(obs: np.ndarray) -> np.ndarray:
         out[scalar_base + 11] = x[scalar_base + 10]  # blot_pips_opp
         out[scalar_base + 12] = x[scalar_base + 13]  # anchor_pips_mine
         out[scalar_base + 13] = x[scalar_base + 12]  # anchor_pips_opp
+        out[scalar_base + 14] = x[scalar_base + 15]  # mine_all_in_home
+        out[scalar_base + 15] = x[scalar_base + 14]  # opp_all_in_home
+        out[scalar_base + 16] = x[scalar_base + 16]  # race_stage_no_hit
 
-    match_base = scalar_base + 14
+    match_base = scalar_base + 17
     if out.size >= match_base + 9:
         out[match_base + 0] = x[match_base + 1]  # mine_score
         out[match_base + 1] = x[match_base + 0]  # opp_score

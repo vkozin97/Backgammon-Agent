@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 263
+    input_dim: int = 266
     output_dim: int = 31
     activation_fn: str = "relu"
     dropout_enabled: bool = False

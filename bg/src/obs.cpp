@@ -31,6 +31,44 @@ static int count_anchors(const std::array<uint8_t, 24>& a) {
 	return anchors;
 }
 
+static float all_mine_in_home(const State& s) {
+	if (s.bar > 0) return 0.0f;
+	for (int i = 6; i < 24; ++i) {
+		if (s.points[size_t(i)] > 0) return 0.0f;
+	}
+	return 1.0f;
+}
+
+static float all_opp_in_home(const State& s) {
+	if (s.opp_bar > 0) return 0.0f;
+	for (int i = 0; i < 18; ++i) {
+		if (s.opp_points[size_t(i)] > 0) return 0.0f;
+	}
+	return 1.0f;
+}
+
+static float race_stage_no_hit(const State& s) {
+	if (s.bar > 0 || s.opp_bar > 0) return 0.0f;
+
+	int mine_last = -1;
+	for (int i = 23; i >= 0; --i) {
+		if (s.points[size_t(i)] > 0) {
+			mine_last = i;
+			break;
+		}
+	}
+
+	int opp_last = 24;
+	for (int i = 0; i < 24; ++i) {
+		if (s.opp_points[size_t(i)] > 0) {
+			opp_last = i;
+			break;
+		}
+	}
+
+	return (mine_last < opp_last) ? 1.0f : 0.0f;
+}
+
 static int run_hit_order(const std::array<uint8_t, 24>& points,
     const std::array<uint8_t, 24>& opp_points,
     uint8_t opp_bar,
@@ -175,9 +213,12 @@ void get_obs_compact(const State& s, const Dice& d, int mine_score, int opp_scor
 	out[52] = float(d.a);
 	out[53] = float(d.b);
 	out[54] = float(s.ply) / 1000.0f;
-	out[55] = float(mine_score);
-	out[56] = float(opp_score);
-	out[57] = float(dave_value);
+	out[55] = all_mine_in_home(s);
+	out[56] = all_opp_in_home(s);
+	out[57] = race_stage_no_hit(s);
+	out[58] = float(mine_score);
+	out[59] = float(opp_score);
+	out[60] = float(dave_value);
 }
 
 void get_obs_extended(const State& s, const Dice& d, int mine_score, int opp_score, int dave_value, int n_games, uint8_t cube_available_mine, uint8_t cube_available_opp, uint8_t is_crawford_game, uint8_t double_offered, float* out) {
@@ -253,6 +294,9 @@ void get_obs_extended(const State& s, const Dice& d, int mine_score, int opp_sco
 	out[base_scalars + 20] = float(cube_available_opp);
 	out[base_scalars + 21] = float(is_crawford_game);
 	out[base_scalars + 22] = float(double_offered);
+	out[base_scalars + 23] = all_mine_in_home(s);
+	out[base_scalars + 24] = all_opp_in_home(s);
+	out[base_scalars + 25] = race_stage_no_hit(s);
 }
 
 } // namespace bg
