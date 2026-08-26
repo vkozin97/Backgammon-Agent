@@ -4,7 +4,7 @@ import numpy as np
 
 POINTS_DIM = 24
 VECTOR_CHANNELS = 10
-SCALAR_FEATURES_DIM = 14
+SCALAR_FEATURES_DIM = 17
 MATCH_SCALARS_DIM = 9
 OBSERVATION_DIM = VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM + MATCH_SCALARS_DIM
 
@@ -173,6 +173,11 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
     blot_pips_opp = float(np.dot(opp_blots, np.arange(24, 0, -1, dtype=np.float32)))
     anchor_pips_mine = float(np.dot(anchors, np.arange(1, 25, dtype=np.float32)))
     anchor_pips_opp = float(np.dot(opp_anchors, np.arange(24, 0, -1, dtype=np.float32)))
+    mine_all_in_home = float(bar == 0.0 and np.sum(points[6:]) == 0.0)
+    opp_all_in_home = float(opp_bar == 0.0 and np.sum(opp_points[:18]) == 0.0)
+    mine_last = int(np.max(np.where(points > 0.0)[0])) if np.any(points > 0.0) else -1
+    opp_last = int(np.min(np.where(opp_points > 0.0)[0])) if np.any(opp_points > 0.0) else POINTS_DIM
+    race_stage_no_hit = float(bar == 0.0 and opp_bar == 0.0 and mine_last < opp_last)
 
     scalars = np.array(
         [
@@ -190,6 +195,9 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
             blot_pips_opp,
             anchor_pips_mine,
             anchor_pips_opp,
+            mine_all_in_home,
+            opp_all_in_home,
+            race_stage_no_hit,
         ],
         dtype=np.float32,
     )
