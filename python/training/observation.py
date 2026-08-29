@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import numpy as np
 
-POINTS_DIM = 24
-VECTOR_CHANNELS = 10
-SCALAR_FEATURES_DIM = 17
-MATCH_SCALARS_DIM = 9
-OBSERVATION_DIM = VECTOR_CHANNELS * POINTS_DIM + SCALAR_FEATURES_DIM + MATCH_SCALARS_DIM
+from .observation_layout import (
+    OBSERVATION_DIM,
+    POINTS_DIM,
+    RAW_BLACK_SCORE,
+    RAW_CUBE_AVAILABLE_MINE,
+    RAW_CUBE_AVAILABLE_OPP,
+    RAW_DAVE_VALUE,
+    RAW_DOUBLE_OFFERED,
+    RAW_IS_CRAWFORD_GAME,
+    RAW_N_GAMES,
+    RAW_WHITE_SCORE,
+    RAW_WHITE_TO_MOVE,
+    VECTOR_CHANNELS,
+)
 
 
 def _legal_steps(points: np.ndarray, opp_points: np.ndarray, bar: int, die: int) -> list[tuple[int, int]]:
@@ -201,36 +210,45 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
         ],
         dtype=np.float32,
     )
-    white_score = float(raw[53]) if raw.shape[0] > 53 else 0.0
-    black_score = float(raw[54]) if raw.shape[0] > 54 else 0.0
-    white_to_move = bool(raw.shape[0] > 57 and raw[57] > 0.5)
+    white_score = float(raw[RAW_WHITE_SCORE]) if raw.shape[0] > RAW_WHITE_SCORE else 0.0
+    black_score = float(raw[RAW_BLACK_SCORE]) if raw.shape[0] > RAW_BLACK_SCORE else 0.0
+    white_to_move = bool(raw.shape[0] > RAW_WHITE_TO_MOVE and raw[RAW_WHITE_TO_MOVE] > 0.5)
     if white_to_move:
         mine_score = white_score
         opp_score = black_score
     else:
         mine_score = black_score
         opp_score = white_score
-    dave_value = float(raw[55]) if raw.shape[0] > 55 else 1.0
-    n_games = float(raw[56]) if raw.shape[0] > 56 else 11.0
-    cube_available_mine = float(raw[66]) if raw.shape[0] > 66 else 0.0
-    cube_available_opp = float(raw[67]) if raw.shape[0] > 67 else 0.0
+    dave_value = float(raw[RAW_DAVE_VALUE]) if raw.shape[0] > RAW_DAVE_VALUE else 1.0
+    n_games = float(raw[RAW_N_GAMES]) if raw.shape[0] > RAW_N_GAMES else 11.0
+    cube_available_mine = float(raw[RAW_CUBE_AVAILABLE_MINE]) if raw.shape[0] > RAW_CUBE_AVAILABLE_MINE else 0.0
+    cube_available_opp = float(raw[RAW_CUBE_AVAILABLE_OPP]) if raw.shape[0] > RAW_CUBE_AVAILABLE_OPP else 0.0
     my_left = 1.0 if n_games < 0 else max(n_games - mine_score, 0.0)
     opp_left = 1.0 if n_games < 0 else max(n_games - opp_score, 0.0)
-    is_crawford_game = float(raw[59]) if raw.shape[0] > 59 else 0.0
-    double_offered = float(raw[68]) if raw.shape[0] > 68 else 0.0
-    match_scalars = np.array(
+    is_crawford_game = float(raw[RAW_IS_CRAWFORD_GAME]) if raw.shape[0] > RAW_IS_CRAWFORD_GAME else 0.0
+    double_offered = float(raw[RAW_DOUBLE_OFFERED]) if raw.shape[0] > RAW_DOUBLE_OFFERED else 0.0
+    # Scalar order is the C++ order from bg/src/obs.cpp.
+    scalars = np.concatenate(
         [
-            mine_score,
-            opp_score,
-            dave_value,
-            my_left,
-            opp_left,
-            cube_available_mine,
-            cube_available_opp,
-            is_crawford_game,
-            double_offered,
-        ],
-        dtype=np.float32,
+            scalars[:14],
+            np.asarray(
+                [
+                    mine_score,
+                    opp_score,
+                    dave_value,
+                    my_left,
+                    opp_left,
+                    cube_available_mine,
+                    cube_available_opp,
+                    is_crawford_game,
+                    double_offered,
+                    mine_all_in_home,
+                    opp_all_in_home,
+                    race_stage_no_hit,
+                ],
+                dtype=np.float32,
+            ),
+        ]
     )
     return np.concatenate(
         [
@@ -245,7 +263,6 @@ def state_to_observation(raw_state: np.ndarray) -> np.ndarray:
             hit_prob_opp,
             cover_prob_opp,
             scalars,
-            match_scalars,
         ],
         dtype=np.float32,
     )

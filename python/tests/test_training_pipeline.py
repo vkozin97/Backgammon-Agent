@@ -13,6 +13,7 @@ from training.pipeline import (
     _sigmoid_growth_probability,
     _learning_rate_for_epoch,
     _epoch_uses_output_freeze,
+    _games_stats,
 )
 from training.agents import (
     MATCH_VECTOR_DIM,
@@ -23,6 +24,8 @@ from training.agents import (
     flip_observation_perspective,
     get_double_hint_metrics,
     reject_double_equity,
+    extract_obs_controls,
+    set_obs_double_state,
 )
 from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
 
@@ -750,13 +753,13 @@ def test_play_game_respects_max_steps_per_game():
     assert result[0].turns == 2
 
 
-def test_terminal_outcome_accept_target_uses_pending_accept():
+def test_terminal_outcome_accept_target_uses_recorded_next_offer_decision():
     step = {
         "agent_id": "a",
         "player_index": 0,
         "state_vector": np.zeros((266,), dtype=np.float32),
         "accept_double_opponent": False,
-        "action_meta": {"raw_state": [0] * 65 + [1]},
+        "action_meta": {"accept_double_for_next_offer": 1},
     }
     game = GameResult(
         game_id="g",
@@ -776,8 +779,48 @@ def test_terminal_outcome_accept_target_uses_pending_accept():
     assert out[24] == 1.0
 
 
+def test_games_stats_attributes_double_acceptance_to_offer_recipient():
+    offered_step = {
+        "agent_id": "a",
+        "opponent_id": "b",
+        "double_offered_by_agent": True,
+        "double_was_accepted": True,
+        "double_acceptor_agent_id": "b",
+    }
+    game = GameResult(
+        game_id="g",
+        match_id="g",
+        match_number=0,
+        game_number_in_match=1,
+        steps=[offered_step],
+        winner="a",
+        turns=1,
+        player_1_id="a",
+        player_2_id="b",
+    )
+
+    stats = _games_stats([game], ["a", "b"])
+
+    assert stats["offers_per_game_by_agent"] == {"a": 1.0, "b": 0.0}
+    assert stats["accept_prob_by_agent"] == {"a": 0.0, "b": 1.0}
+
+
 
 from training.observation import state_to_observation
+from training.observation_layout import (
+    OBS_CUBE_AVAILABLE_MINE,
+    OBS_CUBE_AVAILABLE_OPP,
+    OBS_DAVE_VALUE,
+    OBS_DOUBLE_OFFERED,
+    OBS_IS_CRAWFORD_GAME,
+    OBS_MINE_ALL_IN_HOME,
+    OBS_MINE_SCORE,
+    OBS_MY_LEFT,
+    OBS_OPP_ALL_IN_HOME,
+    OBS_OPP_LEFT,
+    OBS_OPP_SCORE,
+    OBS_RACE_STAGE_NO_HIT,
+)
 
 
 def test_state_to_observation_uses_cube_scalars_from_state_raw():
@@ -791,12 +834,10 @@ def test_state_to_observation_uses_cube_scalars_from_state_raw():
     raw[67] = 0
     raw[68] = 1
     obs = state_to_observation(raw)
-    # match scalars are the last 9 values; cube flags are at positions 5,6,7,8 in that block
-    ms = obs[-9:]
-    assert ms[5] == 1.0
-    assert ms[6] == 0.0
-    assert ms[7] == 1.0
-    assert ms[8] == 1.0
+    assert obs[OBS_CUBE_AVAILABLE_MINE] == 1.0
+    assert obs[OBS_CUBE_AVAILABLE_OPP] == 0.0
+    assert obs[OBS_IS_CRAWFORD_GAME] == 1.0
+    assert obs[OBS_DOUBLE_OFFERED] == 1.0
 
 
 def test_state_to_observation_adds_endgame_flags():
@@ -808,10 +849,42 @@ def test_state_to_observation_adds_endgame_flags():
     raw[23 + 24] = 1.0
 
     obs = state_to_observation(raw)
-    scalar_base = 240
-    assert obs[scalar_base + 14] == 1.0  # mine_all_in_home
-    assert obs[scalar_base + 15] == 1.0  # opp_all_in_home
-    assert obs[scalar_base + 16] == 1.0  # race_stage_no_hit
+    assert obs[OBS_MINE_ALL_IN_HOME] == 1.0
+    assert obs[OBS_OPP_ALL_IN_HOME] == 1.0
+    assert obs[OBS_RACE_STAGE_NO_HIT] == 1.0
+
+
+def test_python_observation_layout_matches_cpp_environment():
+    import bg_env
+
+    env = bg_env.Env(123, n_games=7, endless_mode=False)
+    env.commit_turn()  # both sides can use the centered cube after the opening turn
+    raw = np.asarray(env.get_state_raw(), dtype=np.float32)
+    cpp_obs = np.asarray(env.get_obs_extended(), dtype=np.float32)
+    py_obs = state_to_observation(raw)
+
+    assert py_obs.shape == cpp_obs.shape == (266,)
+    assert np.allclose(py_obs, cpp_obs)
+    assert extract_obs_controls(cpp_obs) == (7, 7, 1, 1, 1)
+
+
+def test_double_state_updates_only_canonical_cpp_control_indices():
+    obs = np.arange(266, dtype=np.float32)
+    obs[OBS_DAVE_VALUE] = 2.0
+    before = obs.copy()
+    doubled = set_obs_double_state(obs)
+
+    changed = set(np.flatnonzero(doubled != before).tolist())
+    assert changed == {
+        OBS_DAVE_VALUE,
+        OBS_CUBE_AVAILABLE_MINE,
+        OBS_CUBE_AVAILABLE_OPP,
+        OBS_DOUBLE_OFFERED,
+    }
+    assert doubled[OBS_DAVE_VALUE] == 4.0
+    assert doubled[OBS_CUBE_AVAILABLE_MINE] == 0.0
+    assert doubled[OBS_CUBE_AVAILABLE_OPP] == 1.0
+    assert doubled[OBS_DOUBLE_OFFERED] == 1.0
 
 
 def test_sigmoid_growth_probability_schedule():
@@ -847,7 +920,7 @@ def test_decide_accept_double_from_probs_endless_sign():
     # reward head indices 25..30 for [-3,-2,-1,+1,+2,+3]
     probs[MATCH_VECTOR_DIM * 2 + 1 + 5] = 1.0  # certain +3 for chooser
     obs = np.zeros((266,), dtype=np.float32)
-    obs[-3] = 1.0
+    obs[OBS_CUBE_AVAILABLE_OPP] = 1.0
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 1
 
 
@@ -855,9 +928,9 @@ def test_decide_accept_double_from_probs_endless_requires_opponent_cube_availabi
     probs = np.zeros((31,), dtype=np.float32)
     probs[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
     obs = np.zeros((266,), dtype=np.float32)
-    obs[-4] = 1.0
-    obs[-3] = 0.0
-    obs[-1] = 1.0
+    obs[OBS_CUBE_AVAILABLE_MINE] = 1.0
+    obs[OBS_CUBE_AVAILABLE_OPP] = 0.0
+    obs[OBS_DOUBLE_OFFERED] = 1.0
 
     assert decide_accept_double_from_probs(probs, obs, endless=True) == 0
 
@@ -869,13 +942,13 @@ def test_get_double_hint_metrics_uses_current_state_accept_head_for_p_accept_and
             n = int(obs.shape[0])
             out = np.zeros((n, 31), dtype=np.float32)
             out[:, MATCH_VECTOR_DIM * 2] = 0.1
-            out[obs[:, -1] < 0.5, MATCH_VECTOR_DIM * 2] = 0.9
+            out[obs[:, OBS_DOUBLE_OFFERED] < 0.5, MATCH_VECTOR_DIM * 2] = 0.9
             out[:, MATCH_VECTOR_DIM * 2 + 1 + 3] = 1.0  # certain +1 reward expectation
             return out
 
     obs_now = np.zeros((266,), dtype=np.float32)
-    obs_now[-4] = 1.0
-    obs_now[-3] = 1.0
+    obs_now[OBS_CUBE_AVAILABLE_MINE] = 1.0
+    obs_now[OBS_CUBE_AVAILABLE_OPP] = 1.0
     obs_post_turn = np.zeros((266,), dtype=np.float32)
 
     metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
@@ -893,7 +966,7 @@ def test_decide_apply_double_from_probs_uses_current_state_accept_head():
     probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2 if accepted
 
     obs = np.zeros((266,), dtype=np.float32)
-    obs[-4] = 1.0
+    obs[OBS_CUBE_AVAILABLE_MINE] = 1.0
 
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
 
@@ -906,10 +979,10 @@ def test_decide_apply_double_from_probs_endless_requires_cube_availability():
     probs_after_double[MATCH_VECTOR_DIM * 2 + 1 + 4] = 1.0  # certain +2
 
     obs = np.zeros((266,), dtype=np.float32)
-    obs[-4] = 0.0
+    obs[OBS_CUBE_AVAILABLE_MINE] = 0.0
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 0
 
-    obs[-4] = 1.0
+    obs[OBS_CUBE_AVAILABLE_MINE] = 1.0
     assert decide_apply_double_from_probs(probs_now, probs_after_double, obs, endless=True) == 1
 
 
@@ -926,12 +999,12 @@ def test_get_double_hint_metrics_endless_uses_canonical_post_reward_vector_for_a
             return out
 
     obs_now = np.zeros((266,), dtype=np.float32)
-    obs_now[-4] = 1.0
-    obs_now[-3] = 1.0
+    obs_now[OBS_CUBE_AVAILABLE_MINE] = 1.0
+    obs_now[OBS_CUBE_AVAILABLE_OPP] = 1.0
 
     obs_post_turn = np.zeros((266,), dtype=np.float32)
-    obs_post_turn[-4] = 1.0
-    obs_post_turn[-3] = 1.0
+    obs_post_turn[OBS_CUBE_AVAILABLE_MINE] = 1.0
+    obs_post_turn[OBS_CUBE_AVAILABLE_OPP] = 1.0
 
     canonical_post_reward_vec = np.asarray([0.01, 0.02, 0.07, 0.20, 0.30, 0.40], dtype=np.float32)
     metrics = get_double_hint_metrics(
@@ -960,12 +1033,12 @@ def test_get_double_hint_metrics_swaps_post_reward_vector_to_mover_perspective()
             return out
 
     obs_now = np.zeros((266,), dtype=np.float32)
-    obs_now[-4] = 1.0
-    obs_now[-3] = 1.0
+    obs_now[OBS_CUBE_AVAILABLE_MINE] = 1.0
+    obs_now[OBS_CUBE_AVAILABLE_OPP] = 1.0
 
     obs_post_turn = np.zeros((266,), dtype=np.float32)
-    obs_post_turn[-4] = 1.0
-    obs_post_turn[-3] = 1.0
+    obs_post_turn[OBS_CUBE_AVAILABLE_MINE] = 1.0
+    obs_post_turn[OBS_CUBE_AVAILABLE_OPP] = 1.0
 
     metrics = get_double_hint_metrics(_FakeAgent(), obs_now, obs_post_turn, endless=True)
     assert np.allclose(metrics.reward_vec_after_move, np.asarray([0.07, 0.20, 0.40, 0.30, 0.02, 0.01], dtype=np.float32))
@@ -975,21 +1048,26 @@ def test_flip_observation_perspective_swaps_sides_and_controls():
     obs = np.zeros((266,), dtype=np.float32)
     obs[0] = 1.0
     obs[24 + 5] = 2.0
-    obs[240:257] = np.asarray([1, 2, 3, 4, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 0, 1, 1], dtype=np.float32)
-    obs[257:266] = np.asarray([7, 8, 2, 4, 5, 1, 0, 1, 0], dtype=np.float32)
+    obs[240:266] = np.asarray(
+        [1, 2, 3, 4, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+         7, 8, 2, 4, 5, 1, 0, 1, 0, 1, 0, 1],
+        dtype=np.float32,
+    )
 
     flipped = flip_observation_perspective(obs)
 
     assert flipped[23 - (24 + 5 - 24)] == 2.0
     assert flipped[24 + 23] == 1.0
     assert np.allclose(flipped[240:244], np.asarray([3, 4, 1, 2], dtype=np.float32))
-    assert np.allclose(flipped[254:257], np.asarray([1, 0, 1], dtype=np.float32))
-    assert np.allclose(flipped[257:266], np.asarray([8, 7, 2, 5, 4, 0, 1, 1, 0], dtype=np.float32))
+    assert np.allclose(
+        flipped[254:266],
+        np.asarray([8, 7, 2, 5, 4, 0, 1, 1, 0, 0, 1, 1], dtype=np.float32),
+    )
 
 
 def test_reject_double_equity_endless_is_immediate_loss():
     obs = np.zeros((266,), dtype=np.float32)
-    obs[-3] = 1.0
+    obs[OBS_CUBE_AVAILABLE_OPP] = 1.0
     assert reject_double_equity(obs, endless=True) == -1.0
 
 

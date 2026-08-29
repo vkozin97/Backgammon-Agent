@@ -19,7 +19,13 @@ from .agents import (
     set_obs_double_state,
     set_obs_opponent_double_offer,
 )
-from .observation import OBSERVATION_DIM, state_to_observation
+from .observation import state_to_observation
+from .observation_layout import (
+    RAW_DAVE_VALUE,
+    RAW_N_GAMES,
+    RAW_WHITE_TO_MOVE,
+)
+from .endgame_policy import can_use_endgame_database, endgame_expectation, move_bears_off_all, to_mover_perspective
 
 try:
     from torch.func import functional_call, stack_module_state, vmap
@@ -45,7 +51,7 @@ MODEL_OUTPUT_DIM = 31
 
 def _is_endless_state(raw_state: np.ndarray) -> bool:
     rs = np.asarray(raw_state, dtype=np.int16).reshape(-1)
-    return rs.size > 56 and int(rs[56]) < 0
+    return rs.size > RAW_N_GAMES and int(rs[RAW_N_GAMES]) < 0
 
 
 def _compact_agent_token(agent_id: str) -> str:
@@ -391,6 +397,7 @@ class LeagueController:
         actions: np.ndarray,
         evaluator: ValueAgent,
         obs_batch: np.ndarray | None = None,
+        dice_batch: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         n = int(len(actions))
         if n == 0:
@@ -399,7 +406,9 @@ class LeagueController:
         base_obs = self._base_observations_for_states(states, obs_batch)
         eval_agents = [evaluator] * n
         apply_doubles = self._decide_apply_doubles(states, base_obs, eval_agents)
-        accept_doubles = self._decide_accept_doubles_for_actions(states, actions, apply_doubles, eval_agents)
+        accept_doubles = self._decide_accept_doubles_for_actions(
+            states, actions, apply_doubles, eval_agents, dice_batch=dice_batch
+        )
         return apply_doubles, accept_doubles
 
     def _base_observations_for_states(self, states: np.ndarray, obs_batch: np.ndarray | None = None) -> np.ndarray:
@@ -451,6 +460,7 @@ class LeagueController:
         evaluators: list[ValueAgent],
         enabled_mask: list[bool] | np.ndarray | None = None,
         accept_if_disabled: int = 1,
+        dice_batch: np.ndarray | None = None,
     ) -> np.ndarray:
         n = int(len(actions))
         accept_doubles = np.zeros((n,), dtype=np.uint8)
@@ -459,14 +469,15 @@ class LeagueController:
 
         enabled_arr = None if enabled_mask is None else np.asarray(enabled_mask, dtype=bool)
         accept_eval_obs: list[np.ndarray] = []
+        accept_eval_pre_obs: list[np.ndarray] = []
         accept_eval_owner: list[int] = []
         accept_eval_evaluators: list[ValueAgent] = []
         sim = self._post_action_opponent_double_eval_env
         for i, mv in enumerate(actions):
             mv_arr = np.asarray(mv, dtype=np.uint8)
-            if int(mv_arr[0]) == 255:
-                continue
             sim.set_state_raw(states[i])
+            if dice_batch is not None and hasattr(sim, "set_dice"):
+                sim.set_dice(np.asarray(dice_batch[i], dtype=np.uint8))
             try:
                 sim.step_move(mv_arr, apply_double=int(apply_doubles[i]), accept_double=1)
             except TypeError:
@@ -480,6 +491,7 @@ class LeagueController:
                 accept_doubles[i] = int(accept_if_disabled)
                 continue
             accept_eval_obs.append(set_obs_opponent_double_offer(current_player_post_obs))
+            accept_eval_pre_obs.append(current_player_post_obs)
             accept_eval_owner.append(i)
             accept_eval_evaluators.append(evaluators[i])
 
@@ -488,16 +500,7 @@ class LeagueController:
                 accept_eval_evaluators,
                 np.stack(accept_eval_obs).astype(np.float32),
             )
-            for owner, p_row, obs_h in zip(accept_eval_owner, probs_accept, accept_eval_obs):
-                obs_pre = np.asarray(obs_h, dtype=np.float32).copy()
-                if obs_pre.size >= 7:
-                    obs_pre[-7] = obs_pre[-7] / 2.0
-                if obs_pre.size >= 4:
-                    obs_pre[-4] = 1.0
-                if obs_pre.size >= 3:
-                    obs_pre[-3] = 1.0
-                if obs_pre.size >= 1:
-                    obs_pre[-1] = 0.0
+            for owner, p_row, obs_pre in zip(accept_eval_owner, probs_accept, accept_eval_pre_obs):
                 accept_doubles[owner] = decide_accept_double_from_probs(
                     p_row,
                     obs_pre,
@@ -600,7 +603,7 @@ class LeagueController:
             out[sel] = p.detach().cpu().numpy()
         return out
 
-    def _select_group_actions_single_call(self, states: np.ndarray, legal_moves_list: list[np.ndarray], actors: list[ValueAgent], obs_batch: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _select_group_actions_single_call(self, states: np.ndarray, legal_moves_list: list[np.ndarray], actors: list[ValueAgent], obs_batch: np.ndarray | None = None, dice_batch: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         actions = np.full((len(legal_moves_list), 8), 255, dtype=np.uint8)
         base_obs = self._base_observations_for_states(states, obs_batch)
 
@@ -620,16 +623,30 @@ class LeagueController:
                 actions[i] = moves[0]
                 continue
             state_i = states[i]
+            use_endgame = can_use_endgame_database(state_i)
+            endgame_values: list[float] = []
             for mv in moves:
                 sim.set_state_raw(state_i)
+                if dice_batch is not None and hasattr(sim, "set_dice"):
+                    sim.set_dice(np.asarray(dice_batch[i], dtype=np.uint8))
                 try:
                     _, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), apply_double=int(apply_doubles[i]), accept_double=1)
                 except TypeError:
                     _, done = sim.step_move(np.asarray(mv, dtype=np.uint8))
-                candidate_obs.append(self.state_vector(sim))
-                candidate_done.append(done)
-                candidate_owner.append(i)
-                candidate_actor.append(actors[i])
+                if use_endgame:
+                    if done or move_bears_off_all(state_i, mv):
+                        endgame_values.append(0.0)
+                    else:
+                        post = to_mover_perspective(state_i, np.asarray(sim.get_state_raw(), dtype=np.int16))
+                        endgame_values.append(endgame_expectation(post))
+                else:
+                    candidate_obs.append(self.state_vector(sim))
+                    candidate_done.append(done)
+                    candidate_owner.append(i)
+                    candidate_actor.append(actors[i])
+            if use_endgame:
+                # Expectations are remaining rolls, so lower is always better.
+                actions[i] = moves[int(np.argmin(np.asarray(endgame_values)))]
 
         probs = None
         if candidate_obs:
@@ -647,7 +664,7 @@ class LeagueController:
             for owner, val in zip(candidate_owner, vals):
                 grouped_vals.setdefault(owner, []).append(float(val))
             for i, moves in enumerate(legal_moves_list):
-                if len(moves) <= 1:
+                if len(moves) <= 1 or can_use_endgame_database(states[i]):
                     continue
                 values_i = np.asarray(grouped_vals[i], dtype=np.float32)
                 if _is_endless_state(states[i]):
@@ -666,6 +683,7 @@ class LeagueController:
             actors,
             enabled_mask=enabled_for_double,
             accept_if_disabled=1,
+            dice_batch=dice_batch,
         )
         return actions, apply_doubles, accept_doubles
 
@@ -722,14 +740,14 @@ class LeagueController:
             
             legal_moves_raw = list(env.legal_moves())
             legal_moves = [_unwrap_legal_moves_entry(x) for x in legal_moves_raw]
-            white_to_move = (states[:, 57] > 0) if states.shape[1] > 57 else ((turn % 2) == 0) * np.ones((n_games,), dtype=bool)
+            white_to_move = (states[:, RAW_WHITE_TO_MOVE] > 0) if states.shape[1] > RAW_WHITE_TO_MOVE else ((turn % 2) == 0) * np.ones((n_games,), dtype=bool)
             actions = np.full((n_games, 8), 255, dtype=np.uint8)
             apply_doubles = np.zeros((n_games,), dtype=np.uint8)
             accept_doubles = np.ones((n_games,), dtype=np.uint8)
 
             by_group: dict[str, list[int]] = {"A": [], "C": [], "D": []}
             baseline_idxs: list[int] = []
-            dave_before = np.maximum(states[:, 55].astype(np.int32), 1) if states.shape[1] > 55 else np.ones((n_games,), dtype=np.int32)
+            dave_before = np.maximum(states[:, RAW_DAVE_VALUE].astype(np.int32), 1) if states.shape[1] > RAW_DAVE_VALUE else np.ones((n_games,), dtype=np.int32)
 
             for i in active_idx:
                 spec = game_specs[int(i)]
@@ -752,7 +770,13 @@ class LeagueController:
                 local_moves = [legal_moves[i] for i in idxs]
                 local_actors = [(game_specs[i].p1 if bool(white_to_move[i]) else game_specs[i].p2) for i in idxs]
                 local_obs = obs_extended_batch[idxs_np] if obs_extended_batch is not None else None
-                local_actions, local_apply, local_accept = self._select_group_actions_single_call(local_states, local_moves, local_actors, local_obs)
+                local_actions, local_apply, local_accept = self._select_group_actions_single_call(
+                    local_states,
+                    local_moves,
+                    local_actors,
+                    local_obs,
+                    rolled_dice[idxs_np],
+                )
                 actions[idxs_np] = local_actions
                 apply_doubles[idxs_np] = local_apply
                 accept_doubles[idxs_np] = local_accept
@@ -763,7 +787,13 @@ class LeagueController:
                     b_states = states[b_idx]
                     b_actions = actions[b_idx]
                     b_obs = obs_extended_batch[b_idx] if obs_extended_batch is not None else None
-                    b_apply, b_accept = self._decide_doubles_for_fixed_actions(b_states, b_actions, self._baseline_eval_agent, b_obs)
+                    b_apply, b_accept = self._decide_doubles_for_fixed_actions(
+                        b_states,
+                        b_actions,
+                        self._baseline_eval_agent,
+                        b_obs,
+                        rolled_dice[b_idx],
+                    )
                     apply_doubles[b_idx] = b_apply
                     accept_doubles[b_idx] = b_accept
                 else:
@@ -810,8 +840,9 @@ class LeagueController:
                     "epoch": epoch,
                     "double_offered_by_agent": bool(apply_doubles[i]),
                     "double_was_accepted": bool(accepted_step[i]) if bool(apply_doubles[i]) else False,
+                    "double_acceptor_agent_id": opp.agent_id if bool(apply_doubles[i]) else None,
                     "accept_double_opponent": bool(accept_doubles[i]),
-                    "accept_double_opportunity": bool(states[i][65] >= 0) if states.shape[1] > 65 else False,
+                    "accept_double_opportunity": bool(apply_doubles[i]),
                     "action_meta": {
                         "dice": [int(rolled_dice[i][0]), int(rolled_dice[i][1])],
                         "move": [int(x) for x in actions[i].tolist()],
@@ -827,14 +858,16 @@ class LeagueController:
                     histories[i][-1]["action_meta"]["reward"] = float(rewards[i])
                     histories[i][-1]["action_meta"]["done_code"] = int(done_code[i])
                     histories[i][-1]["action_meta"]["double_was_accepted"] = int(accepted_step[i])
-                    dave_after = int(states_after[i][55]) if states_after is not None and states_after.shape[1] > 55 else int(dave_before[i])
+                    dave_after = int(states_after[i][RAW_DAVE_VALUE]) if states_after is not None and states_after.shape[1] > RAW_DAVE_VALUE else int(dave_before[i])
                     winner = actor.agent_id if rewards[i] > 0 else opp.agent_id
                     winner_player_index = actor_player_index if rewards[i] > 0 else (1 - actor_player_index)
                     reward_value = max(1, int(round(abs(float(rewards[i])))))
                     points_won = max(1, int(round(abs(float(rewards[i])) * int(dave_before[i]))))
                     finished_games[i] += 1
 
-                    ended_by_double_reject = bool(states[i][65] >= 0 and int(accept_doubles[i]) == 0 and game_finished) if states.shape[1] > 65 else False
+                    ended_by_double_reject = bool(
+                        apply_doubles[i] and not accepted_step[i] and game_finished
+                    )
                     game_results.append(
                         GameResult(
                             game_id=f"{spec.match_id}_g{finished_games[i]}",
@@ -903,7 +936,7 @@ class LeagueController:
             env.roll_dice()
             rolled_dice = np.asarray(env.current_dice(), dtype=np.uint8)
             raw_turn = np.asarray(env.get_state_raw(), dtype=np.int16)
-            white_to_move = bool(raw_turn[57]) if raw_turn.shape[0] > 57 else ((turn % 2) == 0)
+            white_to_move = bool(raw_turn[RAW_WHITE_TO_MOVE]) if raw_turn.shape[0] > RAW_WHITE_TO_MOVE else ((turn % 2) == 0)
             actor_player_index = 0 if white_to_move else 1
             actor = players[actor_player_index]
             opp = players[1 - actor_player_index]
@@ -916,6 +949,7 @@ class LeagueController:
                     [local_moves],
                     [actor],
                     np.asarray([state], dtype=np.float32),
+                    np.asarray([rolled_dice], dtype=np.uint8),
                 )
                 move = move[0]
                 apply_double = int(apply_double[0])
@@ -930,6 +964,7 @@ class LeagueController:
                         np.asarray([move], dtype=np.uint8),
                         self._baseline_eval_agent,
                         np.asarray([state], dtype=np.float32),
+                        np.asarray([rolled_dice], dtype=np.uint8),
                     )
                     apply_double = int(b_apply[0])
                     accept_double = int(b_accept[0])
@@ -944,7 +979,7 @@ class LeagueController:
                 accept_double = 0
 
             raw_before = np.asarray(env.get_state_raw(), dtype=np.int16)
-            dave_value = int(raw_before[55]) if raw_before.shape[0] > 55 else 1
+            dave_value = int(raw_before[RAW_DAVE_VALUE]) if raw_before.shape[0] > RAW_DAVE_VALUE else 1
             try:
                 reward, _dave_after, accepted, done_code = env.step_move(move, apply_double=apply_double, accept_double=accept_double)
             except TypeError:
@@ -965,8 +1000,9 @@ class LeagueController:
                 "epoch": epoch,
                 "double_offered_by_agent": bool(apply_double),
                 "double_was_accepted": bool(accepted) if bool(apply_double) else False,
+                "double_acceptor_agent_id": opp.agent_id if bool(apply_double) else None,
                 "accept_double_opponent": bool(accept_double),
-                "accept_double_opportunity": bool(raw_before[65] >= 0) if raw_before.shape[0] > 65 else False,
+                "accept_double_opportunity": bool(apply_double),
                 "action_meta": {
                     "dice": [int(rolled_dice[0]), int(rolled_dice[1])],
                     "move": [int(x) for x in np.asarray(move, dtype=np.uint8).tolist()],
@@ -989,7 +1025,7 @@ class LeagueController:
                 points_won = max(1, int(round(abs(float(reward)) * max(dave_value, 1))))
                 finished_games += 1
                 raw_after = np.asarray(env.get_state_raw(), dtype=np.int16)
-                ended_by_double_reject = bool(raw_before[65] >= 0 and int(accept_double) == 0 and int(done_code) in (1, 2)) if raw_before.shape[0] > 65 else False
+                ended_by_double_reject = bool(apply_double and not accepted and int(done_code) in (1, 2))
                 results.append(
                     GameResult(
                         game_id=f"{game_id}_g{finished_games}",
@@ -1004,7 +1040,7 @@ class LeagueController:
                         winner_player_index=winner_player_index,
                         points_won=points_won,
                         reward_value=reward_value,
-                        final_dave_value=int(raw_after[55]) if raw_after.shape[0] > 55 else 1,
+                        final_dave_value=int(raw_after[RAW_DAVE_VALUE]) if raw_after.shape[0] > RAW_DAVE_VALUE else 1,
                         ended_by_double_reject=ended_by_double_reject,
                         max_steps_reached=False,
                     )
@@ -1027,7 +1063,7 @@ class LeagueController:
                         winner_player_index=actor_player_index,
                         points_won=1,
                         reward_value=1,
-                        final_dave_value=int(raw_before[55]) if raw_before.shape[0] > 55 else 1,
+                        final_dave_value=int(raw_before[RAW_DAVE_VALUE]) if raw_before.shape[0] > RAW_DAVE_VALUE else 1,
                         ended_by_double_reject=False,
                         max_steps_reached=True,
                     )

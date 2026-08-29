@@ -59,9 +59,9 @@ cmake --build build --config Release
 
 Если `bg_env` недоступен, training pipeline использует встроенный fallback-env для smoke/CI прогона.
 
-## Формат `extended_obs` (263 признака)
+## Формат `extended_obs` (266 признаков)
 
-`extended_obs` возвращается из `env.get_obs_extended()` и имеет размер `263 = 10*24 + 23`.
+`extended_obs` возвращается из `env.get_obs_extended()` и имеет размер `266 = 10*24 + 26`. Источник истины для порядка полей — `bg/src/obs.cpp`; Python-константы находятся в `python/training/observation_layout.py`.
 
 ### Векторные каналы (по 24 значения)
 - `[0:24]` — `points`: шашки текущего игрока по пунктам.
@@ -75,7 +75,7 @@ cmake --build build --config Release
 - `[192:216]` — `hit_prob_opp`: аналог `hit_prob` для blot соперника.
 - `[216:240]` — `cover_prob_opp`: аналог `cover_prob` для blot соперника.
 
-### Скаляры (23 значения)
+### Скаляры (26 значений)
 - `[240] bar`, `[241] off`, `[242] opp_bar`, `[243] opp_off`.
 - `[244] pip_count_mine`, `[245] pip_count_opp`.
 - `[246] blots_mine`, `[247] blots_opp`.
@@ -87,6 +87,8 @@ cmake --build build --config Release
 - `[257] my_left_to_win`, `[258] opp_left_to_win` (в endless-режиме выставляются в `1.0`).
 - `[259] cube_available_mine`, `[260] cube_available_opp`.
 - `[261] is_crawford_game`, `[262] double_offered`.
+- `[263] mine_all_in_home`, `[264] opp_all_in_home`.
+- `[265] race_stage_no_hit`.
 
 ## Выход агентов (`ValueAgent`)
 

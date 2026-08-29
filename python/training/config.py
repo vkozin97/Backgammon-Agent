@@ -5,10 +5,12 @@ from pathlib import Path
 import json
 from typing import Any
 
+from .observation_layout import OBSERVATION_DIM
+
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 266
+    input_dim: int = OBSERVATION_DIM
     output_dim: int = 31
     activation_fn: str = "relu"
     dropout_enabled: bool = False
@@ -32,11 +34,11 @@ class TrainConfig:
     batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-4
-    min_learning_rate: float = 1e-7
-    lr_decay_factor: float = 0.99
+    min_learning_rate: float = 5e-7
+    lr_decay_factor: float = 0.997
     lr_decay_every_steps: int = 50
-    freeze_weights_from_epoch: int = 240
-    freeze_weights_till_epoch: int = 360
+    freeze_weights_from_epoch: int = 300
+    freeze_weights_till_epoch: int = 400
     lr_during_freeze: float = 1e-5
     lr_decay_during_freeze: float = 0.98
     weight_decay: float = 0.0
@@ -63,8 +65,8 @@ class LeagueConfig:
     min_replay_size_to_train: int = 100
     alpha_recency: float = 0.8
     alpha_uniform: float = 0.2
-    recency_decay: float = 0.9
-    replay_window_epochs: int = 20
+    recency_decay: float = 0.95
+    replay_window_epochs: int = 40
     sigmoid_parameter: float = 6.74755607143124
     batched_obs_threads: int = 8
     selfplay_temperature: float = 0.1
@@ -72,11 +74,11 @@ class LeagueConfig:
     choose_best_probability: float = 0.3
     choose_best_decay: float = 0.9
     conservative_baseline_double_copy_prob: float = 0.0
-    baseline_conservative_double_copy_start_epoch: int = 360
-    baseline_conservative_double_copy_end_epoch: int = 420
+    baseline_conservative_double_copy_start_epoch: int = 300
+    baseline_conservative_double_copy_end_epoch: int = 350
     agents_double_decision_prob: float = 0.0
-    agents_double_decision_start_epoch: int = 240
-    agents_double_decision_end_epoch: int = 300
+    agents_double_decision_start_epoch: int = 300
+    agents_double_decision_end_epoch: int = 350
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
     calibrate_every_k_epochs: int = 1

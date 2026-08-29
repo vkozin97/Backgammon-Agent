@@ -12,6 +12,7 @@ from .config import ExperimentConfig, save_config
 from .league import LeagueController
 from .replay import ReplayBuffer
 from .plotting import load_metrics_history_from_checkpoints, plot_metrics_history
+from .observation_layout import OBS_MY_LEFT, OBS_OPP_LEFT, OBSERVATION_DIM
 
 
 MATCH_VECTOR_DIM = 12
@@ -143,10 +144,10 @@ def _schedule_origin_epoch(start_epoch: int, calculate_learning_params: bool) ->
 
 def _left_to_win_from_state_vector(state_vector: np.ndarray) -> tuple[int, int]:
     vec = np.asarray(state_vector, dtype=np.float32).reshape(-1)
-    if vec.size < 6:
+    if vec.size < OBSERVATION_DIM:
         return MATCH_VECTOR_DIM - 1, MATCH_VECTOR_DIM - 1
-    my_left = int(np.clip(np.round(float(vec[-6])), 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(vec[-5])), 0, MATCH_VECTOR_DIM - 1))
+    my_left = int(np.clip(np.round(float(vec[OBS_MY_LEFT])), 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(vec[OBS_OPP_LEFT])), 0, MATCH_VECTOR_DIM - 1))
     return my_left, opp_left
 
 def _games_for_pair(game_results: list, agent_id: str, opponent_id: str) -> list:
@@ -226,9 +227,8 @@ def _current_winrates_from_calibration(game_results: list, all_agent_ids: list[s
 
 def _pending_accept_target_from_step(step: dict) -> float:
     meta = step.get("action_meta", {}) if isinstance(step, dict) else {}
-    raw_state = np.asarray(meta.get("raw_state", []), dtype=np.float32).reshape(-1)
-    if raw_state.size > 65:
-        val = float(raw_state[65])
+    if "accept_double_for_next_offer" in meta:
+        val = float(meta["accept_double_for_next_offer"])
         if np.isfinite(val) and val >= 0.0:
             return float(np.clip(val, 0.0, 1.0))
     return 1.0 if bool(step.get("accept_double_opponent", False)) else 0.0
@@ -270,12 +270,15 @@ def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
 
         for st in getattr(g, "steps", []):
             aid = st.get("agent_id")
-            if aid in offers_by_agent and bool(st.get("double_offered_by_agent", False)):
+            offered = bool(st.get("double_offered_by_agent", False))
+            if aid in offers_by_agent and offered:
                 offers_by_agent[aid] += 1.0
-            if aid in accept_cnt_by_agent and bool(st.get("accept_double_opportunity", False)):
-                accept_opp_by_agent[aid] += 1.0
-                if bool(st.get("accept_double_opponent", False)):
-                    accept_cnt_by_agent[aid] += 1.0
+            if offered:
+                acceptor = st.get("double_acceptor_agent_id", st.get("opponent_id"))
+                if acceptor in accept_opp_by_agent:
+                    accept_opp_by_agent[acceptor] += 1.0
+                    if bool(st.get("double_was_accepted", False)):
+                        accept_cnt_by_agent[acceptor] += 1.0
 
     offers_per_game_by_agent = {
         aid: float(offers_by_agent[aid] / games_by_agent[aid]) if games_by_agent[aid] > 0 else 0.0
@@ -409,6 +412,9 @@ def _delete_checkpoints_from_epoch(checkpoint_dir: str, start_epoch: int) -> Non
 
 
 def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning_params: bool = True) -> list[dict]:
+    # One shared bear-off database is used by every agent in this process.
+    from .endgame_policy import get_endgame_positions
+    get_endgame_positions()
     np.random.seed(cfg.train.seed)
     agents = build_trainable_agents(cfg, cfg.train.seed)
     league = LeagueController(cfg.league, seed=cfg.train.seed)

@@ -19,6 +19,20 @@ from training.agents import (
 from training.config import ExperimentConfig
 from training.league import ConservativeBaselineAgent
 from training.observation import state_to_observation
+from training.observation_layout import (
+    OBS_COVER_PROB_MINE,
+    OBS_COVER_PROB_OPP,
+    OBS_HIT_PROB_MINE,
+    OBS_HIT_PROB_OPP,
+    POINTS_DIM,
+    RAW_CUBE_AVAILABLE_MINE,
+    RAW_CUBE_AVAILABLE_OPP,
+    RAW_DOUBLE_OFFERED,
+    RAW_N_GAMES,
+    RAW_STATE_DIM,
+    RAW_WHITE_TO_MOVE,
+)
+from training.endgame_policy import can_use_endgame_database, endgame_expectation, move_bears_off_all, to_mover_perspective
 
 
 # ----------------- raw decode -----------------
@@ -107,11 +121,11 @@ DICE_GAP = 12
 LEGAL_MOVES_UNIQUE = True
 CUBE_SIZE = 52
 
-OBS_BASE_HIT_SELF = 144
-OBS_BASE_COVER_SELF = 168
-OBS_BASE_HIT_OPP = 192
-OBS_BASE_COVER_OPP = 216
-OBS_POINTS = 24
+OBS_BASE_HIT_SELF = OBS_HIT_PROB_MINE
+OBS_BASE_COVER_SELF = OBS_COVER_PROB_MINE
+OBS_BASE_HIT_OPP = OBS_HIT_PROB_OPP
+OBS_BASE_COVER_OPP = OBS_COVER_PROB_OPP
+OBS_POINTS = POINTS_DIM
 MATCH_VECTOR_DIM = 12
 REWARD_VECTOR_DIM = 6
 REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
@@ -120,14 +134,16 @@ REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 agent_mode = "hint"  # "none" | "hint" | "play" | "replay"
 viewer_n_games = 100  # number of games in endless mode or points to win the match in regular mode
 viewer_endless_mode = True
-agent_id = "trainable_1"
-agent_epoch = 528
+agent_id = "trainable_3"
+agent_epoch = 399
 agent_checkpoint_dir = "training_stats/checkpoints"
 replay_storage_dir = "training_stats/replay"
 replay_match_id = None
 replay_game_number_in_match = None
 
-RAW_STATE_FULL_DIM = 69
+RAW_STATE_FULL_DIM = RAW_STATE_DIM
+
+ENV_SEED = 42
 
 
 def _require_full_state69(state: np.ndarray) -> np.ndarray:
@@ -242,14 +258,32 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
             for i, mv in enumerate(sorted_moves_for_panel(moves, turn_white=turn_white))
         ]
 
-    if getattr(agent, "agent_id", "") == "conservative_baseline":
-        if len(moves) == 0:
-            return []
-        state0 = snapshot(env)
+    state0 = snapshot(env)
+    current_dice = np.asarray(env.current_dice(), dtype=np.uint8)
+    if can_use_endgame_database(state0):
         sim = bg_env.Env(0)
         scored = []
         for i, mv in enumerate(moves):
             restore(sim, state0)
+            sim.set_dice(current_dice)
+            _, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
+            if done or move_bears_off_all(state0, mv):
+                expectation = 0.0
+            else:
+                post = to_mover_perspective(state0, np.asarray(sim.get_state_raw(), dtype=np.int16))
+                expectation = endgame_expectation(post)
+            scored.append((expectation, i, np.asarray(mv, dtype=np.uint8)))
+        scored.sort(key=lambda item: (item[0], tuple(int(v) for v in item[2].tolist())))
+        return [(i, mv, expectation, None) for expectation, i, mv in scored]
+
+    if getattr(agent, "agent_id", "") == "conservative_baseline":
+        if len(moves) == 0:
+            return []
+        sim = bg_env.Env(0)
+        scored = []
+        for i, mv in enumerate(moves):
+            restore(sim, state0)
+            sim.set_dice(current_dice)
             sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
             post = np.asarray(sim.get_state_raw(), dtype=np.int16)
             score = agent._score_move(state0, post)
@@ -259,10 +293,10 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
         return [(i, mv, None, None) for i, mv, _ in scored]
 
     sim = bg_env.Env(0)
-    state0 = snapshot(env)
     result = []
     for i, mv in enumerate(moves):
         restore(sim, state0)
+        sim.set_dice(current_dice)
         reward, _, _, done = sim.step_move(np.asarray(mv, dtype=np.uint8), 0, 1)
         if done:
             value = 1.0
@@ -316,7 +350,7 @@ def _canonical_panel_reward_vec(agent, raw_state: np.ndarray) -> np.ndarray:
 def _raw_state_to_player_observation(raw_state: np.ndarray, player_is_white: bool) -> np.ndarray:
     raw = np.asarray(raw_state, dtype=np.float32).reshape(-1)
     obs = state_to_observation(raw)
-    current_player_is_white = bool(int(raw[57])) if raw.size > 57 else True
+    current_player_is_white = bool(int(raw[RAW_WHITE_TO_MOVE])) if raw.size > RAW_WHITE_TO_MOVE else True
     if bool(player_is_white) == current_player_is_white:
         return obs
     return flip_observation_perspective(obs)
@@ -345,11 +379,11 @@ def _agent_hint_lines(
     if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
         return []
 
-    endless = int(np.asarray(raw_state, dtype=np.int16).reshape(-1)[56]) < 0 if np.asarray(raw_state).size > 56 else False
+    endless = int(np.asarray(raw_state, dtype=np.int16).reshape(-1)[RAW_N_GAMES]) < 0 if np.asarray(raw_state).size > RAW_N_GAMES else False
     raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
     raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
-    now_white = bool(raw_now[57]) if raw_now.size > 57 else True
-    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
+    now_white = bool(raw_now[RAW_WHITE_TO_MOVE]) if raw_now.size > RAW_WHITE_TO_MOVE else True
+    post_white = bool(raw_post[RAW_WHITE_TO_MOVE]) if raw_post.size > RAW_WHITE_TO_MOVE else (not now_white)
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
     obs_after = _raw_state_to_player_observation(raw_post, post_white)
     obs_post_current_player = _raw_state_to_player_observation(raw_post, now_white)
@@ -396,9 +430,9 @@ def _debug_print_hint_context(
 
     raw_now = np.asarray(raw_state, dtype=np.int16).reshape(-1)
     raw_post = np.asarray(raw_after_selected_move, dtype=np.int16).reshape(-1)
-    endless = int(raw_now[56]) < 0 if raw_now.size > 56 else False
-    now_white = bool(raw_now[57]) if raw_now.size > 57 else True
-    post_white = bool(raw_post[57]) if raw_post.size > 57 else (not now_white)
+    endless = int(raw_now[RAW_N_GAMES]) < 0 if raw_now.size > RAW_N_GAMES else False
+    now_white = bool(raw_now[RAW_WHITE_TO_MOVE]) if raw_now.size > RAW_WHITE_TO_MOVE else True
+    post_white = bool(raw_post[RAW_WHITE_TO_MOVE]) if raw_post.size > RAW_WHITE_TO_MOVE else (not now_white)
 
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
     obs_post_turn = _raw_state_to_player_observation(raw_post, post_white)
@@ -444,22 +478,22 @@ def _debug_print_hint_context(
         print(
             "raw_now.controls",
             {
-                "turn_white": int(raw_now[57]),
+                "turn_white": int(raw_now[RAW_WHITE_TO_MOVE]),
                 "cube_owner_raw63": int(raw_now[63]),
-                "cube_avail_66": int(raw_now[66]),
-                "cube_avail_67": int(raw_now[67]),
-                "double_offered_68": int(raw_now[68]),
+                "cube_available_mine": int(raw_now[RAW_CUBE_AVAILABLE_MINE]),
+                "cube_available_opp": int(raw_now[RAW_CUBE_AVAILABLE_OPP]),
+                "double_offered": int(raw_now[RAW_DOUBLE_OFFERED]),
             },
         )
     if raw_post.size > 68:
         print(
             "raw_post.controls",
             {
-                "turn_white": int(raw_post[57]),
+                "turn_white": int(raw_post[RAW_WHITE_TO_MOVE]),
                 "cube_owner_raw63": int(raw_post[63]),
-                "cube_avail_66": int(raw_post[66]),
-                "cube_avail_67": int(raw_post[67]),
-                "double_offered_68": int(raw_post[68]),
+                "cube_available_mine": int(raw_post[RAW_CUBE_AVAILABLE_MINE]),
+                "cube_available_opp": int(raw_post[RAW_CUBE_AVAILABLE_OPP]),
+                "double_offered": int(raw_post[RAW_DOUBLE_OFFERED]),
             },
         )
     print(
@@ -898,7 +932,7 @@ def _format_prob_row(label: str, values: list[int]) -> str:
     return f"{label:>2} " + " ".join(f"{v:>2d}" for v in values)
 
 
-def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines, hint_lines, agent_thinking=False):
+def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_steps, turn_white, move_hints, selected_hint_idx, prob_table_lines, hint_lines, agent_thinking=False, endgame_active=False):
     x, y = BOARD_W + 12, 16
     draw_text(surface, font, "Controls:", x, y)
     y += 28
@@ -909,6 +943,9 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
     y += 8
     draw_text(surface, font, f"Legal moves: {len(moves)}", x, y)
     y += 24
+    if endgame_active:
+        draw_text(surface, small_font, "ENDGAME — table move", x, y, SUCCESS)
+        y += 20
     draw_text(surface, small_font, f"Manual: {' | '.join(f'{a}->{b}' for a,b in manual_steps) or '(empty)'}", x, y, ACCENT)
 
     if hint_lines:
@@ -945,7 +982,10 @@ def draw_panel(surface, font, small_font, tiny_font, moves, info_lines, manual_s
                 ev_match = float(np.dot(REWARD_VALUES, np.asarray(vec_hint, dtype=np.float32)))
                 line = f"{line}  revR6={_format_vec_percent(vec_hint)} EV={ev_match:.3f}"
             elif value_hint is not None:
-                line = f"{line}  1-p={value_hint:.4f}"
+                metric_name = "EG-exp" if endgame_active else "1-p"
+                line = f"{line}  {metric_name}={value_hint:.4f}"
+            if endgame_active and i == 0:
+                line = f"{line}  EG"
         draw_text(surface, small_font, f"[{i:3d}] {line}", x, y, color)
         y += 18
 
@@ -965,7 +1005,7 @@ def main():
     tiny = pygame.font.Font(FONT_NAME, 13)
     clock = pygame.time.Clock()
 
-    env = bg_env.Env(123, n_games=int(viewer_n_games), endless_mode=bool(viewer_endless_mode))
+    env = bg_env.Env(ENV_SEED, n_games=int(viewer_n_games), endless_mode=bool(viewer_endless_mode))
     env.reset()
 
     replay_steps = []
@@ -983,7 +1023,7 @@ def main():
         agent = load_eval_agent(agent_id, agent_epoch, agent_checkpoint_dir)
 
     def is_white_turn_from_env() -> bool:
-        return int(get_env_state()[57]) == 1
+        return int(get_env_state()[RAW_WHITE_TO_MOVE]) == 1
 
     def get_env_state() -> np.ndarray:
         if hasattr(env, "get_state_full"):
@@ -1513,6 +1553,11 @@ def main():
             prob_table_lines,
             hint_lines,
             agent_thinking=agent_thinking,
+            endgame_active=bool(
+                agent is not None
+                and dice_rolled
+                and can_use_endgame_database(np.asarray(turn_start_state, dtype=np.int16))
+            ),
         )
         pygame.display.flip()
 

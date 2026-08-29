@@ -7,7 +7,47 @@ import torch
 from torch import nn
 
 from .config import ModelConfig, TrainConfig
-from .observation import POINTS_DIM, VECTOR_CHANNELS
+from .observation_layout import (
+    OBS_ANCHOR_PIPS_MINE,
+    OBS_ANCHOR_PIPS_OPP,
+    OBS_ANCHORS,
+    OBS_ANCHORS_MINE,
+    OBS_ANCHORS_OPP,
+    OBS_BAR,
+    OBS_BLOT_PIPS_MINE,
+    OBS_BLOT_PIPS_OPP,
+    OBS_BLOTS,
+    OBS_BLOTS_MINE,
+    OBS_BLOTS_OPP,
+    OBS_COVER_PROB_MINE,
+    OBS_COVER_PROB_OPP,
+    OBS_CUBE_AVAILABLE_MINE,
+    OBS_CUBE_AVAILABLE_OPP,
+    OBS_DAVE_VALUE,
+    OBS_DOUBLE_OFFERED,
+    OBS_HIT_PROB_MINE,
+    OBS_HIT_PROB_OPP,
+    OBS_IS_CRAWFORD_GAME,
+    OBS_MINE_ALL_IN_HOME,
+    OBS_MINE_SCORE,
+    OBS_MY_LEFT,
+    OBS_OFF,
+    OBS_OPP_ALL_IN_HOME,
+    OBS_OPP_ANCHORS,
+    OBS_OPP_BAR,
+    OBS_OPP_BLOTS,
+    OBS_OPP_LEFT,
+    OBS_OPP_OFF,
+    OBS_OPP_POINTS,
+    OBS_OPP_SCORE,
+    OBS_PIP_MINE,
+    OBS_PIP_OPP,
+    OBS_POINTS,
+    OBS_RACE_STAGE_NO_HIT,
+    OBSERVATION_DIM,
+    POINTS_DIM,
+    VECTOR_CHANNELS,
+)
 from match_win_probs import get_match_win_probs
 
 
@@ -42,37 +82,31 @@ def reward_expectation(probs_row: np.ndarray) -> float:
 
 def extract_obs_controls(obs: np.ndarray) -> tuple[int, int, int, int, int]:
     v = np.asarray(obs, dtype=np.float32).reshape(-1)
-    my_left = int(np.clip(np.round(float(v[-6])) if v.size >= 6 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    opp_left = int(np.clip(np.round(float(v[-5])) if v.size >= 5 else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
-    dave_val = int(max(1, round(float(v[-7])))) if v.size >= 7 else 1
-    my_double_avail = int(round(float(v[-4]))) if v.size >= 4 else 0
-    opp_double_avail = int(round(float(v[-3]))) if v.size >= 3 else 0
+    my_left = int(np.clip(np.round(float(v[OBS_MY_LEFT])) if v.size > OBS_MY_LEFT else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    opp_left = int(np.clip(np.round(float(v[OBS_OPP_LEFT])) if v.size > OBS_OPP_LEFT else MATCH_VECTOR_DIM - 1, 0, MATCH_VECTOR_DIM - 1))
+    dave_val = int(max(1, round(float(v[OBS_DAVE_VALUE])))) if v.size > OBS_DAVE_VALUE else 1
+    my_double_avail = int(round(float(v[OBS_CUBE_AVAILABLE_MINE]))) if v.size > OBS_CUBE_AVAILABLE_MINE else 0
+    opp_double_avail = int(round(float(v[OBS_CUBE_AVAILABLE_OPP]))) if v.size > OBS_CUBE_AVAILABLE_OPP else 0
     return my_left, opp_left, dave_val, my_double_avail, opp_double_avail
 
 
 def set_obs_double_state(obs: np.ndarray) -> np.ndarray:
     x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 7:
-        x[-7] = x[-7] * 2.0
-    if x.size >= 4:
-        x[-4] = 0.0
-    if x.size >= 3:
-        x[-3] = 1.0
-    if x.size >= 1:
-        x[-1] = 1.0
+    if x.size >= OBSERVATION_DIM:
+        x[OBS_DAVE_VALUE] = x[OBS_DAVE_VALUE] * 2.0
+        x[OBS_CUBE_AVAILABLE_MINE] = 0.0
+        x[OBS_CUBE_AVAILABLE_OPP] = 1.0
+        x[OBS_DOUBLE_OFFERED] = 1.0
     return x
 
 
 def set_obs_opponent_double_offer(obs: np.ndarray) -> np.ndarray:
     x = np.asarray(obs, dtype=np.float32).copy()
-    if x.size >= 7:
-        x[-7] = x[-7] * 2.0
-    if x.size >= 4:
-        x[-4] = 1.0
-    if x.size >= 3:
-        x[-3] = 0.0
-    if x.size >= 1:
-        x[-1] = 1.0
+    if x.size >= OBSERVATION_DIM:
+        x[OBS_DAVE_VALUE] = x[OBS_DAVE_VALUE] * 2.0
+        x[OBS_CUBE_AVAILABLE_MINE] = 1.0
+        x[OBS_CUBE_AVAILABLE_OPP] = 0.0
+        x[OBS_DOUBLE_OFFERED] = 1.0
     return x
 
 
@@ -87,43 +121,28 @@ def flip_observation_perspective(obs: np.ndarray) -> np.ndarray:
         out[start_a:start_a + width] = x[start_b:start_b + width][::-1]
         out[start_b:start_b + width] = x[start_a:start_a + width][::-1]
 
-    _flip_pair(0, POINTS_DIM)  # points / opp_points
-    _flip_pair(POINTS_DIM * 2, POINTS_DIM * 3)  # blots / opp_blots
-    _flip_pair(POINTS_DIM * 4, POINTS_DIM * 5)  # anchors / opp_anchors
-    _flip_pair(POINTS_DIM * 6, POINTS_DIM * 8)  # hit_prob_mine / hit_prob_opp
-    _flip_pair(POINTS_DIM * 7, POINTS_DIM * 9)  # cover_prob_mine / cover_prob_opp
+    _flip_pair(OBS_POINTS, OBS_OPP_POINTS)
+    _flip_pair(OBS_BLOTS, OBS_OPP_BLOTS)
+    _flip_pair(OBS_ANCHORS, OBS_OPP_ANCHORS)
+    _flip_pair(OBS_HIT_PROB_MINE, OBS_HIT_PROB_OPP)
+    _flip_pair(OBS_COVER_PROB_MINE, OBS_COVER_PROB_OPP)
 
-    scalar_base = VECTOR_CHANNELS * POINTS_DIM
-    if out.size >= scalar_base + 17:
-        out[scalar_base + 0] = x[scalar_base + 2]  # bar
-        out[scalar_base + 1] = x[scalar_base + 3]  # off
-        out[scalar_base + 2] = x[scalar_base + 0]  # opp_bar
-        out[scalar_base + 3] = x[scalar_base + 1]  # opp_off
-        out[scalar_base + 4] = x[scalar_base + 5]  # pip_mine
-        out[scalar_base + 5] = x[scalar_base + 4]  # pip_opp
-        out[scalar_base + 6] = x[scalar_base + 7]  # blots_mine
-        out[scalar_base + 7] = x[scalar_base + 6]  # blots_opp
-        out[scalar_base + 8] = x[scalar_base + 9]  # anchors_mine
-        out[scalar_base + 9] = x[scalar_base + 8]  # anchors_opp
-        out[scalar_base + 10] = x[scalar_base + 11]  # blot_pips_mine
-        out[scalar_base + 11] = x[scalar_base + 10]  # blot_pips_opp
-        out[scalar_base + 12] = x[scalar_base + 13]  # anchor_pips_mine
-        out[scalar_base + 13] = x[scalar_base + 12]  # anchor_pips_opp
-        out[scalar_base + 14] = x[scalar_base + 15]  # mine_all_in_home
-        out[scalar_base + 15] = x[scalar_base + 14]  # opp_all_in_home
-        out[scalar_base + 16] = x[scalar_base + 16]  # race_stage_no_hit
-
-    match_base = scalar_base + 17
-    if out.size >= match_base + 9:
-        out[match_base + 0] = x[match_base + 1]  # mine_score
-        out[match_base + 1] = x[match_base + 0]  # opp_score
-        out[match_base + 2] = x[match_base + 2]  # dave_value
-        out[match_base + 3] = x[match_base + 4]  # my_left
-        out[match_base + 4] = x[match_base + 3]  # opp_left
-        out[match_base + 5] = x[match_base + 6]  # cube_available_mine
-        out[match_base + 6] = x[match_base + 5]  # cube_available_opp
-        out[match_base + 7] = x[match_base + 7]  # is_crawford_game
-        out[match_base + 8] = x[match_base + 8]  # double_offered
+    if out.size >= OBSERVATION_DIM:
+        for mine_idx, opp_idx in (
+            (OBS_BAR, OBS_OPP_BAR),
+            (OBS_OFF, OBS_OPP_OFF),
+            (OBS_PIP_MINE, OBS_PIP_OPP),
+            (OBS_BLOTS_MINE, OBS_BLOTS_OPP),
+            (OBS_ANCHORS_MINE, OBS_ANCHORS_OPP),
+            (OBS_BLOT_PIPS_MINE, OBS_BLOT_PIPS_OPP),
+            (OBS_ANCHOR_PIPS_MINE, OBS_ANCHOR_PIPS_OPP),
+            (OBS_MINE_SCORE, OBS_OPP_SCORE),
+            (OBS_MY_LEFT, OBS_OPP_LEFT),
+            (OBS_CUBE_AVAILABLE_MINE, OBS_CUBE_AVAILABLE_OPP),
+            (OBS_MINE_ALL_IN_HOME, OBS_OPP_ALL_IN_HOME),
+        ):
+            out[mine_idx] = x[opp_idx]
+            out[opp_idx] = x[mine_idx]
 
     return out
 
