@@ -49,6 +49,27 @@ MATCH_VECTOR_DIM = 12
 MODEL_OUTPUT_DIM = 31
 
 
+def _unpack_batched_step_result(step_ret, n_games: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Normalize batched environment step results.
+
+    The current C++ batched binding returns ``(rewards, accepted, done)``.
+    Older/test implementations may return the scalar-env-shaped
+    ``(rewards, dave_after, accepted, done)`` tuple.
+    """
+    if not isinstance(step_ret, tuple) or len(step_ret) < 2:
+        raise TypeError("Batched step_apply must return at least (rewards, done)")
+
+    rewards = np.asarray(step_ret[0], dtype=np.float32)
+    done_step = np.asarray(step_ret[-1], dtype=np.uint8)
+    if len(step_ret) >= 4:
+        accepted_step = np.asarray(step_ret[2], dtype=np.uint8)
+    elif len(step_ret) == 3:
+        accepted_step = np.asarray(step_ret[1], dtype=np.uint8)
+    else:
+        accepted_step = np.zeros((int(n_games),), dtype=np.uint8)
+    return rewards, accepted_step, done_step
+
+
 def _is_endless_state(raw_state: np.ndarray) -> bool:
     rs = np.asarray(raw_state, dtype=np.int16).reshape(-1)
     return rs.size > RAW_N_GAMES and int(rs[RAW_N_GAMES]) < 0
@@ -804,15 +825,7 @@ class LeagueController:
                 step_ret = env.step_apply(actions, apply_doubles, accept_doubles)
             except TypeError:
                 step_ret = env.step_apply(actions)
-            if isinstance(step_ret, tuple) and len(step_ret) >= 2:
-                rewards, done_step = step_ret[0], step_ret[-1]
-                accepted_step = step_ret[2] if len(step_ret) >= 3 else np.zeros((n_games,), dtype=np.uint8)
-            else:
-                rewards, done_step = step_ret
-                accepted_step = np.zeros((n_games,), dtype=np.uint8)
-            rewards = np.asarray(rewards, dtype=np.float32)
-            done_code = np.asarray(done_step, dtype=np.uint8)
-            accepted_step = np.asarray(accepted_step, dtype=np.uint8)
+            rewards, accepted_step, done_code = _unpack_batched_step_result(step_ret, n_games)
             states_after = None
             if np.any(done_code[active_idx] > 0):
                 states_after = np.asarray(env.get_states_raw(), dtype=np.int16)

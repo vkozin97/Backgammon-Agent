@@ -13,7 +13,9 @@ from training.pipeline import (
     _sigmoid_growth_probability,
     _learning_rate_for_epoch,
     _epoch_uses_output_freeze,
+    _training_phase_for_epoch,
     _games_stats,
+    _opponent_accept_target_from_step,
 )
 from training.agents import (
     MATCH_VECTOR_DIM,
@@ -27,7 +29,13 @@ from training.agents import (
     extract_obs_controls,
     set_obs_double_state,
 )
-from training.league import ConservativeBaselineAgent, RandomAgent, pass_move, GameResult
+from training.league import (
+    ConservativeBaselineAgent,
+    RandomAgent,
+    pass_move,
+    GameResult,
+    _unpack_batched_step_result,
+)
 
 
 class _NoMoveEnv:
@@ -133,6 +141,8 @@ def test_config_roundtrip(tmp_path: Path):
     assert loaded.train.num_epochs == cfg.train.num_epochs
     assert loaded.train.winrate_window_size == cfg.train.winrate_window_size
     assert loaded.train.value_window_size == cfg.train.value_window_size
+    assert loaded.train.lr_after_freeze == 2e-5
+    assert loaded.train.lr_decay_after_freeze == 0.995
     assert loaded.checkpoint_dir == cfg.checkpoint_dir
 
 
@@ -143,6 +153,7 @@ def test_one_training_epoch_and_checkpoint(tmp_path: Path):
     cfg.train.batch_size = 8
     cfg.league.matches_per_agent = 1
     cfg.league.min_replay_size_to_train = 1
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
 
@@ -202,6 +213,7 @@ def test_temperature_decay_progression(tmp_path: Path):
     cfg.league.matches_per_agent = 1
     cfg.league.selfplay_temperature = 1.0
     cfg.league.temperature_decay = 0.9
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
 
@@ -619,6 +631,7 @@ def test_run_training_can_resume_from_epoch(tmp_path: Path):
     cfg.train.num_epochs = 1
     cfg.train.updates_per_epoch_per_agent = 0
     cfg.league.matches_per_agent = 1
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
     cfg.league.replay_storage_dir = str(tmp_path / "replay")
@@ -753,13 +766,18 @@ def test_play_game_respects_max_steps_per_game():
     assert result[0].turns == 2
 
 
-def test_terminal_outcome_accept_target_uses_recorded_next_offer_decision():
+def test_terminal_outcome_accept_target_uses_opponents_current_offer_decision():
+    raw_state = [0] * 69
+    raw_state[65] = 1
     step = {
         "agent_id": "a",
         "player_index": 0,
         "state_vector": np.zeros((266,), dtype=np.float32),
         "accept_double_opponent": False,
-        "action_meta": {"accept_double_for_next_offer": 1},
+        "action_meta": {
+            "raw_state": raw_state,
+            "accept_double_for_next_offer": 0,
+        },
     }
     game = GameResult(
         game_id="g",
@@ -777,6 +795,85 @@ def test_terminal_outcome_accept_target_uses_recorded_next_offer_decision():
     )
     out = _terminal_outcome_for_step(game, step)
     assert out[24] == 1.0
+
+
+def test_opponent_accept_target_ignores_movers_next_offer_decision():
+    raw_accept = [0] * 69
+    raw_accept[65] = 1
+    raw_reject = [0] * 69
+    raw_reject[65] = 0
+
+    assert _opponent_accept_target_from_step({
+        "action_meta": {
+            "raw_state": raw_accept,
+            "accept_double_for_next_offer": 0,
+        },
+    }) == 1.0
+    assert _opponent_accept_target_from_step({
+        "action_meta": {
+            "raw_state": raw_reject,
+            "accept_double_for_next_offer": 1,
+        },
+    }) == 0.0
+
+
+def test_opponent_accept_target_uses_actual_response_when_double_was_offered():
+    step = {
+        "double_offered_by_agent": True,
+        "double_was_accepted": True,
+        "action_meta": {
+            "accept_double_for_next_offer": 0,
+        },
+    }
+
+    assert _opponent_accept_target_from_step(step) == 1.0
+
+
+def test_opponent_accept_target_prefers_pre_step_raw_decision():
+    raw_state = [0] * 69
+    raw_state[65] = 1
+    step = {
+        "double_offered_by_agent": True,
+        # Deliberately inconsistent to ensure a malformed result tuple cannot
+        # override the response the environment had stored before the step.
+        "double_was_accepted": False,
+        "action_meta": {
+            "raw_state": raw_state,
+            "accept_double_for_next_offer": 0,
+        },
+    }
+
+    assert _opponent_accept_target_from_step(step) == 1.0
+
+
+def test_unpack_batched_step_result_does_not_confuse_accepted_with_done():
+    rewards = np.asarray([0.0, 1.0], dtype=np.float32)
+    accepted = np.asarray([1, 0], dtype=np.uint8)
+    done = np.asarray([0, 1], dtype=np.uint8)
+
+    got_rewards, got_accepted, got_done = _unpack_batched_step_result(
+        (rewards, accepted, done),
+        n_games=2,
+    )
+
+    assert np.array_equal(got_rewards, rewards)
+    assert np.array_equal(got_accepted, accepted)
+    assert np.array_equal(got_done, done)
+
+
+def test_unpack_batched_step_result_supports_legacy_four_tuple():
+    rewards = np.asarray([0.0], dtype=np.float32)
+    dave_after = np.asarray([4], dtype=np.int32)
+    accepted = np.asarray([1], dtype=np.uint8)
+    done = np.asarray([0], dtype=np.uint8)
+
+    _, got_accepted, got_done = _unpack_batched_step_result(
+        (rewards, dave_after, accepted, done),
+        n_games=1,
+    )
+
+    assert np.array_equal(got_accepted, accepted)
+    assert np.array_equal(got_done, done)
 
 
 def test_games_stats_attributes_double_acceptance_to_offer_recipient():
@@ -1124,6 +1221,51 @@ def test_epoch_uses_output_freeze_is_inclusive():
     assert not _epoch_uses_output_freeze(epoch=401, freeze_from_epoch=250, freeze_till_epoch=400)
 
 
+def test_training_phase_restarts_lr_decay_after_freeze():
+    cfg = ExperimentConfig()
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 50
+    cfg.train.updates_per_epoch_per_agent = 100
+    cfg.train.freeze_weights_from_epoch = 2
+    cfg.train.freeze_weights_till_epoch = 3
+    cfg.train.lr_during_freeze = 5e-4
+    cfg.train.lr_decay_during_freeze = 0.25
+    cfg.train.lr_after_freeze = 2e-5
+    cfg.train.lr_decay_after_freeze = 0.995
+
+    before = _training_phase_for_epoch(cfg, epoch=1, calculate_learning_params=True)
+    frozen = _training_phase_for_epoch(cfg, epoch=3, calculate_learning_params=True)
+    first_after = _training_phase_for_epoch(cfg, epoch=4, calculate_learning_params=True)
+    second_after = _training_phase_for_epoch(cfg, epoch=5, calculate_learning_params=True)
+
+    assert np.isclose(before[0], 1e-3 * (0.5 ** 2))
+    assert before[1:] == (0.5, 0, False)
+    assert np.isclose(frozen[0], 5e-4 * (0.25 ** 2))
+    assert frozen[1:] == (0.25, 2, True)
+    assert np.isclose(first_after[0], 2e-5)
+    assert first_after[1:] == (0.995, 4, False)
+    assert np.isclose(second_after[0], 2e-5 * (0.995 ** 2))
+    assert second_after[1:] == (0.995, 4, False)
+
+
+def test_training_phase_uses_regular_schedule_when_freeze_is_disabled():
+    cfg = ExperimentConfig()
+    cfg.train.learning_rate = 1e-3
+    cfg.train.lr_decay_factor = 0.5
+    cfg.train.lr_decay_every_steps = 50
+    cfg.train.updates_per_epoch_per_agent = 100
+    cfg.train.freeze_weights_from_epoch = 5
+    cfg.train.freeze_weights_till_epoch = 4
+    cfg.train.lr_after_freeze = 2e-5
+    cfg.train.lr_decay_after_freeze = 0.995
+
+    phase = _training_phase_for_epoch(cfg, epoch=6, calculate_learning_params=True)
+
+    assert np.isclose(phase[0], 1e-3 * (0.5 ** 12))
+    assert phase[1:] == (0.5, 0, False)
+
+
 def test_value_agent_can_freeze_all_but_output_layer():
     cfg = ExperimentConfig()
     agent = ValueAgent("trainable_0", "A", cfg.model_group_a, cfg.train, seed=0)
@@ -1140,7 +1282,7 @@ def test_value_agent_can_freeze_all_but_output_layer():
     assert all(param.requires_grad for _, param in agent.model.named_parameters())
 
 
-def test_run_training_switches_lr_policy_during_freeze_and_restores_regular_schedule(tmp_path: Path, monkeypatch):
+def test_run_training_switches_lr_policy_during_and_after_freeze(tmp_path: Path, monkeypatch):
     import training.pipeline as pipeline_mod
 
     class FakeAgent:
@@ -1200,7 +1342,7 @@ def test_run_training_switches_lr_policy_during_freeze_and_restores_regular_sche
     monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
 
     cfg = ExperimentConfig()
-    cfg.train.num_epochs = 3
+    cfg.train.num_epochs = 4
     cfg.train.updates_per_epoch_per_agent = 1
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
@@ -1209,6 +1351,8 @@ def test_run_training_switches_lr_policy_during_freeze_and_restores_regular_sche
     cfg.train.freeze_weights_till_epoch = 1
     cfg.train.lr_during_freeze = 5e-4
     cfg.train.lr_decay_during_freeze = 0.1
+    cfg.train.lr_after_freeze = 2e-4
+    cfg.train.lr_decay_after_freeze = 0.25
     cfg.league.min_replay_size_to_train = 10**9
     cfg.checkpoint_dir = str(tmp_path / "ckpt")
     cfg.plots_dir = str(tmp_path / "plots")
@@ -1216,11 +1360,13 @@ def test_run_training_switches_lr_policy_during_freeze_and_restores_regular_sche
 
     metrics = run_training(cfg)
 
-    assert len(metrics) == 3
+    assert len(metrics) == 4
     first_agent_id = "trainable_0"
     assert np.isclose(metrics[0]["agents"][first_agent_id]["learning_rate"], 1e-3)
     assert not metrics[0]["freeze_output_layer_only"]
     assert np.isclose(metrics[1]["agents"][first_agent_id]["learning_rate"], 5e-4)
     assert metrics[1]["freeze_output_layer_only"]
-    assert np.isclose(metrics[2]["agents"][first_agent_id]["learning_rate"], 1e-3 * (0.5 ** 2))
+    assert np.isclose(metrics[2]["agents"][first_agent_id]["learning_rate"], 2e-4)
     assert not metrics[2]["freeze_output_layer_only"]
+    assert np.isclose(metrics[3]["agents"][first_agent_id]["learning_rate"], 2e-4 * 0.25)
+    assert not metrics[3]["freeze_output_layer_only"]

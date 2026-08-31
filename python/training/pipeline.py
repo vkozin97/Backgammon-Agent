@@ -12,7 +12,12 @@ from .config import ExperimentConfig, save_config
 from .league import LeagueController
 from .replay import ReplayBuffer
 from .plotting import load_metrics_history_from_checkpoints, plot_metrics_history
-from .observation_layout import OBS_MY_LEFT, OBS_OPP_LEFT, OBSERVATION_DIM
+from .observation_layout import (
+    OBS_MY_LEFT,
+    OBS_OPP_LEFT,
+    OBSERVATION_DIM,
+    RAW_ACCEPT_DOUBLE_NEXT_OFFER,
+)
 
 
 MATCH_VECTOR_DIM = 12
@@ -85,15 +90,22 @@ def _training_phase_for_epoch(
     calculate_learning_params: bool,
     schedule_origin_epoch: int | None = None,
 ) -> tuple[float, float, int, bool]:
+    freeze_from_epoch = int(getattr(cfg.train, "freeze_weights_from_epoch", 0))
+    freeze_till_epoch = int(getattr(cfg.train, "freeze_weights_till_epoch", -1))
+    freeze_configured = freeze_till_epoch >= freeze_from_epoch
     freeze_active = _epoch_uses_output_freeze(
         epoch,
-        int(getattr(cfg.train, "freeze_weights_from_epoch", 0)),
-        int(getattr(cfg.train, "freeze_weights_till_epoch", -1)),
+        freeze_from_epoch,
+        freeze_till_epoch,
     )
     if freeze_active:
         base_learning_rate = float(getattr(cfg.train, "lr_during_freeze", cfg.train.learning_rate))
         lr_decay_factor = float(getattr(cfg.train, "lr_decay_during_freeze", cfg.train.lr_decay_factor))
-        schedule_start_epoch = int(getattr(cfg.train, "freeze_weights_from_epoch", 0))
+        schedule_start_epoch = freeze_from_epoch
+    elif freeze_configured and int(epoch) > freeze_till_epoch:
+        base_learning_rate = float(getattr(cfg.train, "lr_after_freeze", cfg.train.learning_rate))
+        lr_decay_factor = float(getattr(cfg.train, "lr_decay_after_freeze", cfg.train.lr_decay_factor))
+        schedule_start_epoch = freeze_till_epoch + 1
     else:
         base_learning_rate = float(cfg.train.learning_rate)
         lr_decay_factor = float(cfg.train.lr_decay_factor)
@@ -225,13 +237,32 @@ def _current_winrates_from_calibration(game_results: list, all_agent_ids: list[s
 
 
 
-def _pending_accept_target_from_step(step: dict) -> float:
+def _opponent_accept_target_from_step(step: dict) -> float:
+    """Return whether the opponent accepts a double offered in this state.
+
+    ``accept_double_for_next_offer`` belongs to the player whose turn is being
+    recorded and applies only after that player has made the current move.  It
+    is therefore the wrong side and the wrong time step for this output head.
+    Before the move, raw state slot 65 contains the decision saved by the
+    opponent on the preceding turn for the current player's possible offer.
+    """
     meta = step.get("action_meta", {}) if isinstance(step, dict) else {}
-    if "accept_double_for_next_offer" in meta:
-        val = float(meta["accept_double_for_next_offer"])
+
+    raw_state = np.asarray(meta.get("raw_state", []), dtype=np.float32).reshape(-1)
+    if raw_state.size > RAW_ACCEPT_DOUBLE_NEXT_OFFER:
+        val = float(raw_state[RAW_ACCEPT_DOUBLE_NEXT_OFFER])
         if np.isfinite(val) and val >= 0.0:
             return float(np.clip(val, 0.0, 1.0))
-    return 1.0 if bool(step.get("accept_double_opponent", False)) else 0.0
+
+    # Legacy/minimal records may not contain the pre-step raw state. For an
+    # actual offer, its observed response is then the best available target.
+    if bool(step.get("double_offered_by_agent", False)) and "double_was_accepted" in step:
+        return 1.0 if bool(step["double_was_accepted"]) else 0.0
+
+    # Records without either source have no counterfactual opponent response.
+    # A neutral soft target avoids teaching the opposite player's next-turn
+    # decision as though it were the current opponent's response.
+    return 0.5
 
 def _games_stats(game_results: list, agent_ids: list[str]) -> dict:
     reward_bins = np.zeros((6,), dtype=np.float64)
@@ -322,7 +353,7 @@ def _terminal_outcome_for_step(game, step: dict) -> np.ndarray:
     my_vec[my_next] = 1.0
     opp_vec[opp_next] = 1.0
 
-    accept_target = np.array([_pending_accept_target_from_step(step)], dtype=np.float32)
+    accept_target = np.array([_opponent_accept_target_from_step(step)], dtype=np.float32)
 
     reward_value = int(np.clip(getattr(game, "reward_value", 1), 1, 3))
     signed_reward = reward_value if won else -reward_value
@@ -575,7 +606,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                     outcome = _terminal_outcome_for_step(game, st)
                 outcome = np.asarray(outcome, dtype=np.float32).copy()
                 if outcome.shape[0] >= MATCH_VECTOR_DIM * 2 + 1:
-                    outcome[MATCH_VECTOR_DIM * 2] = _pending_accept_target_from_step(st)
+                    outcome[MATCH_VECTOR_DIM * 2] = _opponent_accept_target_from_step(st)
                 records.append({
                     **st,
                     "terminal_outcome": outcome,

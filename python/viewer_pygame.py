@@ -134,8 +134,8 @@ REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 agent_mode = "hint"  # "none" | "hint" | "play" | "replay"
 viewer_n_games = 100  # number of games in endless mode or points to win the match in regular mode
 viewer_endless_mode = True
-agent_id = "trainable_3"
-agent_epoch = 399
+agent_id = "trainable_2"
+agent_epoch = 420
 agent_checkpoint_dir = "training_stats/checkpoints"
 replay_storage_dir = "training_stats/replay"
 replay_match_id = None
@@ -338,6 +338,12 @@ def _format_vec_percent(values: np.ndarray) -> str:
     return "[" + ", ".join(f"{(float(v) * 100.0):.1f}" for v in arr.tolist()) + "]"
 
 
+def _format_cube_recommendation(available: bool, decision: int) -> str:
+    if not available:
+        return "-"
+    return "Да" if decision else "Нет"
+
+
 def _canonical_panel_reward_vec(agent, raw_state: np.ndarray) -> np.ndarray:
     if agent is None or getattr(agent, "agent_id", "") == "conservative_baseline":
         return np.zeros((REWARD_VECTOR_DIM,), dtype=np.float32)
@@ -387,6 +393,8 @@ def _agent_hint_lines(
     obs_now = _raw_state_to_player_observation(raw_now, now_white)
     obs_after = _raw_state_to_player_observation(raw_post, post_white)
     obs_post_current_player = _raw_state_to_player_observation(raw_post, now_white)
+    _, _, _, my_double_avail, _ = extract_obs_controls(obs_now)
+    _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
     canonical_post_vec = (
         np.asarray(selected_move_vec, dtype=np.float32).reshape(-1).copy()
         if selected_move_vec is not None else
@@ -404,7 +412,6 @@ def _agent_hint_lines(
     accept_double = int(m.accept_double)
     apply_double = int(m.apply_double)
     if endless:
-        _, _, _, _, opp_double_avail = extract_obs_controls(obs_post_current_player)
         exp_reject = -1.0
         exp_accept = 2.0 * float(np.dot(REWARD_VALUES, canonical_post_vec))
         accept_double = int(opp_double_avail > 0 and exp_accept >= exp_reject)
@@ -413,7 +420,9 @@ def _agent_hint_lines(
     line0 = f"Кубики: {dice_values if dice_values else '-'}"
     line1 = f"R6={_format_vec_percent(m.reward_vec)} | EV(noD)={m.exp_no_double:.3f} | EV(D)={m.exp_double:.3f} | P(acc)={(m.p_accept * 100.0):.1f}%"
     line2 = f"postR6={_format_vec_percent(canonical_post_vec)} | EV(rej)={exp_reject:.3f} | EV(acc)={exp_accept:.3f}"
-    line3 = f"Удв: {'Да' if apply_double else 'Нет'}. Прин: {'Да' if accept_double else 'Нет'}"
+    apply_label = _format_cube_recommendation(my_double_avail > 0, apply_double)
+    accept_label = _format_cube_recommendation(opp_double_avail > 0, accept_double)
+    line3 = f"Удв: {apply_label}. Прин: {accept_label}"
     return [line0, line1, line2, line3]
 
 

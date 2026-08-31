@@ -7,7 +7,9 @@ from training.pipeline import run_training
 if __name__ == "__main__":
     experiment_dir = "training_stats"
     experiment_dir_path = Path(experiment_dir)
-    epoch = 240
+    # Epoch 302 is the first one whose generated games contain doubles with
+    # acceptance labels affected by the batched step-result parsing bug.
+    epoch = 302
     calculate_learning_params = True
 
     cfg = ExperimentConfig()
