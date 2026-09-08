@@ -31,18 +31,28 @@ class ModelConfig:
 class TrainConfig:
     num_epochs: int = 700
     updates_per_epoch_per_agent: int = 100
+    adaptive_learning_steps_enabled: bool = True
+    adaptive_learning_steps_scope: str = "each"
+    max_learning_steps_ratio: float = 3.0
+    adaptive_learning_steps_warmup_epochs: int = 40
+    adaptive_learning_steps_ramp_epochs: int = 0
+    adaptive_learning_steps_deadband: float = 0.02
+    adaptive_learning_steps_winrate_scale: float = 0.15
+    min_learning_steps_per_agent: int = 50
     batch_size: int = 10_000
     optimizer_type: str = "adam"
     learning_rate: float = 1e-4
     min_learning_rate: float = 5e-7
-    lr_decay_factor: float = 0.992
-    lr_decay_every_steps: int = 50
+    # LR is fixed inside an epoch. These are per-epoch factors equivalent to
+    # the old factors applied twice per epoch (100 updates / 50 steps).
+    lr_decay_unit: str = "epoch"
+    lr_decay_factor: float = 0.984064  # 0.992 ** 2
     freeze_weights_from_epoch: int = 300
     freeze_weights_till_epoch: int = 350
     lr_during_freeze: float = 5e-5
-    lr_decay_during_freeze: float = 0.98
+    lr_decay_during_freeze: float = 0.9604  # 0.98 ** 2
     lr_after_freeze: float = 3e-5
-    lr_decay_after_freeze: float = 0.995
+    lr_decay_after_freeze: float = 0.990025  # 0.995 ** 2
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
     momentum: float = 0.9
@@ -166,6 +176,23 @@ class ExperimentConfig:
         model_c = dict(data.get("model_group_c", {}))
         model_d = dict(data.get("model_group_d", {}))
         train_data = dict(data.get("train", {}))
+
+        # Configs saved before epoch-level LR scheduling stored a factor that
+        # was applied every ``lr_decay_every_steps`` optimizer updates. Convert
+        # it to the equivalent per-epoch factor while loading them.
+        legacy_decay_every_steps = train_data.pop("lr_decay_every_steps", None)
+        lr_decay_unit = str(train_data.get("lr_decay_unit", "")).strip().lower()
+        if lr_decay_unit in {"", "steps"} and legacy_decay_every_steps is not None:
+            updates_per_epoch = max(int(train_data.get("updates_per_epoch_per_agent", 100)), 0)
+            decay_every_steps = int(legacy_decay_every_steps)
+            decay_events_per_epoch = (
+                float(updates_per_epoch) / float(decay_every_steps)
+                if decay_every_steps > 0 else 0.0
+            )
+            for key in ("lr_decay_factor", "lr_decay_during_freeze", "lr_decay_after_freeze"):
+                if key in train_data:
+                    train_data[key] = float(train_data[key]) ** decay_events_per_epoch
+        train_data["lr_decay_unit"] = "epoch"
 
         removed_model_keys = {
             "output_mode", "weight_init", "use_layer_norm", "use_batch_norm",

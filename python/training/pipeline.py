@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import time
 
@@ -62,18 +63,167 @@ def _learning_rate_for_epoch(
     base_learning_rate: float,
     min_learning_rate: float,
     lr_decay_factor: float,
-    lr_decay_every_steps: int,
-    updates_per_epoch_per_agent: int,
     epoch: int,
     start_epoch: int = 0,
 ) -> float:
-    if int(lr_decay_every_steps) <= 0:
-        return float(max(base_learning_rate, min_learning_rate))
     relative_epoch = max(int(epoch) - int(start_epoch), 0)
-    completed_updates = relative_epoch * max(int(updates_per_epoch_per_agent), 0)
-    decay_events = completed_updates // int(lr_decay_every_steps)
-    lr = float(base_learning_rate) * (float(lr_decay_factor) ** int(decay_events))
+    lr = float(base_learning_rate) * (float(lr_decay_factor) ** relative_epoch)
     return float(max(lr, float(min_learning_rate)))
+
+
+def _adaptive_learning_steps_for_epoch(
+    cfg: ExperimentConfig,
+    epoch: int,
+    decayed_winrates: np.ndarray,
+    n_trainable_agents: int,
+) -> dict[str, np.ndarray | float]:
+    """Allocate an integer, fixed-budget optimizer-step count per agent.
+
+    Higher relative winrate produces fewer steps. The continuous multipliers
+    are bounded symmetrically around one and projected to an arithmetic mean
+    of one before balanced integer rounding. As a result, the total number of
+    agent updates stays unchanged and the realized max/min ratio never exceeds
+    ``max_learning_steps_ratio``.
+    """
+    n_agents = max(int(n_trainable_agents), 0)
+    base_steps = max(int(cfg.train.updates_per_epoch_per_agent), 0)
+    if n_agents == 0:
+        empty_float = np.empty((0,), dtype=np.float64)
+        return {
+            "steps": np.empty((0,), dtype=np.int64),
+            "multipliers": empty_float,
+            "scores": empty_float,
+            "effective_max_ratio": 1.0,
+        }
+
+    default_steps = np.full((n_agents,), base_steps, dtype=np.int64)
+    default_multipliers = np.ones((n_agents,), dtype=np.float64)
+
+    values = np.full((n_agents,), 0.5, dtype=np.float64)
+    supplied = np.asarray(decayed_winrates, dtype=np.float64).reshape(-1)
+    copy_count = min(n_agents, int(supplied.size))
+    if copy_count:
+        values[:copy_count] = supplied[:copy_count]
+    values = np.where(np.isfinite(values), values, 0.5)
+
+    deadband = max(float(cfg.train.adaptive_learning_steps_deadband), 0.0)
+    scale = float(cfg.train.adaptive_learning_steps_winrate_scale)
+    if scale <= 0.0:
+        raise ValueError("adaptive_learning_steps_winrate_scale must be positive")
+    centered = values - float(np.mean(values))
+    outside_deadband = np.maximum(np.abs(centered) - deadband, 0.0)
+    scores = np.tanh(np.sign(centered) * outside_deadband / scale)
+
+    enabled = bool(cfg.train.adaptive_learning_steps_enabled)
+    scope = str(cfg.train.adaptive_learning_steps_scope).strip().lower()
+    if enabled and scope != "each":
+        raise ValueError(f"Unsupported adaptive_learning_steps_scope={scope!r}; expected 'each'")
+
+    max_ratio = float(cfg.train.max_learning_steps_ratio)
+    if max_ratio < 1.0:
+        raise ValueError("max_learning_steps_ratio must be at least 1.0")
+
+    warmup_epochs = max(int(cfg.train.adaptive_learning_steps_warmup_epochs), 0)
+    ramp_epochs = max(int(cfg.train.adaptive_learning_steps_ramp_epochs), 0)
+    if int(epoch) < warmup_epochs:
+        adaptation_strength = 0.0
+    elif ramp_epochs == 0:
+        adaptation_strength = 1.0
+    else:
+        adaptation_strength = min(
+            (int(epoch) - warmup_epochs + 1) / float(ramp_epochs),
+            1.0,
+        )
+    effective_ratio = max_ratio ** adaptation_strength
+
+    if not enabled or base_steps <= 0 or effective_ratio <= 1.0 + 1e-12:
+        return {
+            "steps": default_steps,
+            "multipliers": default_multipliers,
+            "scores": scores,
+            "effective_max_ratio": 1.0 if not enabled else float(effective_ratio),
+        }
+
+    sqrt_ratio = math.sqrt(effective_ratio)
+    configured_min = min(max(int(cfg.train.min_learning_steps_per_agent), 0), base_steps)
+    lower_steps = max(configured_min, int(math.ceil(base_steps / sqrt_ratio - 1e-12)))
+    upper_steps = max(base_steps, int(math.floor(base_steps * sqrt_ratio + 1e-12)))
+    if lower_steps >= base_steps or upper_steps <= base_steps:
+        return {
+            "steps": default_steps,
+            "multipliers": default_multipliers,
+            "scores": scores,
+            "effective_max_ratio": float(effective_ratio),
+        }
+
+    lower_multiplier = lower_steps / float(base_steps)
+    upper_multiplier = upper_steps / float(base_steps)
+    raw_multipliers = np.exp(-0.5 * math.log(effective_ratio) * scores)
+
+    # Find the common scale whose clipped arithmetic mean is exactly one.
+    lambda_low = 0.0
+    lambda_high = 1.0
+    while float(np.mean(np.clip(lambda_high * raw_multipliers, lower_multiplier, upper_multiplier))) < 1.0:
+        lambda_high *= 2.0
+    for _ in range(80):
+        lambda_mid = 0.5 * (lambda_low + lambda_high)
+        mean_multiplier = float(np.mean(np.clip(
+            lambda_mid * raw_multipliers,
+            lower_multiplier,
+            upper_multiplier,
+        )))
+        if mean_multiplier < 1.0:
+            lambda_low = lambda_mid
+        else:
+            lambda_high = lambda_mid
+
+    continuous_multipliers = np.clip(
+        lambda_high * raw_multipliers,
+        lower_multiplier,
+        upper_multiplier,
+    )
+    continuous_steps = continuous_multipliers * float(base_steps)
+    steps = np.floor(continuous_steps + 1e-12).astype(np.int64)
+    steps = np.clip(steps, lower_steps, upper_steps)
+
+    # Balanced rounding keeps the exact N * base_steps update budget.
+    remaining = n_agents * base_steps - int(np.sum(steps))
+    fractional = continuous_steps - np.floor(continuous_steps)
+    if remaining > 0:
+        order = np.lexsort((np.arange(n_agents), -fractional))
+        while remaining > 0:
+            progressed = False
+            for index in order:
+                if steps[index] >= upper_steps:
+                    continue
+                steps[index] += 1
+                remaining -= 1
+                progressed = True
+                if remaining == 0:
+                    break
+            if not progressed:
+                raise RuntimeError("Unable to distribute adaptive learning-step budget")
+    elif remaining < 0:
+        order = np.lexsort((np.arange(n_agents), fractional))
+        while remaining < 0:
+            progressed = False
+            for index in order:
+                if steps[index] <= lower_steps:
+                    continue
+                steps[index] -= 1
+                remaining += 1
+                progressed = True
+                if remaining == 0:
+                    break
+            if not progressed:
+                raise RuntimeError("Unable to reduce adaptive learning-step budget")
+
+    return {
+        "steps": steps,
+        "multipliers": steps.astype(np.float64) / float(base_steps),
+        "scores": scores,
+        "effective_max_ratio": float(effective_ratio),
+    }
 
 
 def _epoch_uses_output_freeze(epoch: int, freeze_from_epoch: int, freeze_till_epoch: int) -> bool:
@@ -90,6 +240,8 @@ def _training_phase_for_epoch(
     calculate_learning_params: bool,
     schedule_origin_epoch: int | None = None,
 ) -> tuple[float, float, int, bool]:
+    if str(getattr(cfg.train, "lr_decay_unit", "epoch")).strip().lower() != "epoch":
+        raise ValueError("Only epoch-level LR decay is supported")
     freeze_from_epoch = int(getattr(cfg.train, "freeze_weights_from_epoch", 0))
     freeze_till_epoch = int(getattr(cfg.train, "freeze_weights_till_epoch", -1))
     freeze_configured = freeze_till_epoch >= freeze_from_epoch
@@ -121,8 +273,6 @@ def _training_phase_for_epoch(
         base_learning_rate=base_learning_rate,
         min_learning_rate=float(cfg.train.min_learning_rate),
         lr_decay_factor=lr_decay_factor,
-        lr_decay_every_steps=int(cfg.train.lr_decay_every_steps),
-        updates_per_epoch_per_agent=int(cfg.train.updates_per_epoch_per_agent),
         epoch=int(epoch),
         start_epoch=effective_schedule_start,
     )
@@ -473,8 +623,14 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
     decayed_winrates: np.ndarray | None = None
     last_calibration_results: list = []
     last_current_winrates = np.full((len(all_agent_ids),), 0.5, dtype=np.float32)
+    if metrics_history:
+        restored_decayed = np.asarray(metrics_history[-1].get("decayed_winrates", []), dtype=np.float32)
+        restored_current = np.asarray(metrics_history[-1].get("current_winrates", []), dtype=np.float32)
+        if restored_decayed.shape == (len(all_agent_ids),):
+            decayed_winrates = restored_decayed.copy()
+        if restored_current.shape == (len(all_agent_ids),):
+            last_current_winrates = restored_current.copy()
 
-    completed_updates_before_start = max(int(start_epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0)
     dynamic_origin_epoch = _schedule_origin_epoch(start_epoch, calculate_learning_params)
     current_temperature = _temperature_for_epoch(
         float(cfg.league.selfplay_temperature),
@@ -489,22 +645,6 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         start_epoch=dynamic_origin_epoch,
     )
 
-    current_learning_rate, current_lr_decay_factor, _current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
-        cfg,
-        int(start_epoch),
-        calculate_learning_params=calculate_learning_params,
-        schedule_origin_epoch=None if calculate_learning_params else int(start_epoch),
-    )
-
-    for agent in agents:
-        agent.train_step = int(completed_updates_before_start)
-        agent.configure_training_phase(
-            learning_rate=current_learning_rate,
-            lr_decay_factor=current_lr_decay_factor,
-            schedule_step_offset=completed_updates_before_start,
-            freeze_to_output_layer=freeze_output_layer,
-        )
-
     for epoch in range(start_epoch, cfg.train.num_epochs):
         current_learning_rate, current_lr_decay_factor, _current_lr_start_epoch, freeze_output_layer = _training_phase_for_epoch(
             cfg,
@@ -515,10 +655,6 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         for agent in agents:
             agent.configure_training_phase(
                 learning_rate=current_learning_rate,
-                lr_decay_factor=current_lr_decay_factor,
-                # `learning_rate` is already the effective LR at the start of this epoch,
-                # so future decay events must be counted relative to the current epoch start.
-                schedule_step_offset=max(int(epoch), 0) * max(int(cfg.train.updates_per_epoch_per_agent), 0),
                 freeze_to_output_layer=freeze_output_layer,
             )
 
@@ -572,6 +708,26 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         calibrate_dt = max(time.time() - calibrate_t0, 1e-6)
         decision_stats = league.get_decision_stats()
         print(f"[1/7] Calibration took {calibrate_dt:.2f} seconds")
+
+        learning_step_plan = _adaptive_learning_steps_for_epoch(
+            cfg,
+            epoch,
+            np.asarray(decayed_winrates, dtype=np.float32),
+            len(agents),
+        )
+        planned_steps_array = np.asarray(learning_step_plan["steps"], dtype=np.int64)
+        planned_multipliers_array = np.asarray(learning_step_plan["multipliers"], dtype=np.float64)
+        adaptive_scores_array = np.asarray(learning_step_plan["scores"], dtype=np.float64)
+        planned_steps_by_agent = {
+            agent.agent_id: int(planned_steps_array[index])
+            for index, agent in enumerate(agents)
+        }
+        positive_planned_steps = planned_steps_array[planned_steps_array > 0]
+        planned_steps_ratio = (
+            float(np.max(positive_planned_steps)) / float(np.min(positive_planned_steps))
+            if positive_planned_steps.size else 1.0
+        )
+        print(f"Adaptive learning steps: {[planned_steps_by_agent[a.agent_id] for a in agents]}")
 
         print("[2/7] Training self-play started")
         play_t0 = time.time()
@@ -640,9 +796,16 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
         replay_sample_time_total = 0.0
         replay_sample_calls = 0
         if len(replay) >= cfg.league.min_replay_size_to_train:
-            batch_by_agent = {agent.agent_id: cfg.train.batch_size for agent in agents}
-
-            for _ in range(cfg.train.updates_per_epoch_per_agent):
+            max_planned_steps = max(planned_steps_by_agent.values(), default=0)
+            for learning_step in range(max_planned_steps):
+                active_agents = [
+                    agent for agent in agents
+                    if learning_step < planned_steps_by_agent[agent.agent_id]
+                ]
+                batch_by_agent = {
+                    agent.agent_id: cfg.train.batch_size
+                    for agent in active_agents
+                }
                 sample_t0 = time.time()
                 stratified_batches = replay.sample_stratified_with_agent_ids(
                     batch_by_agent,
@@ -652,7 +815,7 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                 replay_sample_time_total += time.time() - sample_t0
                 replay_sample_calls += 1
 
-                for agent in agents:
+                for agent in active_agents:
                     x_np, y_np = stratified_batches.get(
                         agent.agent_id,
                         (np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32)),
@@ -665,18 +828,22 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
                     train_losses[agent.agent_id].append(agent.train_batch_tensor(x_t, y_t))
                     train_lrs_steps[agent.agent_id].append(float(agent.optimizer.param_groups[0]["lr"]))
         train_dt = max(time.time() - t0, 1e-6)
-        steps_per_sec = (cfg.train.batch_size * cfg.train.updates_per_epoch_per_agent * len(agents)) / train_dt
+        completed_learning_steps = sum(len(values) for values in train_lrs_steps.values())
+        steps_per_sec = (cfg.train.batch_size * completed_learning_steps) / train_dt
 
         per_agent = _per_agent_eval_from_games(calibration_results, all_agent_ids, trainable_agent_ids)
         for aid in all_agent_ids:
             per_agent[aid]["matches_vs_opponents"] = dict(matchmaking_counts.get(aid, {}))
 
-        for a in agents:
+        for agent_index, a in enumerate(agents):
             per_agent[a.agent_id]["train_loss_epoch"] = float(np.mean(train_losses[a.agent_id]) if train_losses[a.agent_id] else 0.0)
             per_agent[a.agent_id]["train_loss_steps_epoch"] = train_losses[a.agent_id]
             per_agent[a.agent_id]["learning_rate"] = float(a.optimizer.param_groups[0]["lr"])
             per_agent[a.agent_id]["learning_rate_steps_epoch"] = train_lrs_steps[a.agent_id]
             per_agent[a.agent_id]["learning_steps_epoch"] = len(train_lrs_steps[a.agent_id])
+            per_agent[a.agent_id]["planned_learning_steps_epoch"] = int(planned_steps_array[agent_index])
+            per_agent[a.agent_id]["learning_steps_multiplier"] = float(planned_multipliers_array[agent_index])
+            per_agent[a.agent_id]["adaptive_learning_steps_score"] = float(adaptive_scores_array[agent_index])
 
         avg_sample_ms = (replay_sample_time_total / replay_sample_calls * 1000.0) if replay_sample_calls else 0.0
         pure_train_dt = max(train_dt - replay_sample_time_total, 0.0)
@@ -724,6 +891,10 @@ def run_training(cfg: ExperimentConfig, start_epoch: int = 0, calculate_learning
             "calibration_applied": bool(should_calibrate),
             "current_winrates": np.asarray(current_winrates, dtype=np.float32).tolist(),
             "decayed_winrates": np.asarray(decayed_winrates, dtype=np.float32).tolist(),
+            "adaptive_learning_steps_effective_max_ratio": float(learning_step_plan["effective_max_ratio"]),
+            "planned_learning_steps_ratio": float(planned_steps_ratio),
+            "planned_learning_steps_total": int(np.sum(planned_steps_array)),
+            "completed_learning_steps_total": int(completed_learning_steps),
             "agents": per_agent,
             "games_stats": games_stats,
         }

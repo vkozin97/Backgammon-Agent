@@ -481,11 +481,8 @@ class ValueAgent:
         self.loss_weights = np.asarray(train_cfg.loss_weights, dtype=np.float32)
         self.target_expansion = train_cfg.target_expansion
         self.grad_clip_norm = train_cfg.grad_clip_norm
-        self.lr_decay_factor = train_cfg.lr_decay_factor
-        self.lr_decay_every_steps = train_cfg.lr_decay_every_steps
         self.min_learning_rate = float(train_cfg.min_learning_rate)
         self.lr_schedule_base = float(train_cfg.learning_rate)
-        self.lr_schedule_step_offset = 0
         self.output_layer_only_training = False
         self.train_step = 0
 
@@ -529,12 +526,10 @@ class ValueAgent:
         self.output_layer_only_training = enabled
 
     def _scheduled_learning_rate(self) -> float:
-        if int(self.lr_decay_every_steps) <= 0:
-            return float(max(self.lr_schedule_base, self.min_learning_rate))
-        phase_steps = max(int(self.train_step) - int(self.lr_schedule_step_offset), 0)
-        decay_events = phase_steps // int(self.lr_decay_every_steps)
-        lr = float(self.lr_schedule_base) * (float(self.lr_decay_factor) ** int(decay_events))
-        return float(max(lr, self.min_learning_rate))
+        # The pipeline computes one LR for the whole epoch. Keeping it
+        # independent of ``train_step`` is essential once agents receive
+        # different numbers of optimizer updates.
+        return float(max(self.lr_schedule_base, self.min_learning_rate))
 
     def _apply_current_learning_rate(self) -> float:
         lr = self._scheduled_learning_rate()
@@ -545,13 +540,9 @@ class ValueAgent:
     def configure_training_phase(
         self,
         learning_rate: float,
-        lr_decay_factor: float,
-        schedule_step_offset: int,
         freeze_to_output_layer: bool,
     ) -> float:
         self.lr_schedule_base = float(learning_rate)
-        self.lr_decay_factor = float(lr_decay_factor)
-        self.lr_schedule_step_offset = int(schedule_step_offset)
         self.set_output_layer_only_training(freeze_to_output_layer)
         return self._apply_current_learning_rate()
 
@@ -594,7 +585,6 @@ class ValueAgent:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
         self.optimizer.step()
         self.train_step += 1
-        self._apply_current_learning_rate()
         return float(loss.detach().cpu().item())
 
     def state_dict(self) -> dict:

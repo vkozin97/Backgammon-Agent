@@ -12,6 +12,7 @@ from training.pipeline import (
     _bootstrap_outcomes_for_unfinished_game,
     _sigmoid_growth_probability,
     _learning_rate_for_epoch,
+    _adaptive_learning_steps_for_epoch,
     _epoch_uses_output_freeze,
     _training_phase_for_epoch,
     _games_stats,
@@ -141,9 +142,29 @@ def test_config_roundtrip(tmp_path: Path):
     assert loaded.train.num_epochs == cfg.train.num_epochs
     assert loaded.train.winrate_window_size == cfg.train.winrate_window_size
     assert loaded.train.value_window_size == cfg.train.value_window_size
-    assert loaded.train.lr_after_freeze == 2e-5
-    assert loaded.train.lr_decay_after_freeze == 0.995
+    assert loaded.train.lr_after_freeze == 3e-5
+    assert loaded.train.lr_decay_after_freeze == 0.990025
+    assert loaded.train.adaptive_learning_steps_enabled
+    assert loaded.train.adaptive_learning_steps_scope == "each"
+    assert loaded.train.max_learning_steps_ratio == 3.0
     assert loaded.checkpoint_dir == cfg.checkpoint_dir
+
+
+def test_legacy_step_lr_decay_config_is_migrated_to_epoch_decay():
+    loaded = ExperimentConfig.from_dict({
+        "train": {
+            "updates_per_epoch_per_agent": 100,
+            "lr_decay_every_steps": 50,
+            "lr_decay_factor": 0.992,
+            "lr_decay_during_freeze": 0.98,
+            "lr_decay_after_freeze": 0.995,
+        },
+    })
+
+    assert loaded.train.lr_decay_unit == "epoch"
+    assert np.isclose(loaded.train.lr_decay_factor, 0.992 ** 2)
+    assert np.isclose(loaded.train.lr_decay_during_freeze, 0.98 ** 2)
+    assert np.isclose(loaded.train.lr_decay_after_freeze, 0.995 ** 2)
 
 
 def test_one_training_epoch_and_checkpoint(tmp_path: Path):
@@ -432,7 +453,7 @@ def test_run_training_uses_config_params_as_current_epoch_values_when_calculatio
             self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
             self.train_step = 0
 
-        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+        def configure_training_phase(self, learning_rate: float, freeze_to_output_layer: bool) -> float:
             self.optimizer.param_groups[0]["lr"] = float(learning_rate)
             return float(learning_rate)
 
@@ -492,7 +513,6 @@ def test_run_training_uses_config_params_as_current_epoch_values_when_calculatio
     cfg.train.batch_size = 4
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 1
     cfg.league.matches_per_agent = 1
     cfg.league.min_replay_size_to_train = 1
     cfg.league.selfplay_temperature = 0.7
@@ -539,7 +559,7 @@ def test_run_training_recomputes_decay_from_epoch_zero_when_calculation_enabled(
             self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
             self.train_step = 0
 
-        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
+        def configure_training_phase(self, learning_rate: float, freeze_to_output_layer: bool) -> float:
             self.optimizer.param_groups[0]["lr"] = float(learning_rate)
             return float(learning_rate)
 
@@ -597,7 +617,6 @@ def test_run_training_recomputes_decay_from_epoch_zero_when_calculation_enabled(
     cfg.train.batch_size = 4
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 1
     cfg.league.matches_per_agent = 1
     cfg.league.min_replay_size_to_train = 1
     cfg.league.selfplay_temperature = 0.7
@@ -1000,16 +1019,163 @@ def test_sigmoid_growth_probability_schedule():
     assert np.isclose(_sigmoid_growth_probability(base, epoch=50, start_epoch=5, end_epoch=10, sigmoid_parameter=sigmoid_parameter), 1.0)
 
 
-def test_learning_rate_for_epoch_accounts_for_updates_and_decay_steps():
+def test_learning_rate_for_epoch_uses_one_fixed_rate_per_epoch():
     lr = _learning_rate_for_epoch(
         base_learning_rate=1e-3,
         min_learning_rate=1e-7,
         lr_decay_factor=0.5,
-        lr_decay_every_steps=50,
-        updates_per_epoch_per_agent=100,
         epoch=3,
     )
-    assert np.isclose(lr, 1e-3 * (0.5 ** 6))
+    assert np.isclose(lr, 1e-3 * (0.5 ** 3))
+
+
+def test_adaptive_learning_steps_are_individual_budgeted_and_bounded():
+    cfg = ExperimentConfig()
+    cfg.train.updates_per_epoch_per_agent = 100
+    cfg.train.adaptive_learning_steps_enabled = True
+    cfg.train.adaptive_learning_steps_scope = "each"
+    cfg.train.max_learning_steps_ratio = 3.0
+    cfg.train.adaptive_learning_steps_warmup_epochs = 40
+    cfg.train.adaptive_learning_steps_ramp_epochs = 0
+    cfg.train.adaptive_learning_steps_deadband = 0.02
+    cfg.train.adaptive_learning_steps_winrate_scale = 0.15
+    cfg.train.min_learning_steps_per_agent = 50
+    winrates = np.asarray([0.80, 0.70, 0.60, 0.55, 0.50, 0.45, 0.40, 0.30, 0.20, 0.50])
+
+    warmup_plan = _adaptive_learning_steps_for_epoch(cfg, 39, winrates, 9)
+    active_plan = _adaptive_learning_steps_for_epoch(cfg, 40, winrates, 9)
+    warmup_steps = np.asarray(warmup_plan["steps"])
+    active_steps = np.asarray(active_plan["steps"])
+
+    assert np.array_equal(warmup_steps, np.full((9,), 100))
+    assert int(np.sum(active_steps)) == 900
+    assert np.all(np.diff(active_steps) >= 0)
+    assert int(np.min(active_steps)) >= 50
+    assert float(np.max(active_steps)) / float(np.min(active_steps)) <= 3.0
+    assert active_steps[0] < 100 < active_steps[-1]
+    assert np.isclose(np.mean(np.asarray(active_plan["multipliers"])), 1.0)
+    assert np.isclose(float(active_plan["effective_max_ratio"]), 3.0)
+
+
+def test_adaptive_learning_steps_deadband_avoids_noise_changes():
+    cfg = ExperimentConfig()
+    cfg.train.updates_per_epoch_per_agent = 100
+    cfg.train.adaptive_learning_steps_warmup_epochs = 0
+    cfg.train.adaptive_learning_steps_ramp_epochs = 0
+    cfg.train.adaptive_learning_steps_deadband = 0.02
+
+    plan = _adaptive_learning_steps_for_epoch(
+        cfg,
+        epoch=0,
+        decayed_winrates=np.asarray([0.51, 0.50, 0.49, 0.50]),
+        n_trainable_agents=3,
+    )
+
+    assert np.array_equal(np.asarray(plan["steps"]), np.full((3,), 100))
+    assert np.allclose(np.asarray(plan["scores"]), 0.0)
+
+
+def test_run_training_executes_individual_adaptive_step_counts(tmp_path: Path, monkeypatch):
+    import training.endgame_policy as endgame_policy
+    import training.pipeline as pipeline_mod
+
+    class FakeAgent:
+        def __init__(self, agent_id: str):
+            self.agent_id = agent_id
+            self.device = "cpu"
+            self.optimizer = type("Opt", (), {"param_groups": [{"lr": 0.0}]})()
+            self.train_step = 0
+            self.update_count = 0
+
+        def configure_training_phase(self, learning_rate: float, freeze_to_output_layer: bool) -> float:
+            self.optimizer.param_groups[0]["lr"] = float(learning_rate)
+            return float(learning_rate)
+
+        def train_batch_tensor(self, _x_t, _y_t) -> float:
+            self.update_count += 1
+            self.train_step += 1
+            return 1.0
+
+        def state_dict(self) -> dict:
+            return {"agent_id": self.agent_id, "group": "A", "model": {}}
+
+    class FakeLeague:
+        def __init__(self, *_args, **_kwargs):
+            self._decision_stats = {"decision_count": 0, "topk_freq": [0.0] * 10}
+
+        def set_decision_temperature(self, _value: float) -> None:
+            return None
+
+        def set_choose_best_probability(self, _value: float) -> None:
+            return None
+
+        def run_calibration_epoch(self, _agents, _epoch: int):
+            return [], 0.0
+
+        def run_training_epoch(self, _agents, _epoch: int, _decayed_winrates, all_agent_ids):
+            zero = {aid: {opp: 0 for opp in all_agent_ids} for aid in all_agent_ids}
+            return [], 0.0, zero
+
+        def get_decision_stats(self) -> dict:
+            return self._decision_stats
+
+    class FakeReplay:
+        def __init__(self, *_args, **_kwargs):
+            self.size = 1
+
+        def __len__(self) -> int:
+            return self.size
+
+        def add_many(self, _records) -> None:
+            return None
+
+        def sample_stratified_with_agent_ids(self, batch_sizes, _alpha_recency, _alpha_uniform):
+            return {
+                aid: (np.ones((1, 1), dtype=np.float32), np.ones((1, 1), dtype=np.float32))
+                for aid in batch_sizes
+            }
+
+        def get_meta(self) -> dict:
+            return {"size": self.size}
+
+    fake_agents = [FakeAgent(f"trainable_{index}") for index in range(3)]
+    monkeypatch.setattr(endgame_policy, "get_endgame_positions", lambda: None)
+    monkeypatch.setattr(pipeline_mod, "build_trainable_agents", lambda cfg, seed: fake_agents)
+    monkeypatch.setattr(pipeline_mod, "LeagueController", FakeLeague)
+    monkeypatch.setattr(pipeline_mod, "ReplayBuffer", FakeReplay)
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_current_winrates_from_calibration",
+        lambda _results, _ids: np.asarray([0.8, 0.5, 0.2, 0.5], dtype=np.float32),
+    )
+    monkeypatch.setattr(pipeline_mod, "load_metrics_history_from_checkpoints", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(pipeline_mod, "plot_metrics_history", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_mod, "save_checkpoint", lambda *_args, **_kwargs: None)
+
+    cfg = ExperimentConfig()
+    cfg.train.num_epochs = 1
+    cfg.train.updates_per_epoch_per_agent = 10
+    cfg.train.batch_size = 1
+    cfg.train.adaptive_learning_steps_warmup_epochs = 0
+    cfg.train.adaptive_learning_steps_ramp_epochs = 0
+    cfg.train.min_learning_steps_per_agent = 1
+    cfg.league.min_replay_size_to_train = 1
+    cfg.checkpoint_dir = str(tmp_path / "ckpt")
+    cfg.plots_dir = str(tmp_path / "plots")
+    cfg.league.replay_storage_dir = str(tmp_path / "replay")
+
+    metrics = run_training(cfg)
+    planned = [metrics[0]["agents"][agent.agent_id]["planned_learning_steps_epoch"] for agent in fake_agents]
+    completed = [agent.update_count for agent in fake_agents]
+
+    assert sum(planned) == 30
+    assert planned == completed
+    assert planned[0] < planned[1] < planned[2]
+    assert max(planned) / min(planned) <= cfg.train.max_learning_steps_ratio
+    assert all(
+        len(set(metrics[0]["agents"][agent.agent_id]["learning_rate_steps_epoch"])) == 1
+        for agent in fake_agents
+    )
 
 
 def test_decide_accept_double_from_probs_endless_sign():
@@ -1173,45 +1339,36 @@ def test_learning_rate_for_epoch_can_restart_decay_from_freeze_start_epoch():
         base_learning_rate=1e-5,
         min_learning_rate=1e-7,
         lr_decay_factor=0.98,
-        lr_decay_every_steps=50,
-        updates_per_epoch_per_agent=100,
         epoch=251,
         start_epoch=250,
     )
-    assert np.isclose(lr, 1e-5 * (0.98 ** 2))
+    assert np.isclose(lr, 1e-5 * 0.98)
 
 
-def test_configure_training_phase_does_not_double_apply_prior_epoch_decay():
+def test_configure_training_phase_keeps_lr_fixed_during_epoch():
     cfg = ExperimentConfig()
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 50
     agent = ValueAgent("trainable_0", "A", cfg.model_group_a, cfg.train, seed=0)
 
     current_epoch = 1
-    completed_updates = current_epoch * cfg.train.updates_per_epoch_per_agent
     current_lr = _learning_rate_for_epoch(
         base_learning_rate=cfg.train.learning_rate,
         min_learning_rate=cfg.train.min_learning_rate,
         lr_decay_factor=cfg.train.lr_decay_factor,
-        lr_decay_every_steps=cfg.train.lr_decay_every_steps,
-        updates_per_epoch_per_agent=cfg.train.updates_per_epoch_per_agent,
         epoch=current_epoch,
     )
 
-    agent.train_step = completed_updates
     configured_lr = agent.configure_training_phase(
         learning_rate=current_lr,
-        lr_decay_factor=cfg.train.lr_decay_factor,
-        schedule_step_offset=completed_updates,
         freeze_to_output_layer=False,
     )
 
-    assert np.isclose(current_lr, 1e-3 * (0.5 ** 2))
+    assert np.isclose(current_lr, 1e-3 * 0.5)
     assert np.isclose(configured_lr, current_lr)
 
-    agent.train_step = completed_updates + cfg.train.lr_decay_every_steps
-    assert np.isclose(agent._apply_current_learning_rate(), 1e-3 * (0.5 ** 3))
+    agent.train_step += 10_000
+    assert np.isclose(agent._apply_current_learning_rate(), current_lr)
 
 
 def test_epoch_uses_output_freeze_is_inclusive():
@@ -1225,7 +1382,6 @@ def test_training_phase_restarts_lr_decay_after_freeze():
     cfg = ExperimentConfig()
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 50
     cfg.train.updates_per_epoch_per_agent = 100
     cfg.train.freeze_weights_from_epoch = 2
     cfg.train.freeze_weights_till_epoch = 3
@@ -1239,13 +1395,13 @@ def test_training_phase_restarts_lr_decay_after_freeze():
     first_after = _training_phase_for_epoch(cfg, epoch=4, calculate_learning_params=True)
     second_after = _training_phase_for_epoch(cfg, epoch=5, calculate_learning_params=True)
 
-    assert np.isclose(before[0], 1e-3 * (0.5 ** 2))
+    assert np.isclose(before[0], 1e-3 * 0.5)
     assert before[1:] == (0.5, 0, False)
-    assert np.isclose(frozen[0], 5e-4 * (0.25 ** 2))
+    assert np.isclose(frozen[0], 5e-4 * 0.25)
     assert frozen[1:] == (0.25, 2, True)
     assert np.isclose(first_after[0], 2e-5)
     assert first_after[1:] == (0.995, 4, False)
-    assert np.isclose(second_after[0], 2e-5 * (0.995 ** 2))
+    assert np.isclose(second_after[0], 2e-5 * 0.995)
     assert second_after[1:] == (0.995, 4, False)
 
 
@@ -1253,7 +1409,6 @@ def test_training_phase_uses_regular_schedule_when_freeze_is_disabled():
     cfg = ExperimentConfig()
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 50
     cfg.train.updates_per_epoch_per_agent = 100
     cfg.train.freeze_weights_from_epoch = 5
     cfg.train.freeze_weights_till_epoch = 4
@@ -1262,7 +1417,7 @@ def test_training_phase_uses_regular_schedule_when_freeze_is_disabled():
 
     phase = _training_phase_for_epoch(cfg, epoch=6, calculate_learning_params=True)
 
-    assert np.isclose(phase[0], 1e-3 * (0.5 ** 12))
+    assert np.isclose(phase[0], 1e-3 * (0.5 ** 6))
     assert phase[1:] == (0.5, 0, False)
 
 
@@ -1292,8 +1447,8 @@ def test_run_training_switches_lr_policy_during_and_after_freeze(tmp_path: Path,
             self.train_step = 0
             self.phase_history: list[tuple[float, float, int, bool]] = []
 
-        def configure_training_phase(self, learning_rate: float, lr_decay_factor: float, schedule_step_offset: int, freeze_to_output_layer: bool) -> float:
-            self.phase_history.append((learning_rate, lr_decay_factor, schedule_step_offset, freeze_to_output_layer))
+        def configure_training_phase(self, learning_rate: float, freeze_to_output_layer: bool) -> float:
+            self.phase_history.append((learning_rate, freeze_to_output_layer))
             self.optimizer.param_groups[0]["lr"] = float(learning_rate)
             return float(learning_rate)
 
@@ -1346,7 +1501,6 @@ def test_run_training_switches_lr_policy_during_and_after_freeze(tmp_path: Path,
     cfg.train.updates_per_epoch_per_agent = 1
     cfg.train.learning_rate = 1e-3
     cfg.train.lr_decay_factor = 0.5
-    cfg.train.lr_decay_every_steps = 1
     cfg.train.freeze_weights_from_epoch = 1
     cfg.train.freeze_weights_till_epoch = 1
     cfg.train.lr_during_freeze = 5e-4
