@@ -147,6 +147,7 @@ def test_config_roundtrip(tmp_path: Path):
     assert loaded.train.adaptive_learning_steps_enabled
     assert loaded.train.adaptive_learning_steps_scope == "each"
     assert loaded.train.max_learning_steps_ratio == 3.0
+    assert loaded.league.max_doubles_per_game == 6
     assert loaded.checkpoint_dir == cfg.checkpoint_dir
 
 
@@ -982,6 +983,67 @@ def test_python_observation_layout_matches_cpp_environment():
     assert py_obs.shape == cpp_obs.shape == (266,)
     assert np.allclose(py_obs, cpp_obs)
     assert extract_obs_controls(cpp_obs) == (7, 7, 1, 1, 1)
+
+
+def test_cpp_env_disables_doubling_for_both_players_after_configured_limit():
+    import bg_env
+
+    max_doubles_per_game = 6
+    env = bg_env.Env(123, n_games=100, endless_mode=True, max_doubles_per_game=max_doubles_per_game)
+    env.commit_turn()  # leave the opening turn, during which the first player cannot double
+    pass_move = np.full((8,), 255, dtype=np.uint8)
+
+    for double_number in range(1, max_doubles_per_game + 1):
+        double_possible, _ = env.legal_moves()
+        assert int(double_possible) == 1
+        _, dave_after, accepted, done = env.step_move(pass_move, apply_double=1, accept_double=1)
+        assert int(dave_after) == 2 ** double_number
+        assert int(accepted) == 1
+        assert int(done) == 0
+
+    raw = np.asarray(env.get_state_raw(), dtype=np.int16)
+    assert int(raw[66]) == 0
+    assert int(raw[67]) == 0
+    double_possible, _ = env.legal_moves()
+    assert int(double_possible) == 0
+
+    _, dave_after, accepted, _ = env.step_move(pass_move, apply_double=1, accept_double=1)
+    assert int(dave_after) == 2 ** max_doubles_per_game
+    assert int(accepted) == 0
+
+
+def test_cpp_ui_double_request_path_respects_configured_limit():
+    import bg_env
+
+    env = bg_env.Env(123, n_games=100, endless_mode=True, max_doubles_per_game=2)
+    env.commit_turn()
+
+    for expected_dave in (2, 4):
+        assert env.request_double()
+        dave_after, accepted, done = env.resolve_pending_double(1)
+        assert (int(dave_after), int(accepted), int(done)) == (expected_dave, 1, 0)
+        env.commit_turn()
+
+    raw = np.asarray(env.get_state_raw(), dtype=np.int16)
+    assert (int(raw[66]), int(raw[67])) == (0, 0)
+    assert not env.request_double()
+
+
+def test_batched_cpp_env_receives_max_doubles_per_game():
+    import batched_bg_env
+
+    env = batched_bg_env.Env(
+        n_matches=2,
+        n_games=100,
+        endless_mode=True,
+        seed=123,
+        max_doubles_per_game=1,
+    )
+    states = np.asarray(env.get_states_raw(), dtype=np.int16)
+    states[:, 55] = 2
+    env.set_states_raw(states)
+
+    assert [int(entry[0]) for entry in env.legal_moves()] == [0, 0]
 
 
 def test_double_state_updates_only_canonical_cpp_control_indices():

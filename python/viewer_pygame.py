@@ -134,6 +134,7 @@ REWARD_VALUES = np.asarray([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0], dtype=np.float32)
 agent_mode = "hint"  # "none" | "hint" | "play" | "replay"
 viewer_n_games = 100  # number of games in endless mode or points to win the match in regular mode
 viewer_endless_mode = True
+viewer_max_doubles_per_game = ExperimentConfig().league.max_doubles_per_game
 agent_id = "trainable_7"
 agent_epoch = 119
 agent_checkpoint_dir = "training_stats/checkpoints"
@@ -261,7 +262,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     state0 = snapshot(env)
     current_dice = np.asarray(env.current_dice(), dtype=np.uint8)
     if can_use_endgame_database(state0):
-        sim = bg_env.Env(0)
+        sim = bg_env.Env(0, max_doubles_per_game=int(viewer_max_doubles_per_game))
         scored = []
         for i, mv in enumerate(moves):
             restore(sim, state0)
@@ -279,7 +280,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
     if getattr(agent, "agent_id", "") == "conservative_baseline":
         if len(moves) == 0:
             return []
-        sim = bg_env.Env(0)
+        sim = bg_env.Env(0, max_doubles_per_game=int(viewer_max_doubles_per_game))
         scored = []
         for i, mv in enumerate(moves):
             restore(sim, state0)
@@ -292,7 +293,7 @@ def evaluate_moves(env, moves: np.ndarray, agent, turn_white: bool):
         scored.sort(key=lambda x: (tuple(-v for v in x[2]), tuple(int(v) for v in x[1].tolist())))
         return [(i, mv, None, None) for i, mv, _ in scored]
 
-    sim = bg_env.Env(0)
+    sim = bg_env.Env(0, max_doubles_per_game=int(viewer_max_doubles_per_game))
     result = []
     for i, mv in enumerate(moves):
         restore(sim, state0)
@@ -363,7 +364,7 @@ def _raw_state_to_player_observation(raw_state: np.ndarray, player_is_white: boo
 
 
 def _simulate_committed_turn_state(base_state: np.ndarray, move: Optional[np.ndarray] = None, use_current_state: bool = False) -> np.ndarray:
-    sim = bg_env.Env(0)
+    sim = bg_env.Env(0, max_doubles_per_game=int(viewer_max_doubles_per_game))
     sim.set_state_full(_require_full_state69(np.asarray(base_state, dtype=np.int16)))
     mv = np.full((8,), 255, dtype=np.uint8) if use_current_state or move is None else np.asarray(move, dtype=np.uint8)
     try:
@@ -1014,7 +1015,12 @@ def main():
     tiny = pygame.font.Font(FONT_NAME, 13)
     clock = pygame.time.Clock()
 
-    env = bg_env.Env(ENV_SEED, n_games=int(viewer_n_games), endless_mode=bool(viewer_endless_mode))
+    env = bg_env.Env(
+        ENV_SEED,
+        n_games=int(viewer_n_games),
+        endless_mode=bool(viewer_endless_mode),
+        max_doubles_per_game=int(viewer_max_doubles_per_game),
+    )
     env.reset()
 
     replay_steps = []

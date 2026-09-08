@@ -88,12 +88,19 @@ bool apply_single_checked(State& s, uint8_t from, uint8_t to, uint8_t die) {
     return true;
 }
 
+int doubles_from_dave_value(int dave_value) {
+    int doubles = 0;
+    for (int value = std::max(1, dave_value); value > 1; value /= 2) ++doubles;
+    return doubles;
+}
+
 }  // namespace
 
-BackgammonEnv::BackgammonEnv(uint64_t seed, int n_games, bool endless_mode)
+BackgammonEnv::BackgammonEnv(uint64_t seed, int n_games, bool endless_mode, int max_doubles_per_game)
     : rng_(seed ? seed : std::random_device{}()) {
     endless_mode_ = endless_mode;
     n_games_ = std::max(1, n_games);
+    max_doubles_per_game_ = std::max(0, max_doubles_per_game);
     games_played_in_match_ = 0;
 }
 
@@ -114,6 +121,7 @@ void BackgammonEnv::start_new_game(bool first_game) {
 
     first_turn_in_game_ = true;
     dave_value_ = 1;
+    doubles_in_game_ = 0;
     cube_owner_ = -1;
     pending_double_by_ = -1;
     accept_double_next_offer_ = 1;
@@ -137,6 +145,7 @@ void BackgammonEnv::reset_standard() {
 
 uint8_t BackgammonEnv::cube_available_for_white(bool white_player) const {
     if (crawford_active_) return 0;
+    if (doubles_in_game_ >= max_doubles_per_game_) return 0;
     if (!endless_mode_ && dave_value_ > n_games_) return 0;
     if (first_turn_in_game_) return white_player == second_player_white_ ? 1 : 0;
     if (cube_owner_ < 0) return 1;
@@ -395,6 +404,7 @@ std::tuple<float, int, uint8_t, uint8_t> BackgammonEnv::step_apply(uint8_t apply
         double_offered_in_match_ = true;
         if (accept_double_next_offer_) {
             dave_value_ *= 2;
+            ++doubles_in_game_;
             cube_owner_ = current_player_white_ ? 1 : 0;
             double_accepted = 1;
         } else {
@@ -472,6 +482,7 @@ std::tuple<int, uint8_t, uint8_t> BackgammonEnv::resolve_pending_double(uint8_t 
     if (pending_double_by_ < 0) return {dave_value_, 0, 0};
     if (accept_double) {
         dave_value_ *= 2;
+        ++doubles_in_game_;
         cube_owner_ = 1 - pending_double_by_;
         pending_double_by_ = -1;
         return {dave_value_, 1, 0};
@@ -509,6 +520,7 @@ void BackgammonEnv::set_state_raw(const int16_t* in) {
     white_score_ = int(in[53]);
     black_score_ = int(in[54]);
     dave_value_ = std::max(1, int(in[55]));
+    doubles_in_game_ = doubles_from_dave_value(dave_value_);
     const int encoded_n_games = int(in[56]);
     endless_mode_ = encoded_n_games < 0;
     n_games_ = std::max(1, std::abs(encoded_n_games));

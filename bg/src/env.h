@@ -9,7 +9,7 @@ namespace bg {
 
 	class BackgammonEnv {
 	public:
-		explicit BackgammonEnv(uint64_t seed = 0, int n_games = 5, bool endless_mode = false);
+		explicit BackgammonEnv(uint64_t seed = 0, int n_games = 5, bool endless_mode = false, int max_doubles_per_game = 6);
 
 		void reset_standard();            // ñòàíäàðòíàÿ ðàññòàíîâêà (ïîêà êàê â backgammon)
 		const State& state() const { return s_; }
@@ -66,6 +66,8 @@ namespace bg {
 		int white_score_{0};
 		int black_score_{0};
 		int dave_value_{1};
+		int max_doubles_per_game_{6};
+		int doubles_in_game_{0};
 		bool crawford_used_{false};
 		bool crawford_active_{false};
 		bool first_turn_in_game_{true};

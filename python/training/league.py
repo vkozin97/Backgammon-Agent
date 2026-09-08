@@ -288,6 +288,7 @@ class LeagueController:
     def __init__(self, cfg, seed: int = 0):
         self.cfg = cfg
         self.seed = seed
+        self.max_doubles_per_game = max(0, int(getattr(cfg, "max_doubles_per_game", 6)))
         self.rng = np.random.default_rng(seed)
         self.random = RandomAgent()
         self.conservative_baseline = ConservativeBaselineAgent()
@@ -299,13 +300,22 @@ class LeagueController:
         self._agents_double_decision_enabled_by_agent: dict[str, bool] = {}
         self._ensemble_base_model_cache: dict[tuple, torch.nn.Module] = {}
         self._obs_probe_env = None
-        self._move_eval_env = bg_env.Env(int(seed) + 11) if bg_env is not None else _FallbackEnv(int(seed) + 11)
+        self._move_eval_env = (
+            bg_env.Env(int(seed) + 11, max_doubles_per_game=self.max_doubles_per_game)
+            if bg_env is not None else _FallbackEnv(int(seed) + 11)
+        )
         self._post_action_opponent_double_eval_env = (
-            bg_env.Env(int(seed) + 17) if bg_env is not None else _FallbackEnv(int(seed) + 17)
+            bg_env.Env(int(seed) + 17, max_doubles_per_game=self.max_doubles_per_game)
+            if bg_env is not None else _FallbackEnv(int(seed) + 17)
         )
         if bg_env is not None:
             try:
-                self._obs_probe_env = bg_env.Env(int(seed), n_games=int(getattr(self.cfg, "n_games_per_match", 11)), endless_mode=bool(getattr(self.cfg, "endless_mode", False)))
+                self._obs_probe_env = bg_env.Env(
+                    int(seed),
+                    n_games=int(getattr(self.cfg, "n_games_per_match", 11)),
+                    endless_mode=bool(getattr(self.cfg, "endless_mode", False)),
+                    max_doubles_per_game=self.max_doubles_per_game,
+                )
             except TypeError:
                 try:
                     self._obs_probe_env = bg_env.Env(int(seed))
@@ -398,7 +408,10 @@ class LeagueController:
             return moves[0]
 
         before_state = np.asarray(state, dtype=np.int16)
-        sim = bg_env.Env(int(self.seed)) if bg_env is not None else _FallbackEnv(int(self.seed))
+        sim = (
+            bg_env.Env(int(self.seed), max_doubles_per_game=self.max_doubles_per_game)
+            if bg_env is not None else _FallbackEnv(int(self.seed))
+        )
 
         best_idx = 0
         best_score: tuple[float, ...] | None = None
@@ -718,6 +731,7 @@ class LeagueController:
             n_games=int(getattr(self.cfg, "n_games_per_match", 11)),
             endless_mode=bool(getattr(self.cfg, "endless_mode", False)),
             seed=self.seed + epoch * 100_000,
+            max_doubles_per_game=self.max_doubles_per_game,
         )
         env.reset()
 
@@ -930,6 +944,7 @@ class LeagueController:
                 self.seed + hash(game_id) % 100000,
                 n_games=int(getattr(self.cfg, "n_games_per_match", 11)),
                 endless_mode=bool(getattr(self.cfg, "endless_mode", False)),
+                max_doubles_per_game=self.max_doubles_per_game,
             )
             if bg_env is not None
             else _FallbackEnv(self.seed + hash(game_id) % 100000)

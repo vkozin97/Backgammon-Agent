@@ -47,8 +47,8 @@ class TrainConfig:
     # the old factors applied twice per epoch (100 updates / 50 steps).
     lr_decay_unit: str = "epoch"
     lr_decay_factor: float = 0.984064  # 0.992 ** 2
-    freeze_weights_from_epoch: int = 300
-    freeze_weights_till_epoch: int = 350
+    freeze_weights_from_epoch: int = 240
+    freeze_weights_till_epoch: int = 320
     lr_during_freeze: float = 5e-5
     lr_decay_during_freeze: float = 0.9604  # 0.98 ** 2
     lr_after_freeze: float = 3e-5
@@ -73,6 +73,7 @@ class LeagueConfig:
     matches_per_agent: int = 12
     n_games_per_match: int = 4
     endless_mode: bool = True
+    max_doubles_per_game: int = 6
     replay_storage_dir: str = "training_stats/replay"
     min_replay_size_to_train: int = 100
     alpha_recency: float = 0.8
@@ -86,11 +87,11 @@ class LeagueConfig:
     choose_best_probability: float = 0.3
     choose_best_decay: float = 0.9
     conservative_baseline_double_copy_prob: float = 0.0
-    baseline_conservative_double_copy_start_epoch: int = 300
-    baseline_conservative_double_copy_end_epoch: int = 340
+    baseline_conservative_double_copy_start_epoch: int = 240
+    baseline_conservative_double_copy_end_epoch: int = 280
     agents_double_decision_prob: float = 0.0
-    agents_double_decision_start_epoch: int = 300
-    agents_double_decision_end_epoch: int = 340
+    agents_double_decision_start_epoch: int = 240
+    agents_double_decision_end_epoch: int = 280
     checkpoint_frequency_epochs: int = 1
     max_steps_per_game: int = 200
     calibrate_every_k_epochs: int = 1

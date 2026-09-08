@@ -9,7 +9,7 @@ if __name__ == "__main__":
     experiment_dir_path = Path(experiment_dir)
     # Epoch 302 is the first one whose generated games contain doubles with
     # acceptance labels affected by the batched step-result parsing bug.
-    epoch = 0
+    epoch = 148
     calculate_learning_params = True
 
     cfg = ExperimentConfig()

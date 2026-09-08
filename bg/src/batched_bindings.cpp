@@ -15,7 +15,7 @@ namespace {
 
 class BatchedBackgammonEnv {
 public:
-    BatchedBackgammonEnv(size_t n_matches, py::object n_games, py::object endless_mode, uint64_t seed = 0) {
+    BatchedBackgammonEnv(size_t n_matches, py::object n_games, py::object endless_mode, uint64_t seed = 0, int max_doubles_per_game = 6) {
         envs_.reserve(n_matches);
 
         auto cast_ints = [&](py::object value, const char* name) -> std::vector<int> {
@@ -57,7 +57,7 @@ public:
         const std::vector<int> n_games_vec = cast_ints(n_games, "n_games");
         const std::vector<bool> endless_mode_vec = cast_bools(endless_mode, "endless_mode");
         for (size_t i = 0; i < n_matches; ++i) {
-            envs_.emplace_back(seed + static_cast<uint64_t>(i), n_games_vec[i], endless_mode_vec[i]);
+            envs_.emplace_back(seed + static_cast<uint64_t>(i), n_games_vec[i], endless_mode_vec[i], max_doubles_per_game);
         }
     }
 
@@ -206,7 +206,7 @@ PYBIND11_MODULE(batched_bg_env, m) {
     m.doc() = "Batched Backgammon C++ env (pybind11)";
 
     py::class_<BatchedBackgammonEnv>(m, "Env")
-        .def(py::init<size_t, py::object, py::object, uint64_t>(), py::arg("n_matches"), py::arg("n_games"), py::arg("endless_mode") = false, py::arg("seed") = 0)
+        .def(py::init<size_t, py::object, py::object, uint64_t, int>(), py::arg("n_matches"), py::arg("n_games"), py::arg("endless_mode") = false, py::arg("seed") = 0, py::arg("max_doubles_per_game") = 6)
         .def("size", &BatchedBackgammonEnv::size)
         .def("reset", &BatchedBackgammonEnv::reset)
         .def("roll_dice", &BatchedBackgammonEnv::roll_dice)
