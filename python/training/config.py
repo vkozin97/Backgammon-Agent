@@ -29,7 +29,7 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    num_epochs: int = 700
+    num_epochs: int = 1300
     updates_per_epoch_per_agent: int = 100
     adaptive_learning_steps_enabled: bool = True
     adaptive_learning_steps_scope: str = "each"
@@ -47,7 +47,7 @@ class TrainConfig:
     # the old factors applied twice per epoch (100 updates / 50 steps).
     lr_decay_unit: str = "epoch"
     lr_decay_factor: float = 0.984064  # 0.992 ** 2
-    freeze_weights_from_epoch: int = 240
+    freeze_weights_from_epoch: int = 250
     freeze_weights_till_epoch: int = 320
     lr_during_freeze: float = 5e-5
     lr_decay_during_freeze: float = 0.9604  # 0.98 ** 2
